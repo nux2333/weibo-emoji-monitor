@@ -839,27 +839,7 @@ async function fetchAllResponses(
 
 	page.on(
 	  'request',
-	  request => {
-
-	    if (
-	      request.url().includes(
-	        '/aj/shop/product/comments'
-	      )
-	    ) {
-
-	      console.log('');
-	      console.log('========== PROGRAM REQUEST ==========');
-	      console.log('URL:', request.url());
-	      console.log(
-	        JSON.stringify(
-	          request.headers(),
-	          null,
-	          2
-	        )
-	      );
-	      console.log('=====================================');
-	    }
-	  }
+	  request => {}
 	);
 	
     /**
