@@ -730,15 +730,74 @@ app.get(
           : null;
 
 
-      const rows =
-        monitorId
-          ? getApiResponses(
-              monitorId,
-              500
-            )
-          : getAllApiResponses(
-              500
+      const generationStatus =
+        String(
+          req.query.generationStatus || ''
+        ).trim();
+
+
+      const page =
+        Math.max(
+          1,
+          Number(
+            req.query.page
+          ) || 1
+        );
+
+
+      const pageSize =
+        Math.min(
+          200,
+          Math.max(
+            10,
+            Number(
+              req.query.pageSize
+            ) || 50
+          )
+        );
+
+
+      /**
+       * 这里不再限制 500 条。
+       *
+       * 因为 generation_status 不是数据库字段，
+       * 必须先把符合 Monitor 条件的 Response 取出，
+       * 计算生成状态后再筛选、再分页。
+       */
+      let rows;
+
+
+      if (monitorId) {
+
+        rows =
+          db.prepare(`
+            SELECT
+              ar.*,
+              m.name AS monitor_name
+            FROM api_responses ar
+            LEFT JOIN monitors m
+              ON m.id = ar.monitor_id
+            WHERE ar.monitor_id = ?
+            ORDER BY ar.id DESC
+          `)
+            .all(
+              monitorId
             );
+
+      } else {
+
+        rows =
+          db.prepare(`
+            SELECT
+              ar.*,
+              m.name AS monitor_name
+            FROM api_responses ar
+            LEFT JOIN monitors m
+              ON m.id = ar.monitor_id
+            ORDER BY ar.id DESC
+          `)
+            .all();
+      }
 
 
       /**
@@ -764,7 +823,7 @@ app.get(
         );
 
 
-      const data =
+      let data =
         rows.map(
           row => {
 
@@ -772,21 +831,18 @@ app.get(
 
             let generatedCount = 0;
 
-            let generationStatus =
+            let currentGenerationStatus =
               '请求失败';
 
 
             /**
              * 失败 response
-             *
-             * error_message 有值，
-             * 不允许参与 comments 生成。
              */
             if (
               hasErrorMessage(row)
             ) {
 
-              generationStatus =
+              currentGenerationStatus =
                 '请求失败';
 
             } else if (
@@ -801,19 +857,13 @@ app.get(
                   );
 
 
-                /**
-                 * code != 100000
-                 *
-                 * 即使 error_message 因历史数据为空，
-                 * 也按失败处理。
-                 */
                 if (
                   !isSuccessfulResponse(
                     raw
                   )
                 ) {
 
-                  generationStatus =
+                  currentGenerationStatus =
                     '请求失败';
 
                 } else {
@@ -828,7 +878,7 @@ app.get(
                     comments.length === 0
                   ) {
 
-                    generationStatus =
+                    currentGenerationStatus =
                       '无评论数据';
 
                   } else {
@@ -868,19 +918,19 @@ app.get(
                       comments.length
                     ) {
 
-                      generationStatus =
+                      currentGenerationStatus =
                         '已全部生成';
 
                     } else if (
                       generatedCount > 0
                     ) {
 
-                      generationStatus =
+                      currentGenerationStatus =
                         '部分已生成';
 
                     } else {
 
-                      generationStatus =
+                      currentGenerationStatus =
                         '未生成';
                     }
                   }
@@ -889,14 +939,14 @@ app.get(
 
               } catch (error) {
 
-                generationStatus =
+                currentGenerationStatus =
                   'JSON解析失败';
               }
 
 
             } else {
 
-              generationStatus =
+              currentGenerationStatus =
                 '无 Response JSON';
             }
 
@@ -911,15 +961,74 @@ app.get(
                 generatedCount,
 
               generation_status:
-                generationStatus
+                currentGenerationStatus
             };
           }
         );
 
 
+      /**
+       * 先按生成状态筛选，再分页。
+       */
+      if (generationStatus) {
+
+        data =
+          data.filter(
+            row =>
+              row.generation_status ===
+              generationStatus
+          );
+      }
+
+
+      const total =
+        data.length;
+
+
+      const totalPages =
+        Math.max(
+          1,
+          Math.ceil(
+            total / pageSize
+          )
+        );
+
+
+      const currentPage =
+        Math.min(
+          page,
+          totalPages
+        );
+
+
+      const startIndex =
+        (currentPage - 1) *
+        pageSize;
+
+
+      const pageData =
+        data.slice(
+          startIndex,
+          startIndex + pageSize
+        );
+
+
       res.json({
         success: true,
-        data
+
+        data:
+          pageData,
+
+        pagination: {
+          page:
+            currentPage,
+
+          pageSize,
+
+          total,
+
+          totalPages
+        }
       });
 
 
@@ -934,7 +1043,6 @@ app.get(
     }
   }
 );
-
 
 /**
  * 查看单条 Response

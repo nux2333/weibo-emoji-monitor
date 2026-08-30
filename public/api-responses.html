@@ -18,13 +18,37 @@
 				<button class="button" onclick="load()">刷新</button>
 			</div>
 		</header>
+
 		<section class="card">
-			<div class="row">
-				<input id="token" type="password" placeholder="ADMIN_TOKEN"  style="display:none">
-				<select id="status" onchange="load()"><option value="">全部状态</option></select>
-				<select id="monitor" onchange="load()"><option value="">全部Monitor</option></select>
+			<div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;">
+				<input id="token" type="password" placeholder="ADMIN_TOKEN" style="display:none">
+
+				<select id="status" onchange="changeFilter()">
+					<option value="">全部生成状态</option>
+					<option value="请求失败">请求失败</option>
+					<option value="无评论数据">无评论数据</option>
+					<option value="未生成">未生成</option>
+					<option value="部分已生成">部分已生成</option>
+					<option value="已全部生成">已全部生成</option>
+					<option value="JSON解析失败">JSON解析失败</option>
+					<option value="无 Response JSON">无 Response JSON</option>
+				</select>
+
+				<select id="monitor" onchange="changeFilter()">
+					<option value="">全部 Monitor</option>
+				</select>
+
+				<select id="pageSize" onchange="changePageSize()">
+					<option value="20">每页 20 条</option>
+					<option value="50" selected>每页 50 条</option>
+					<option value="100">每页 100 条</option>
+					<option value="200">每页 200 条</option>
+				</select>
+
+				<span id="summary" style="margin-left:auto;"></span>
 			</div>
 		</section>
+
 		<section class="card">
 			<div id="message"></div>
 			<div class="table-wrap">
@@ -45,7 +69,10 @@
 					<tbody id="rows"></tbody>
 				</table>
 			</div>
+
+			<div id="pagination" style="display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:16px;"></div>
 		</section>
+
 		<section class="card">
 			<h2>Response JSON</h2>
 			<pre id="json">点击每行“查看”</pre>
