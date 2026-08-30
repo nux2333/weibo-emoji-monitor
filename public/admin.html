@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1"
+  >
+
+  <title>监控后台</title>
+
+  <link
+    rel="stylesheet"
+    href="/style.css"
+  >
+
+</head>
+
+<body>
+
+  <div class="container">
+
+    <header class="page-header">
+
+      <h1>监控后台</h1>
+
+      <div class="subtitle">
+        管理微博 URL / Emoji / 文本
+      </div>
+
+    </header>
+
+
+    <!-- Token -->
+    <section class="admin-card">
+
+      <label>
+        管理员 Token
+      </label>
+
+      <input
+        id="token"
+        type="password"
+        placeholder="请输入 ADMIN_TOKEN"
+      >
+
+      <button
+        onclick="saveToken()"
+        class="button"
+      >
+        保存 Token
+      </button>
+
+    </section>
+
+
+    <!-- 添加监控 -->
+    <section class="admin-card">
+
+      <h2>
+        添加监控项目
+      </h2>
+
+
+      <label>
+        名称
+      </label>
+
+      <input
+        id="name"
+        placeholder="例如：商品A"
+      >
+
+
+      <label>
+        微博评论 URL
+      </label>
+
+      <textarea
+        id="url"
+        rows="3"
+        placeholder="https://shop.e.weibo.com/..."
+      ></textarea>
+
+
+      <label>
+        指定 Emoji
+      </label>
+
+      <input
+        id="emojis"
+        placeholder="例如：😂,❤️,👍"
+      >
+
+      <div class="help">
+        多个 Emoji 用英文逗号分隔
+      </div>
+
+
+      <label>
+        指定文本
+      </label>
+
+      <textarea
+        id="texts"
+        rows="3"
+        placeholder="例如：可爱,好看,绝了"
+      ></textarea>
+
+      <div class="help">
+        多个文本用英文逗号分隔
+      </div>
+
+
+      <button
+        class="button primary"
+        onclick="createMonitor()"
+      >
+        添加并立即抓取
+      </button>
+
+    </section>
+
+
+    <!-- 监控列表 -->
+    <section>
+
+      <h2>
+        已有监控
+      </h2>
+
+      <div id="monitorList">
+        正在加载...
+      </div>
+
+    </section>
+
+  </div>
+
+
+  <script>
+
+    const tokenInput =
+      document.getElementById(
+        'token'
+      );
+
+
+    tokenInput.value =
+      localStorage.getItem(
+        'admin_token'
+      ) || '';
+
+
+    function saveToken() {
+
+      const token =
+        tokenInput.value.trim();
+
+      localStorage.setItem(
+        'admin_token',
+        token
+      );
+
+      alert(
+        'Token 已保存'
+      );
+
+      loadMonitors();
+    }
+
+
+    function getToken() {
+
+      return localStorage.getItem(
+        'admin_token'
+      ) || '';
+    }
+
+
+    function escapeHtml(
+      value
+    ) {
+
+      return String(value ?? '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+
+    function parseList(
+      value
+    ) {
+
+      return value
+        .split(',')
+        .map(
+          item => item.trim()
+        )
+        .filter(Boolean);
+    }
+
+
+    async function api(
+      url,
+      options = {}
+    ) {
+
+      options.headers = {
+        'Content-Type':
+          'application/json',
+
+        'x-admin-token':
+          getToken(),
+
+        ...(options.headers || {})
+      };
+
+
+      const response =
+        await fetch(
+          url,
+          options
+        );
+
+
+      const data =
+        await response.json();
+
+
+      if (!response.ok) {
+
+        throw new Error(
+          data.message ||
+          '请求失败'
+        );
+      }
+
+
+      return data;
+    }
+
+
+    async function createMonitor() {
+
+      const name =
+        document
+          .getElementById('name')
+          .value
+          .trim();
+
+
+      const url =
+        document
+          .getElementById('url')
+          .value
+          .trim();
+
+
+      const emojis =
+        parseList(
+          document
+            .getElementById('emojis')
+            .value
+        );
+
+
+      const texts =
+        parseList(
+          document
+            .getElementById('texts')
+            .value
+        );
+
+
+      if (!name) {
+
+        alert(
+          '请输入名称'
+        );
+
+        return;
+      }
+
+
+      if (!url) {
+
+        alert(
+          '请输入 URL'
+        );
+
+        return;
+      }
+
+
+      try {
+
+        await api(
+          '/api/admin/monitors',
+          {
+            method: 'POST',
+
+            body:
+              JSON.stringify({
+                name,
+                url,
+                emojis,
+                texts,
+                enabled: true
+              })
+          }
+        );
+
+
+        alert(
+          '添加成功，已经开始抓取'
+        );
+
+
+        document
+          .getElementById('name')
+          .value = '';
+
+
+        document
+          .getElementById('url')
+          .value = '';
+
+
+        document
+          .getElementById('emojis')
+          .value = '';
+
+
+        document
+          .getElementById('texts')
+          .value = '';
+
+
+        loadMonitors();
+
+      } catch (error) {
+
+        alert(
+          error.message
+        );
+      }
+    }
+
+
+    async function loadMonitors() {
+
+      const container =
+        document.getElementById(
+          'monitorList'
+        );
+
+
+      try {
+
+        const response =
+          await api(
+            '/api/admin/monitors'
+          );
+
+
+        const monitors =
+          response.data || [];
+
+
+        if (
+          monitors.length === 0
+        ) {
+
+          container.innerHTML = `
+            <div class="empty-page">
+              暂时没有监控项目
+            </div>
+          `;
+
+          return;
+        }
+
+
+        container.innerHTML =
+          monitors.map(
+            monitor => `
+              <div class="admin-monitor">
+
+                <div class="admin-monitor-header">
+
+                  <strong>
+                    ${escapeHtml(
+                      monitor.name
+                    )}
+                  </strong>
+
+                  <span class="${
+                    monitor.enabled
+                      ? 'status-on'
+                      : 'status-off'
+                  }">
+
+                    ${
+                      monitor.enabled
+                        ? '运行中'
+                        : '已停用'
+                    }
+
+                  </span>
+
+                </div>
+
+
+                <div class="admin-url">
+
+                  ${escapeHtml(
+                    monitor.url
+                  )}
+
+                </div>
+
+
+                <div class="admin-tags">
+
+                  <div>
+
+                    <strong>
+                      Emoji：
+                    </strong>
+
+                    ${
+                      monitor.emojis
+                        .map(
+                          item =>
+                            `<span class="tag">${escapeHtml(item)}</span>`
+                        )
+                        .join('')
+                      ||
+                      '无'
+                    }
+
+                  </div>
+
+
+                  <div>
+
+                    <strong>
+                      文本：
+                    </strong>
+
+                    ${
+                      monitor.texts
+                        .map(
+                          item =>
+                            `<span class="tag">${escapeHtml(item)}</span>`
+                        )
+                        .join('')
+                      ||
+                      '无'
+                    }
+
+                  </div>
+
+                </div>
+
+
+                <div class="admin-actions">
+
+                  <button
+                    class="button"
+                    onclick="runMonitor(${monitor.id})"
+                  >
+                    立即抓取
+                  </button>
+
+
+                  <button
+                    class="button"
+                    onclick="toggleMonitor(
+                      ${monitor.id},
+                      ${monitor.enabled}
+                    )"
+                  >
+                    ${
+                      monitor.enabled
+                        ? '停用'
+                        : '启用'
+                    }
+                  </button>
+
+
+                  <button
+                    class="button danger"
+                    onclick="deleteMonitor(${monitor.id})"
+                  >
+                    删除
+                  </button>
+
+                </div>
+
+              </div>
+            `
+          )
+          .join('');
+
+      } catch (error) {
+
+        container.innerHTML = `
+          <div class="error">
+            ${escapeHtml(
+              error.message
+            )}
+          </div>
+        `;
+      }
+    }
+
+
+    async function runMonitor(
+      id
+    ) {
+
+      try {
+
+        await api(
+          `/api/admin/monitors/${id}/run`,
+          {
+            method: 'POST'
+          }
+        );
+
+
+        alert(
+          '已经开始抓取'
+        );
+
+      } catch (error) {
+
+        alert(
+          error.message
+        );
+      }
+    }
+
+
+    async function toggleMonitor(
+      id,
+      current
+    ) {
+
+      try {
+
+        const response =
+          await api(
+            '/api/admin/monitors'
+          );
+
+
+        const monitor =
+          response.data.find(
+            item =>
+              item.id === id
+          );
+
+
+        if (!monitor) {
+          return;
+        }
+
+
+        await api(
+          `/api/admin/monitors/${id}`,
+          {
+            method: 'PUT',
+
+            body:
+              JSON.stringify({
+                name:
+                  monitor.name,
+
+                url:
+                  monitor.url,
+
+                emojis:
+                  monitor.emojis,
+
+                texts:
+                  monitor.texts,
+
+                enabled:
+                  !current
+              })
+          }
+        );
+
+
+        loadMonitors();
+
+      } catch (error) {
+
+        alert(
+          error.message
+        );
+      }
+    }
+
+
+    async function deleteMonitor(
+      id
+    ) {
+
+      if (
+        !confirm(
+          '确定删除这个监控吗？\n历史统计和评论也会删除。'
+        )
+      ) {
+
+        return;
+      }
+
+
+      try {
+
+        await api(
+          `/api/admin/monitors/${id}`,
+          {
+            method: 'DELETE'
+          }
+        );
+
+
+        loadMonitors();
+
+      } catch (error) {
+
+        alert(
+          error.message
+        );
+      }
+    }
+
+
+    loadMonitors();
+
+  </script>
+
+</body>
+
+</html>
