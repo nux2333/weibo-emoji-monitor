@@ -5,17 +5,32 @@ const {
 
 
 /**
- * 从 response 中找到 comments。
+ * ==========================================
+ * 从微博 Response 中取得评论数组
+ * ==========================================
  *
- * 当前微博接口：
+ * 当前接口：
  *
- * data.result
+ * {
+ *   code: 100000,
+ *   data: {
+ *     result: [...]
+ *   }
+ * }
+ *
+ * 同时兼容：
+ *
+ * {
+ *   result: [...]
+ * }
  */
 function extractComments(data) {
 
   if (
     data?.data &&
-    Array.isArray(data.data.result)
+    Array.isArray(
+      data.data.result
+    )
   ) {
 
     return data.data.result;
@@ -23,7 +38,9 @@ function extractComments(data) {
 
 
   if (
-    Array.isArray(data?.result)
+    Array.isArray(
+      data?.result
+    )
   ) {
 
     return data.result;
@@ -35,9 +52,13 @@ function extractComments(data) {
 
 
 /**
- * comment time 转换
+ * ==========================================
+ * comment time 标准化
+ * ==========================================
  */
-function normalizeCommentTime(value) {
+function normalizeCommentTime(
+  value
+) {
 
   if (
     value === null ||
@@ -54,7 +75,9 @@ function normalizeCommentTime(value) {
    */
   if (
     typeof value === 'number' ||
-    /^\d+$/.test(String(value))
+    /^\d+$/.test(
+      String(value)
+    )
   ) {
 
     const number =
@@ -62,19 +85,23 @@ function normalizeCommentTime(value) {
 
 
     /**
-     * 13位毫秒
+     * 13 位毫秒时间戳
      */
     if (
       number >
       100000000000
     ) {
 
-      return String(number);
+      return String(
+        number
+      );
     }
 
 
     /**
-     * 10位秒
+     * 10 位秒时间戳
+     *
+     * 转成毫秒
      */
     if (
       number >
@@ -93,60 +120,147 @@ function normalizeCommentTime(value) {
 
 
 /**
- * 判断 response 是不是成功的微博 response。
+ * ==========================================
+ * 判断是不是成功微博 Response
+ * ==========================================
  *
- * 只处理：
+ * ★唯一成功条件：
  *
  * code === 100000
  */
-function isSuccessfulResponse(data) {
+function isSuccessfulResponse(
+  data
+) {
 
   return (
     data &&
     typeof data === 'object' &&
-    Number(data.code) === 100000
+    Number(
+      data.code
+    ) === 100000
   );
 }
 
 
 /**
- * rebuild comments
- *
- *
- * options:
- *
- * {
- *   monitorId: 1
- * }
- *
- *
- * monitorId 不传：
- * 处理所有 monitor
- *
- * monitorId 传：
- * 只处理指定 monitor
+ * error_message 是否有内容
  */
-function rebuildComments(options = {}) {
+function hasErrorMessage(
+  response
+) {
 
-  initDatabase();
+  return (
+    response?.error_message !== null &&
+    response?.error_message !== undefined &&
+    String(
+      response.error_message
+    ).trim() !== ''
+  );
+}
 
+
+/**
+ * ==========================================
+ * 读取需要处理的 API Responses
+ * ==========================================
+ *
+ * 支持：
+ *
+ * rebuildComments()
+ *
+ * => 全部 Response
+ *
+ *
+ * rebuildComments({
+ *   monitorId: 1
+ * })
+ *
+ * => 指定 Monitor 所有 Response
+ *
+ *
+ * rebuildComments({
+ *   responseId: 123
+ * })
+ *
+ * => 只处理单条 Response
+ */
+function getResponses(
+  options
+) {
+
+  const responseId =
+    options.responseId ??
+    null;
 
   const monitorId =
     options.monitorId ??
     null;
 
 
-  console.log('');
-  console.log('================================');
-  console.log('开始 rebuild comments');
-  console.log('唯一判断条件：comment_id');
-  console.log('存在 => 跳过');
-  console.log('不存在 => INSERT');
-  console.log('不会删除现有 comments');
-  console.log('================================');
+  /**
+   * responseId 优先级最高。
+   */
+  if (
+    responseId !== null
+  ) {
+
+    return db.prepare(`
+      SELECT
+        id,
+        monitor_id,
+        page_num,
+        api_url,
+        http_status,
+        response_json,
+        error_message,
+        created_at
+      FROM api_responses
+      WHERE id = ?
+        AND response_json IS NOT NULL
+        AND TRIM(response_json) <> ''
+      LIMIT 1
+    `).all(
+      Number(
+        responseId
+      )
+    );
+  }
 
 
-  let sql = `
+  /**
+   * 指定 Monitor。
+   */
+  if (
+    monitorId !== null
+  ) {
+
+    return db.prepare(`
+      SELECT
+        id,
+        monitor_id,
+        page_num,
+        api_url,
+        http_status,
+        response_json,
+        error_message,
+        created_at
+      FROM api_responses
+      WHERE monitor_id = ?
+        AND response_json IS NOT NULL
+        AND TRIM(response_json) <> ''
+      ORDER BY id ASC
+    `).all(
+      Number(
+        monitorId
+      )
+    );
+  }
+
+
+  /**
+   * 全部 Response。
+   */
+  return db.prepare(`
     SELECT
       id,
       monitor_id,
@@ -159,49 +273,134 @@ function rebuildComments(options = {}) {
     FROM api_responses
     WHERE response_json IS NOT NULL
       AND TRIM(response_json) <> ''
-  `;
+    ORDER BY id ASC
+  `).all();
+}
 
 
-  const params = [];
+/**
+ * ==========================================
+ * rebuild comments
+ * ==========================================
+ *
+ * ★核心规则：
+ *
+ * comments 是否存在
+ *
+ * 只根据：
+ *
+ * comment_id
+ *
+ * 全局判断。
+ *
+ *
+ * 不根据：
+ *
+ * monitor_id
+ * uid
+ * content
+ * nickname
+ *
+ *
+ * comment_id 已存在：
+ *
+ * SKIP
+ *
+ *
+ * comment_id 不存在：
+ *
+ * INSERT
+ *
+ *
+ * 不 UPDATE
+ * 不 DELETE
+ * 不清空 comments
+ */
+function rebuildComments(
+  options = {}
+) {
+
+  initDatabase();
 
 
-  if (monitorId !== null) {
+  const responseId =
+    options.responseId ??
+    null;
 
-    sql += `
-      AND monitor_id = ?
-    `;
+  const monitorId =
+    options.monitorId ??
+    null;
 
-    params.push(
-      monitorId
+
+  console.log('');
+  console.log(
+    '================================'
+  );
+
+  console.log(
+    '开始 rebuild comments'
+  );
+
+
+  if (
+    responseId !== null
+  ) {
+
+    console.log(
+      `处理单条 response：${responseId}`
+    );
+
+  } else if (
+    monitorId !== null
+  ) {
+
+    console.log(
+      `处理 monitor：${monitorId}`
+    );
+
+  } else {
+
+    console.log(
+      '处理全部 response'
     );
   }
 
 
-  sql += `
-    ORDER BY id ASC
-  `;
+  console.log(
+    '唯一判断条件：comment_id'
+  );
+
+  console.log(
+    '存在 => 跳过'
+  );
+
+  console.log(
+    '不存在 => INSERT'
+  );
+
+  console.log(
+    '不会更新现有 comments'
+  );
+
+  console.log(
+    '不会删除现有 comments'
+  );
+
+  console.log(
+    '================================'
+  );
 
 
   const responses =
-    db.prepare(sql).all(
-      ...params
+    getResponses(
+      options
     );
 
 
   /**
-   * ★★★
-   *
-   * 只按照 comment_id 判断存在。
-   *
-   * 不使用 monitor_id。
-   *
-   * 不使用 uid。
-   *
-   * 不使用 content。
-   *
-   * 不使用 nickname。
-   *
-   * ★★★
+   * ==========================================
+   * ★全局 comment_id 判断
+   * ==========================================
    */
   const existsStatement =
     db.prepare(`
@@ -213,17 +412,19 @@ function rebuildComments(options = {}) {
 
 
   /**
-   * 不用 saveComments。
+   * ==========================================
+   * INSERT
+   * ==========================================
    *
-   * 因为 saveComments 当前数据库逻辑是：
+   * 不调用 db.js 的 saveComments。
+   *
+   * 因为 saveComments 的数据库冲突规则是：
    *
    * UNIQUE(monitor_id, comment_id)
    *
-   * 而我们这里明确按照：
+   * 但这里我们的业务规则明确是：
    *
-   * comment_id
-   *
-   * 判断。
+   * comment_id 全局唯一判断。
    */
   const insertStatement =
     db.prepare(`
@@ -257,28 +458,69 @@ function rebuildComments(options = {}) {
 
 
   /**
-   * SQLite Transaction
-   */
-  db.exec('BEGIN');
+   * ==========================================
+   * Transaction
+   * ==========================================
+   *
+   * Node 原生 DatabaseSync，
+   * 所以直接：
+   *
+   * BEGIN
+   * COMMIT
+   * ROLLBACK
+ */
+  db.exec(
+    'BEGIN'
+  );
 
 
   try {
-
 
     for (
       const response
       of responses
     ) {
 
-
       responseCount++;
+
+
+      /**
+       * ======================================
+       * ★第一层：
+       *
+       * error_message 有值
+       *
+       * 一定跳过。
+       * ======================================
+       */
+      if (
+        hasErrorMessage(
+          response
+        )
+      ) {
+
+        ignoredResponseCount++;
+
+
+        console.log(
+          `[response ${response.id}] ` +
+          `monitor=${response.monitor_id} ` +
+          `page=${response.page_num} ` +
+          'error_message 有值，跳过'
+        );
+
+
+        continue;
+      }
 
 
       let data;
 
 
       /**
+       * ======================================
        * JSON parse
+       * ======================================
        */
       try {
 
@@ -290,12 +532,12 @@ function rebuildComments(options = {}) {
 
       } catch (error) {
 
-
         parseErrorCount++;
 
 
         console.error(
-          `[response ${response.id}] JSON解析失败：${error.message}`
+          `[response ${response.id}] ` +
+          `JSON解析失败：${error.message}`
         );
 
 
@@ -304,11 +546,19 @@ function rebuildComments(options = {}) {
 
 
       /**
-       * ★忽略错误 response
-       *
-       * 例如：
+       * ======================================
+       * ★第二层：
        *
        * code != 100000
+       *
+       * 也跳过。
+       *
+       * 这样兼容历史数据：
+       *
+       * 有些旧 response
+       * error_message 可能还是空，
+       * 但是 code 实际已经失败。
+       * ======================================
        */
       if (
         !isSuccessfulResponse(
@@ -321,9 +571,10 @@ function rebuildComments(options = {}) {
 
         console.log(
           `[response ${response.id}] ` +
+          `monitor=${response.monitor_id} ` +
           `page=${response.page_num} ` +
           `code=${data?.code} ` +
-          `不是成功 response，跳过`
+          '不是成功 response，跳过'
         );
 
 
@@ -334,8 +585,15 @@ function rebuildComments(options = {}) {
       successResponseCount++;
 
 
+      /**
+       * ======================================
+       * 提取评论
+       * ======================================
+       */
       const comments =
-        extractComments(data);
+        extractComments(
+          data
+        );
 
 
       console.log(
@@ -346,21 +604,25 @@ function rebuildComments(options = {}) {
       );
 
 
+      /**
+       * ======================================
+       * 遍历评论
+       * ======================================
+       */
       for (
         const comment
         of comments
       ) {
 
-
         parsedCommentCount++;
 
 
         /**
-         * 微博 API 当前字段：
+         * 当前微博字段：
          *
          * id
          *
-         * 兼容其他可能名字。
+         * 同时兼容其他名字。
          */
         const rawCommentId =
           comment.comment_id ??
@@ -369,12 +631,17 @@ function rebuildComments(options = {}) {
           comment.cid;
 
 
+        /**
+         * 没有 comment_id：
+         *
+         * 无法去重，
+         * 所以直接跳过。
+         */
         if (
           rawCommentId === null ||
           rawCommentId === undefined ||
           rawCommentId === ''
         ) {
-
 
           invalidCommentCount++;
 
@@ -397,11 +664,17 @@ function rebuildComments(options = {}) {
 
         /**
          * ==================================
+         * ★★★
          *
-         * ★ 唯一判断条件
+         * 唯一判断条件：
          *
          * comment_id
          *
+         * 全局查 comments。
+         *
+         * 不带 monitor_id。
+         *
+         * ★★★
          * ==================================
          */
         const exists =
@@ -418,6 +691,9 @@ function rebuildComments(options = {}) {
         }
 
 
+        /**
+         * 评论内容。
+         */
         const content =
           comment.content ??
           comment.text ??
@@ -426,6 +702,9 @@ function rebuildComments(options = {}) {
           '';
 
 
+        /**
+         * 评论时间。
+         */
         const rawCommentTime =
           comment.created_at ??
           comment.create_time ??
@@ -442,13 +721,19 @@ function rebuildComments(options = {}) {
           );
 
 
+        /**
+         * ==================================
+         * INSERT
+         * ==================================
+         */
         try {
-
 
           insertStatement.run(
             response.monitor_id,
             commentId,
-            String(content),
+            String(
+              content
+            ),
             commentTime
           );
 
@@ -458,12 +743,13 @@ function rebuildComments(options = {}) {
 
         } catch (error) {
 
-
           insertErrorCount++;
 
 
           console.error(
-            `[comment_id=${commentId}] 插入失败：${error.message}`
+            `[response ${response.id}] ` +
+            `[comment_id=${commentId}] ` +
+            `插入失败：${error.message}`
           );
         }
       }
@@ -477,7 +763,6 @@ function rebuildComments(options = {}) {
 
   } catch (error) {
 
-
     db.exec(
       'ROLLBACK'
     );
@@ -487,6 +772,11 @@ function rebuildComments(options = {}) {
   }
 
 
+  /**
+   * ==========================================
+   * 当前 comments 总数
+   * ==========================================
+   */
   const total =
     db.prepare(`
       SELECT COUNT(*) AS count
@@ -495,9 +785,18 @@ function rebuildComments(options = {}) {
 
 
   console.log('');
-  console.log('================================');
-  console.log('rebuild comments 完成');
-  console.log('================================');
+  console.log(
+    '================================'
+  );
+
+  console.log(
+    'rebuild comments 完成'
+  );
+
+  console.log(
+    '================================'
+  );
+
 
   console.log(
     `读取 response        : ${responseCount}`
@@ -515,7 +814,11 @@ function rebuildComments(options = {}) {
     `JSON解析失败         : ${parseErrorCount}`
   );
 
-  console.log('--------------------------------');
+
+  console.log(
+    '--------------------------------'
+  );
+
 
   console.log(
     `解析评论             : ${parsedCommentCount}`
@@ -537,13 +840,20 @@ function rebuildComments(options = {}) {
     `INSERT失败           : ${insertErrorCount}`
   );
 
-  console.log('--------------------------------');
+
+  console.log(
+    '--------------------------------'
+  );
+
 
   console.log(
     `comments当前总数     : ${total.count}`
   );
 
-  console.log('================================');
+
+  console.log(
+    '================================'
+  );
 
 
   return {
@@ -556,24 +866,34 @@ function rebuildComments(options = {}) {
     skippedCount,
     invalidCommentCount,
     insertErrorCount,
+
     totalComments:
-      Number(total.count)
+      Number(
+        total.count
+      )
   };
 }
 
 
 /**
- * =====================================
+ * ==========================================
+ * 手动命令
+ * ==========================================
  *
- * 如果直接：
+ * npm run rebuild-comments
+ *
+ * 或：
  *
  * node src/rebuild-comments.js
  *
- * 则处理所有 response
  *
- * =====================================
+ * 不带参数：
+ *
+ * 处理全部历史 response。
  */
-if (require.main === module) {
+if (
+  require.main === module
+) {
 
   try {
 
@@ -597,7 +917,14 @@ if (require.main === module) {
 }
 
 
+/**
+ * ==========================================
+ * exports
+ * ==========================================
+ */
 module.exports = {
   rebuildComments,
-  extractComments
+  extractComments,
+  normalizeCommentTime,
+  isSuccessfulResponse
 };
