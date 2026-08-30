@@ -1,367 +1,385 @@
 <!doctype html>
 <html lang="zh-CN">
+
 <head>
-  <meta charset="UTF-8">
-  <meta
-    name="viewport"
-    content="width=device-width,initial-scale=1"
-  >
-  <title>评论属性统计</title>
-  <link
-    rel="stylesheet"
-    href="/style.css"
-  >
-  <style>
-    .dashboard-wrap {
-      max-width: 1500px;
-      margin: 0 auto;
-      padding: 24px;
-    }
+<meta charset="UTF-8">
 
-    .dashboard-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 20px;
-    }
+<meta name="viewport" content="width=device-width,initial-scale=1">
 
-    .dashboard-header h1 {
-      margin: 0;
-    }
+<title>评论属性统计</title>
 
-    .summary-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 16px;
-      margin-bottom: 20px;
-    }
+<link rel="stylesheet" href="/style.css">
 
-    .summary-card {
-      border: 1px solid #e5e7eb;
-      border-radius: 16px;
-      padding: 22px;
-      background: #fff;
-      min-height: 110px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
+<style>
+.dashboard-wrap {
+	max-width: 1500px;
+	margin: 0 auto;
+	padding: 24px;
+}
 
-    .summary-title {
-      font-size: 15px;
-      color: #666;
-      margin-bottom: 8px;
-    }
+.dashboard-header {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 16px;
+	margin-bottom: 20px;
+}
 
-    .summary-value {
-      font-size: 34px;
-      line-height: 1;
-      font-weight: 700;
-    }
+.dashboard-header h1 {
+	margin: 0;
+}
 
-    .toolbar {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      flex-wrap: wrap;
-      margin-bottom: 16px;
-    }
+.summary-grid {
+	display: grid;
+	grid-template-columns: repeat(3, minmax(0, 1fr));
+	gap: 16px;
+	margin-bottom: 20px;
+}
 
-    .toolbar input,
-    .toolbar select {
-      min-height: 40px;
-      padding: 0 12px;
-      border: 1px solid #d1d5db;
-      border-radius: 8px;
-      background: #fff;
-    }
+.summary-card {
+	border: 1px solid #e5e7eb;
+	border-radius: 16px;
+	padding: 22px;
+	background: #fff;
+	min-height: 110px;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+}
 
-    .toolbar input {
-      min-width: 280px;
-      flex: 1 1 320px;
-    }
+.summary-title {
+	font-size: 15px;
+	color: #666;
+	margin-bottom: 8px;
+}
 
-    .table-wrap {
-      overflow-x: auto;
-      background: #fff;
-      border: 1px solid #e5e7eb;
-      border-radius: 12px;
-    }
+.summary-value {
+	font-size: 34px;
+	line-height: 1;
+	font-weight: 700;
+}
 
-    .comment-table {
-      width: 100%;
-      border-collapse: collapse;
-      table-layout: fixed;
-    }
+.toolbar {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+	margin-bottom: 16px;
+}
 
-    .comment-table th,
-    .comment-table td {
-      border-bottom: 1px solid #eee;
-      padding: 12px 10px;
-      text-align: left;
-      vertical-align: top;
-      word-break: break-word;
-    }
+.toolbar input, .toolbar select {
+	min-height: 40px;
+	padding: 0 12px;
+	border: 1px solid #d1d5db;
+	border-radius: 8px;
+	background: #fff;
+}
 
-    .comment-table th {
-      background: #f8f9fb;
-      white-space: nowrap;
-    }
+.toolbar input {
+	min-width: 280px;
+	flex: 1 1 320px;
+}
 
-    .comment-table th:nth-child(1) {
-      width: 110px;
-    }
+.table-wrap {
+	overflow-x: auto;
+	background: #fff;
+	border: 1px solid #e5e7eb;
+	border-radius: 12px;
+}
 
-    .comment-table th:nth-child(2) {
-      width: 160px;
-    }
+.comment-table {
+	width: 100%;
+	border-collapse: collapse;
+	table-layout: fixed;
+}
 
-    .comment-table th:nth-child(3) {
-      width: 260px;
-    }
+.comment-table th, .comment-table td {
+	border-bottom: 1px solid #eee;
+	padding: 12px 10px;
+	text-align: left;
+	vertical-align: top;
+	word-break: break-word;
+	overflow-wrap: anywhere;
+}
 
-    .comment-table th:nth-child(5) {
-      width: 160px;
-    }
+/* 评论 ID */
+.comment-table th:nth-child(1), .comment-table td:nth-child(1) {
+	width: 90px;
+}
 
-    .attribute-tags {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 6px;
-    }
+/* 用户名 */
+.comment-table th:nth-child(2), .comment-table td:nth-child(2) {
+	width: 100px;
+	white-space: normal;
+	word-break: break-all;
+}
 
-    .attribute-tag {
-      display: inline-block;
-      padding: 4px 9px;
-      border-radius: 999px;
-      font-size: 13px;
-      background: #f2f3f5;
-      white-space: nowrap;
-    }
+/* 商品 */
+.comment-table th:nth-child(3), .comment-table td:nth-child(3) {
+	width: 260px;
+	white-space: normal;
+	word-break: break-all;
+	overflow-wrap: anywhere;
+}
 
-    .comment-content {
-      white-space: pre-wrap;
-      line-height: 1.55;
-    }
+/* 购入时间 */
+.comment-table th:nth-child(4), .comment-table td:nth-child(4) {
+	width: 180px;
+	white-space: nowrap;
+}
 
-    .pagination {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      justify-content: center;
-      flex-wrap: wrap;
-      margin-top: 18px;
-    }
+/* 评论内容 */
+.comment-table th:nth-child(5), .comment-table td:nth-child(5) {
+	width: auto;
+	white-space: normal;
+	word-break: break-word;
+}
 
-    .page-info {
-      color: #666;
-      margin: 0 6px;
-    }
+/* 属性 */
+.comment-table th:nth-child(6), .comment-table td:nth-child(6) {
+	width: 120px;
+}
 
-    .empty,
-    .loading,
-    .error {
-      padding: 30px;
-      text-align: center;
-    }
+.comment-table th, .comment-table td {
+	border-bottom: 1px solid #eee;
+	padding: 12px 10px;
+	text-align: left;
+	vertical-align: top;
+	word-break: break-word;
+}
 
-    @media (max-width: 760px) {
-      .dashboard-wrap {
-        padding: 14px;
-      }
+.comment-table th {
+	background: #f8f9fb;
+	white-space: nowrap;
+}
 
-      .summary-grid {
-        grid-template-columns: 1fr;
-      }
+/* 评论 ID */
+.comment-table th:nth-child(1) {
+	width: 110px;
+}
 
-      .dashboard-header {
-        align-items: flex-start;
-        flex-direction: column;
-      }
-    }
-  </style>
+/* 用户名 */
+.comment-table th:nth-child(2) {
+	width: 100px;
+}
+
+/* 商品 */
+.comment-table th:nth-child(3) {
+	width: 200px;
+}
+
+/* 购入时间 */
+.comment-table th:nth-child(4) {
+	width: 180px;
+}
+
+/* 属性 */
+.comment-table th:nth-child(6) {
+	width: 160px;
+}
+
+.purchase-time {
+	white-space: nowrap;
+	line-height: 1.5;
+}
+
+.attribute-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+}
+
+.attribute-tag {
+	display: inline-block;
+	padding: 4px 9px;
+	border-radius: 999px;
+	font-size: 13px;
+	background: #f2f3f5;
+	white-space: nowrap;
+}
+
+.comment-content {
+	white-space: pre-wrap;
+	line-height: 1.55;
+}
+
+.pagination {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	justify-content: center;
+	flex-wrap: wrap;
+	margin-top: 18px;
+}
+
+.page-info {
+	color: #666;
+	margin: 0 6px;
+}
+
+.empty, .loading, .error {
+	padding: 30px;
+	text-align: center;
+}
+
+@media ( max-width : 760px) {
+	.dashboard-wrap {
+		padding: 14px;
+	}
+	.summary-grid {
+		grid-template-columns: 1fr;
+	}
+	.dashboard-header {
+		align-items: flex-start;
+		flex-direction: column;
+	}
+}
+</style>
+
 </head>
 
 <body>
-  <main class="dashboard-wrap">
 
-    <header class="dashboard-header">
-      <div>
-        <h1>评论属性统计</h1>
-      </div>
+	<main class="dashboard-wrap">
 
-      <div>
-        <a
-          class="button"
-          href="/admin"
-        >后台</a>
+		<header class="dashboard-header">
 
-        <button
-          class="button"
-          type="button"
-          onclick="loadDashboard()"
-        >刷新</button>
-      </div>
-    </header>
+			<div>
+				<h1>评论属性统计</h1>
+			</div>
 
+			<div>
 
-    <section class="summary-grid">
+				<a class="button" href="/admin"> 后台 </a>
 
-      <div class="summary-card">
-        <div class="summary-title">
-          🍋 柠檬水
-        </div>
+				<button class="button" type="button" onclick="loadDashboard()">
+					刷新</button>
 
-        <div
-          id="lemonCount"
-          class="summary-value"
-        >0</div>
-      </div>
+			</div>
+
+		</header>
 
 
-      <div class="summary-card">
-        <div class="summary-title">
-          🌽 甜玉米
-        </div>
+		<section class="summary-grid">
 
-        <div
-          id="cornCount"
-          class="summary-value"
-        >0</div>
-      </div>
+			<div class="summary-card">
 
+				<div class="summary-title">🍋 柠檬水</div>
 
-      <div class="summary-card">
-        <div class="summary-title">
-          无属性
-        </div>
+				<div id="lemonCount" class="summary-value">0</div>
 
-        <div
-          id="noneCount"
-          class="summary-value"
-        >0</div>
-      </div>
-
-    </section>
+			</div>
 
 
-    <section class="toolbar">
+			<div class="summary-card">
 
-      <select
-        id="attribute"
-        onchange="changeFilter()"
-      >
-        <option value="">
-          全部属性
-        </option>
+				<div class="summary-title">🌽 甜玉米</div>
 
-        <option value="lemon">
-          柠檬水
-        </option>
+				<div id="cornCount" class="summary-value">0</div>
 
-        <option value="corn">
-          甜玉米
-        </option>
-
-        <option value="none">
-          无属性
-        </option>
-      </select>
+			</div>
 
 
-      <input
-        id="keyword"
-        type="search"
-        placeholder="搜索 评论ID / 用户名 / 商品 / 评论内容"
-        onkeydown="handleKeywordKeydown(event)"
-      >
+			<div class="summary-card">
+
+				<div class="summary-title">无属性</div>
+
+				<div id="noneCount" class="summary-value">0</div>
+
+			</div>
+
+		</section>
 
 
-      <button
-        class="button"
-        type="button"
-        onclick="searchComments()"
-      >搜索</button>
+		<section class="toolbar">
+
+			<select id="attribute" onchange="changeFilter()">
+
+				<option value="">全部属性</option>
+
+				<option value="lemon">柠檬水</option>
+
+				<option value="corn">甜玉米</option>
+
+				<option value="none">无属性</option>
+
+			</select> <input id="keyword" type="search"
+				placeholder="搜索 评论ID / 用户名 / 商品 / 评论内容"
+				onkeydown="handleKeywordKeydown(event)">
 
 
-      <button
-        class="button"
-        type="button"
-        onclick="clearSearch()"
-      >清空</button>
+			<button class="button" type="button" onclick="searchComments()">
+				搜索</button>
 
 
-      <select
-        id="pageSize"
-        onchange="changePageSize()"
-      >
-        <option value="50">
-          每页 50 条
-        </option>
-
-        <option
-          value="100"
-          selected
-        >
-          每页 100 条
-        </option>
-
-        <option value="200">
-          每页 200 条
-        </option>
-      </select>
+			<button class="button" type="button" onclick="clearSearch()">
+				清空</button>
 
 
-      <span
-        id="listSummary"
-        style="margin-left:auto;"
-      ></span>
+			<select id="pageSize" onchange="changePageSize()">
 
-    </section>
+				<option value="50">每页 50 条</option>
 
+				<option value="100" selected>每页 100 条</option>
 
-    <section>
+				<option value="200">每页 200 条</option>
 
-      <div class="table-wrap">
+			</select> <span id="listSummary" style="margin-left: auto;"></span>
 
-        <table class="comment-table">
-
-          <thead>
-            <tr>
-              <th>评论 ID</th>
-              <th>用户名</th>
-              <th>商品</th>
-              <th>评论内容</th>
-              <th>属性</th>
-            </tr>
-          </thead>
-
-          <tbody id="rows">
-            <tr>
-              <td
-                colspan="5"
-                class="loading"
-              >
-                加载中...
-              </td>
-            </tr>
-          </tbody>
-
-        </table>
-
-      </div>
+		</section>
 
 
-      <div
-        id="pagination"
-        class="pagination"
-      ></div>
+		<section>
 
-    </section>
+			<div class="table-wrap">
 
-  </main>
+				<table class="comment-table">
 
-  <script src="/app.js"></script>
+					<thead>
+
+						<tr>
+
+							<th>评论 ID</th>
+
+							<th>用户名</th>
+
+							<th>商品</th>
+
+							<th>评价时间</th>
+
+							<th>评论内容</th>
+
+							<th>属性</th>
+
+						</tr>
+
+					</thead>
+
+
+					<tbody id="rows">
+
+						<tr>
+
+							<td colspan="6" class="loading">加载中...</td>
+
+						</tr>
+
+					</tbody>
+
+				</table>
+
+			</div>
+
+
+			<div id="pagination" class="pagination"></div>
+
+		</section>
+
+	</main>
+
+
+	<script src="/app.js"></script>
+
 </body>
+
 </html>

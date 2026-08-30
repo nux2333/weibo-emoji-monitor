@@ -20,7 +20,7 @@ const DEFAULT_PAGE_SIZE = 100;
 const PAGE_DELAY = 500;
 
 // 失败后 1 分钟重试当前页
-const ERROR_RETRY_DELAY = 1 * 60 * 1000;
+const ERROR_RETRY_DELAY = 3 * 60 * 1000;
 
 // 单次 API 请求超时 60 秒
 const API_TIMEOUT = 60 * 1000;

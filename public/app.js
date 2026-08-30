@@ -10,6 +10,9 @@ let totalPages = 1;
 let loading = false;
 
 
+/**
+ * HTML 转义
+ */
 function esc(value) {
 
   return String(
@@ -38,6 +41,9 @@ function esc(value) {
 }
 
 
+/**
+ * 数字格式化
+ */
 function numberText(value) {
 
   return Number(
@@ -48,6 +54,181 @@ function numberText(value) {
 }
 
 
+/**
+ * ==========================================
+ * 购入时间格式化
+ * ==========================================
+ *
+ * comments.comment_time 目前可能是：
+ *
+ * 13 位毫秒时间戳
+ * 10 位秒时间戳
+ * Date 可以识别的字符串
+ *
+ * 页面统一显示：
+ *
+ * YYYY-MM-DD HH:mm:ss
+ *
+ * 时区强制：
+ *
+ * Asia/Shanghai
+ *
+ * 即北京时间 UTC+8。
+ */
+function formatPurchaseTime(value) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return '-';
+  }
+
+  let text =
+    String(value).trim();
+
+  /*
+   * 处理数据库返回：
+   *
+   * 1788063305711.0
+   *
+   * 这种情况。
+   */
+  if (
+    /^\d+\.0+$/.test(text)
+  ) {
+    text = text.replace(
+      /\.0+$/,
+      ''
+    );
+  }
+
+  let date = null;
+
+
+  /*
+   * 13位毫秒时间戳
+   */
+  if (
+    /^\d{13}$/.test(text)
+  ) {
+
+    date =
+      new Date(
+        Number(text)
+      );
+
+  }
+
+  /*
+   * 10位秒时间戳
+   */
+  else if (
+    /^\d{10}$/.test(text)
+  ) {
+
+    date =
+      new Date(
+        Number(text) * 1000
+      );
+
+  }
+
+  /*
+   * 普通日期字符串
+   */
+  else {
+
+    const parsed =
+      new Date(text);
+
+    if (
+      !Number.isNaN(
+        parsed.getTime()
+      )
+    ) {
+      date = parsed;
+    }
+  }
+
+
+  if (
+    !date ||
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+
+    return text;
+  }
+
+
+  const formatter =
+    new Intl.DateTimeFormat(
+      'zh-CN',
+      {
+        timeZone:
+          'Asia/Shanghai',
+
+        year:
+          'numeric',
+
+        month:
+          '2-digit',
+
+        day:
+          '2-digit',
+
+        hour:
+          '2-digit',
+
+        minute:
+          '2-digit',
+
+        second:
+          '2-digit',
+
+        hourCycle:
+          'h23'
+      }
+    );
+
+
+  const parts =
+    formatter.formatToParts(
+      date
+    );
+
+
+  const values = {};
+
+  for (
+    const part of parts
+  ) {
+
+    if (
+      part.type !== 'literal'
+    ) {
+
+      values[
+        part.type
+      ] =
+        part.value;
+    }
+  }
+
+
+  return (
+    `${values.year}-${values.month}-${values.day}` +
+    ` ` +
+    `${values.hour}:${values.minute}:${values.second}`
+  );
+}
+
+/**
+ * API 调用
+ */
 async function api(
   url
 ) {
@@ -55,13 +236,15 @@ async function api(
   const response =
     await fetch(url);
 
+
   const json =
     await response
       .json()
       .catch(
         () => ({
           success: false,
-          message: '服务器返回的不是 JSON'
+          message:
+            '服务器返回的不是 JSON'
         })
       );
 
@@ -82,27 +265,40 @@ async function api(
 }
 
 
+/**
+ * 顶部统计
+ */
 function renderStats(
   stats
 ) {
 
-  $('lemonCount').textContent =
-    numberText(
-      stats?.lemon
-    );
+  $('lemonCount')
+    .textContent =
+      numberText(
+        stats?.lemon
+      );
 
-  $('cornCount').textContent =
-    numberText(
-      stats?.corn
-    );
 
-  $('noneCount').textContent =
-    numberText(
-      stats?.none
-    );
+  $('cornCount')
+    .textContent =
+      numberText(
+        stats?.corn
+      );
+
+
+  $('noneCount')
+    .textContent =
+      numberText(
+        stats?.none
+      );
 }
 
 
+/**
+ * ==========================================
+ * 评论列表
+ * ==========================================
+ */
 function renderRows(
   rows
 ) {
@@ -117,7 +313,7 @@ function renderRows(
     $('rows').innerHTML = `
       <tr>
         <td
-          colspan="5"
+          colspan="6"
           class="empty"
         >
           暂无数据
@@ -130,18 +326,22 @@ function renderRows(
 
 
   $('rows').innerHTML =
+
     rows.map(
       row => {
 
         const tags =
           (
-            row.attributes || [
+            row.attributes ||
+            [
               '无属性'
             ]
           )
             .map(
               attribute => `
-                <span class="attribute-tag">
+                <span
+                  class="attribute-tag"
+                >
                   ${esc(attribute)}
                 </span>
               `
@@ -149,11 +349,21 @@ function renderRows(
             .join('');
 
 
+        const purchaseTime =
+          formatPurchaseTime(
+            row.comment_time
+          );
+
+
         return `
           <tr>
+
             <td>
-              ${esc(row.comment_id)}
+              ${esc(
+                row.comment_id
+              )}
             </td>
+
 
             <td>
               ${esc(
@@ -162,6 +372,7 @@ function renderRows(
               )}
             </td>
 
+
             <td>
               ${esc(
                 row.sku_name ||
@@ -169,15 +380,35 @@ function renderRows(
               )}
             </td>
 
-            <td class="comment-content">
-              ${esc(row.content)}
+
+            <td
+              class="purchase-time"
+            >
+              ${esc(
+                purchaseTime
+              )}
             </td>
 
+
+            <td
+              class="comment-content"
+            >
+              ${esc(
+                row.content
+              )}
+            </td>
+
+
             <td>
-              <div class="attribute-tags">
+
+              <div
+                class="attribute-tags"
+              >
                 ${tags}
               </div>
+
             </td>
+
           </tr>
         `;
       }
@@ -186,6 +417,11 @@ function renderRows(
 }
 
 
+/**
+ * ==========================================
+ * 分页号码
+ * ==========================================
+ */
 function buildPageNumbers(
   page,
   pages
@@ -199,19 +435,26 @@ function buildPageNumbers(
       {
         length: pages
       },
-      (_, index) =>
+      (
+        _,
+        index
+      ) =>
         index + 1
     );
   }
 
 
-  const result = [1];
+  const result = [
+    1
+  ];
+
 
   let start =
     Math.max(
       2,
       page - 2
     );
+
 
   let end =
     Math.min(
@@ -245,6 +488,7 @@ function buildPageNumbers(
   if (
     start > 2
   ) {
+
     result.push(
       '...'
     );
@@ -256,6 +500,7 @@ function buildPageNumbers(
     i <= end;
     i++
   ) {
+
     result.push(i);
   }
 
@@ -264,6 +509,7 @@ function buildPageNumbers(
     end <
     pages - 1
   ) {
+
     result.push(
       '...'
     );
@@ -274,25 +520,36 @@ function buildPageNumbers(
     pages
   );
 
+
   return result;
 }
 
 
+/**
+ * ==========================================
+ * 分页显示
+ * ==========================================
+ */
 function renderPagination(
   pagination
 ) {
 
   currentPage =
-    pagination?.page || 1;
+    pagination?.page ||
+    1;
+
 
   totalPages =
-    pagination?.totalPages || 1;
+    pagination?.totalPages ||
+    1;
 
 
-  $('listSummary').textContent =
-    `共 ${numberText(
-      pagination?.total
-    )} 条`;
+  $('listSummary')
+    .textContent =
+
+      `共 ${numberText(
+        pagination?.total
+      )} 条`;
 
 
   const numbers =
@@ -303,6 +560,7 @@ function renderPagination(
 
 
   const pageButtons =
+
     numbers.map(
       item => {
 
@@ -311,7 +569,9 @@ function renderPagination(
         ) {
 
           return `
-            <span class="page-info">
+            <span
+              class="page-info"
+            >
               ...
             </span>
           `;
@@ -320,7 +580,12 @@ function renderPagination(
 
         return `
           <button
-            class="button ${item === currentPage ? 'primary' : ''}"
+            class="button ${
+              item ===
+              currentPage
+                ? 'primary'
+                : ''
+            }"
             type="button"
             onclick="goPage(${item})"
           >
@@ -333,33 +598,59 @@ function renderPagination(
 
 
   $('pagination').innerHTML = `
+
     <button
       class="button"
       type="button"
-      ${currentPage <= 1 ? 'disabled' : ''}
-      onclick="goPage(${currentPage - 1})"
+      ${
+        currentPage <= 1
+          ? 'disabled'
+          : ''
+      }
+      onclick="goPage(${
+        currentPage - 1
+      })"
     >
       上一页
     </button>
 
+
     ${pageButtons}
+
 
     <button
       class="button"
       type="button"
-      ${currentPage >= totalPages ? 'disabled' : ''}
-      onclick="goPage(${currentPage + 1})"
+      ${
+        currentPage >=
+        totalPages
+          ? 'disabled'
+          : ''
+      }
+      onclick="goPage(${
+        currentPage + 1
+      })"
     >
       下一页
     </button>
 
-    <span class="page-info">
-      第 ${currentPage} / ${totalPages} 页
+
+    <span
+      class="page-info"
+    >
+      第 ${currentPage}
+      /
+      ${totalPages} 页
     </span>
   `;
 }
 
 
+/**
+ * ==========================================
+ * 加载首页数据
+ * ==========================================
+ */
 async function loadDashboard() {
 
   if (loading) {
@@ -375,7 +666,7 @@ async function loadDashboard() {
     $('rows').innerHTML = `
       <tr>
         <td
-          colspan="5"
+          colspan="6"
           class="loading"
         >
           加载中...
@@ -387,10 +678,12 @@ async function loadDashboard() {
     const params =
       new URLSearchParams();
 
+
     params.set(
       'page',
       currentPage
     );
+
 
     params.set(
       'pageSize',
@@ -400,6 +693,7 @@ async function loadDashboard() {
 
     const attribute =
       $('attribute').value;
+
 
     if (attribute) {
 
@@ -414,6 +708,7 @@ async function loadDashboard() {
       $('keyword')
         .value
         .trim();
+
 
     if (keyword) {
 
@@ -434,9 +729,11 @@ async function loadDashboard() {
       json.stats
     );
 
+
     renderRows(
       json.data
     );
+
 
     renderPagination(
       json.pagination
@@ -448,10 +745,12 @@ async function loadDashboard() {
     $('rows').innerHTML = `
       <tr>
         <td
-          colspan="5"
+          colspan="6"
           class="error"
         >
-          ${esc(error.message)}
+          ${esc(
+            error.message
+          )}
         </td>
       </tr>
     `;
@@ -464,6 +763,9 @@ async function loadDashboard() {
 }
 
 
+/**
+ * 跳页
+ */
 function goPage(
   page
 ) {
@@ -482,12 +784,14 @@ function goPage(
     target ===
     currentPage
   ) {
+
     return;
   }
 
 
   currentPage =
     target;
+
 
   loadDashboard();
 
@@ -499,6 +803,9 @@ function goPage(
 }
 
 
+/**
+ * 属性筛选
+ */
 function changeFilter() {
 
   currentPage = 1;
@@ -507,6 +814,9 @@ function changeFilter() {
 }
 
 
+/**
+ * 每页条数
+ */
 function changePageSize() {
 
   currentPage = 1;
@@ -515,6 +825,9 @@ function changePageSize() {
 }
 
 
+/**
+ * 搜索
+ */
 function searchComments() {
 
   currentPage = 1;
@@ -523,6 +836,9 @@ function searchComments() {
 }
 
 
+/**
+ * 清空搜索
+ */
 function clearSearch() {
 
   $('keyword').value = '';
@@ -535,6 +851,9 @@ function clearSearch() {
 }
 
 
+/**
+ * Enter 搜索
+ */
 function handleKeywordKeydown(
   event
 ) {
@@ -548,4 +867,7 @@ function handleKeywordKeydown(
 }
 
 
+/**
+ * 页面启动
+ */
 loadDashboard();

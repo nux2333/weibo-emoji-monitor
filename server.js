@@ -448,15 +448,19 @@ app.get(
         (
           c.content LIKE '%🍋%' OR
           c.content LIKE '%💛%' OR
-          c.content LIKE '%老公%' OR
-		  c.content LIKE '%柠檬水%'
+		  c.content LIKE '%水水%' OR
+		  c.content LIKE '%田柠%' OR
+		  c.content LIKE '%柠檬%'
         )
       `;
 
       const cornCondition = `
         (
           c.content LIKE '%🌽%' OR
+		  c.content LIKE '%🌙%'  OR
+		  c.content LIKE '%cpf%'  OR
           c.content LIKE '%甜玉米%'  OR
+		  c.content LIKE '%米米%'  OR
 		  c.content LIKE '%雷朋%'
         )
       `;
