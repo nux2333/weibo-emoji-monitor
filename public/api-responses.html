@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>API Response 管理</title><link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="container wide">
+<header class="page-header"><div><h1>API Response 管理</h1><p>查看每一次分页请求，并手动把 Response 生成到 comments 表</p></div><div><a class="button" href="/admin">返回后台</a><button class="button" onclick="load()">刷新</button></div></header>
+<section class="card"><div class="row"><input id="token" type="password" placeholder="ADMIN_TOKEN"><button class="button" onclick="saveToken()">保存 Token</button><select id="monitor" onchange="load()"><option value="">全部 Monitor</option></select></div></section>
+<section class="card"><div id="message"></div><div class="table-wrap"><table><thead><tr><th>ID</th><th>name</th><th>页码</th><th>HTTP</th><th>抓取时间</th><th>评论数</th><th>生成状态</th><th>错误</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div></section>
+<section class="card"><h2>Response JSON</h2><pre id="json">点击每行“查看”</pre></section>
+</main>
+<script src="/api-responses.js"></script>
+</body></html>

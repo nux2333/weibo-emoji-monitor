@@ -1,978 +1,135 @@
 const express = require('express');
 const path = require('path');
-
 const {
-  initDatabase,
-  getMonitors,
-  getMonitor,
-  createMonitor,
-  updateMonitor,
-  deleteMonitor,
-  getMonitorResult,
-  getDailyStats,
-  getComments
+  initDatabase,getMonitors,getMonitor,createMonitor,updateMonitor,deleteMonitor,
+  getMonitorResult,getDailyStats,getComments,getAllApiResponses,getApiResponses,
+  getApiResponseById,getCommentIds,saveComments
 } = require('./src/db');
-
-const {
-  syncMonitorsFromConfig
-} = require('./src/config');
-
-const {
-  runMonitor,
-  runAllMonitors,
-  startScheduler
-} = require('./src/monitor');
-
+const { syncMonitorsFromConfig } = require('./src/config');
+const { runMonitor,runAllMonitors,startScheduler,normalizeComments } = require('./src/monitor');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me';
+app.use(express.json({limit:'2mb'}));
+app.use(express.static(path.join(__dirname,'public')));
 
-const PORT =
-  process.env.PORT || 3000;
-
-const ADMIN_TOKEN =
-  process.env.ADMIN_TOKEN || 'change-me';
-
-
-app.use(
-  express.json({
-    limit: '1mb'
-  })
-);
-
-
-app.use(
-  express.static(
-    path.join(
-      __dirname,
-      'public'
-    )
-  )
-);
-
-
-/**
- * =========================
- * 后台 Token 验证
- * =========================
- */
-
-function checkAdmin(
-  req,
-  res,
-  next
-) {
-
-  const token =
-    req.headers['x-admin-token'] ||
-    req.query.token;
-
-  if (
-    token !== ADMIN_TOKEN
-  ) {
-
-    return res.status(401).json({
-      success: false,
-      message: '未授权'
-    });
-
-  }
-
+function checkAdmin(req,res,next) {
+  const token = req.headers['x-admin-token'] || req.query.token;
+  if (token !== ADMIN_TOKEN) return res.status(401).json({success:false,message:'未授权'});
   next();
 }
-
-
-/**
- * =========================
- * 页面
- * =========================
- */
-
-app.get(
-  '/',
-  (req, res) => {
-
-    res.sendFile(
-      path.join(
-        __dirname,
-        'public',
-        'index.html'
-      )
-    );
-
-  }
-);
-
-
-app.get(
-  '/admin',
-  (req, res) => {
-
-    res.sendFile(
-      path.join(
-        __dirname,
-        'public',
-        'admin.html'
-      )
-    );
-
-  }
-);
-
-
-/**
- * =========================
- * 前台 API
- * =========================
- */
-
-
-/**
- * 获取所有启用的监控
- */
-
-app.get(
-  '/api/monitors',
-  (req, res) => {
-
-    try {
-
-      const monitors =
-        getMonitors(true);
-
-      res.json({
-
-        success: true,
-
-        data:
-          monitors.map(
-            item => ({
-
-              id:
-                item.id,
-
-              name:
-                item.name,
-
-              emojis:
-                JSON.parse(
-                  item.emojis || '[]'
-                ),
-
-              texts:
-                JSON.parse(
-                  item.texts || '[]'
-                ),
-
-              enabled:
-                !!item.enabled,
-
-              last_run_at:
-                item.last_run_at,
-
-              last_status:
-                item.last_status
-
-            })
-          )
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * 获取最新统计
- */
-
-app.get(
-  '/api/monitors/:id/result',
-  (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-      const result =
-        getMonitorResult(id);
-
-      if (!result) {
-
-        return res.json({
-
-          success: true,
-
-          data: null
-
-        });
-
-      }
-
-
-      result.emoji_stats =
-        JSON.parse(
-          result.emoji_stats || '{}'
-        );
-
-      result.text_stats =
-        JSON.parse(
-          result.text_stats || '{}'
-        );
-
-
-      res.json({
-
-        success: true,
-
-        data: result
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * 获取历史统计
- */
-
-app.get(
-  '/api/monitors/:id/history',
-  (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-      const limit =
-        Math.min(
-          Number(
-            req.query.limit
-          ) || 30,
-          365
-        );
-
-
-      const data =
-        getDailyStats(
-          id,
-          limit
-        );
-
-
-      res.json({
-
-        success: true,
-
-        data:
-          data.map(
-            item => ({
-
-              ...item,
-
-              emoji_stats:
-                JSON.parse(
-                  item.emoji_stats || '{}'
-                ),
-
-              text_stats:
-                JSON.parse(
-                  item.text_stats || '{}'
-                )
-
-            })
-          )
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * 获取评论
- */
-
-app.get(
-  '/api/monitors/:id/comments',
-  (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-      const limit =
-        Math.min(
-          Number(
-            req.query.limit
-          ) || 100,
-          1000
-        );
-
-
-      const comments =
-        getComments(
-          id,
-          limit
-        );
-
-
-      res.json({
-
-        success: true,
-
-        data: comments
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 后台 API
- * =========================
- */
-
-
-/**
- * 获取所有监控
- */
-
-app.get(
-  '/api/admin/monitors',
-  checkAdmin,
-  (req, res) => {
-
-    try {
-
-      const monitors =
-        getMonitors(false);
-
-
-      res.json({
-
-        success: true,
-
-        data:
-          monitors.map(
-            item => ({
-
-              ...item,
-
-              emojis:
-                JSON.parse(
-                  item.emojis || '[]'
-                ),
-
-              texts:
-                JSON.parse(
-                  item.texts || '[]'
-                ),
-
-              enabled:
-                !!item.enabled
-
-            })
-          )
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 手动添加监控
- * =========================
- *
- * 这个接口仍然保留。
- *
- * 但是你以后正常使用时，
- * 推荐直接修改 monitors.json。
- */
-
-app.post(
-  '/api/admin/monitors',
-  checkAdmin,
-  async (req, res) => {
-
-    try {
-
-      const {
-        name,
-        url,
-        emojis = [],
-        texts = [],
-        enabled = true
-      } = req.body;
-
-
-      if (
-        !name ||
-        !url
-      ) {
-
-        return res.status(400).json({
-
-          success: false,
-
-          message:
-            '名称和 URL 不能为空'
-
-        });
-
-      }
-
-
-      const id =
-        createMonitor({
-
-          name,
-          url,
-          emojis,
-          texts,
-          enabled
-
-        });
-
-
-      /**
-       * 添加以后立即抓取
-       */
-
-      setImmediate(
-        async () => {
-
-          try {
-
-            await runMonitor(id);
-
-          } catch (error) {
-
-            console.error(
-
-              `Monitor ${id} first run failed:`,
-
-              error
-
-            );
-
-          }
-
-        }
-      );
-
-
-      res.json({
-
-        success: true,
-
-        id
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 修改监控
- * =========================
- */
-
-app.put(
-  '/api/admin/monitors/:id',
-  checkAdmin,
-  async (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-
-      const monitor =
-        getMonitor(id);
-
-
-      if (!monitor) {
-
-        return res.status(404).json({
-
-          success: false,
-
-          message:
-            '监控项目不存在'
-
-        });
-
-      }
-
-
-      const {
-        name,
-        url,
-        emojis = [],
-        texts = [],
-        enabled = true
-      } = req.body;
-
-
-      updateMonitor(
-        id,
-        {
-
-          name,
-          url,
-          emojis,
-          texts,
-          enabled
-
-        }
-      );
-
-
-      /**
-       * 修改以后立即重新抓取
-       */
-
-      setImmediate(
-        async () => {
-
-          try {
-
-            await runMonitor(id);
-
-          } catch (error) {
-
-            console.error(
-
-              `Monitor ${id} update run failed:`,
-
-              error
-
-            );
-
-          }
-
-        }
-      );
-
-
-      res.json({
-
-        success: true
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 删除监控
- * =========================
- */
-
-app.delete(
-  '/api/admin/monitors/:id',
-  checkAdmin,
-  (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-
-      deleteMonitor(id);
-
-
-      res.json({
-
-        success: true
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 手动立即抓取
- * =========================
- */
-
-app.post(
-  '/api/admin/monitors/:id/run',
-  checkAdmin,
-  async (req, res) => {
-
-    try {
-
-      const id =
-        Number(
-          req.params.id
-        );
-
-
-      const monitor =
-        getMonitor(id);
-
-
-      if (!monitor) {
-
-        return res.status(404).json({
-
-          success: false,
-
-          message:
-            '监控项目不存在'
-
-        });
-
-      }
-
-
-      /**
-       * 不阻塞 HTTP
-       */
-
-      setImmediate(
-        async () => {
-
-          try {
-
-            await runMonitor(id);
-
-          } catch (error) {
-
-            console.error(
-
-              `Manual monitor ${id} failed:`,
-
-              error
-
-            );
-
-          }
-
-        }
-      );
-
-
-      res.json({
-
-        success: true,
-
-        message:
-          '已开始抓取'
-
-      });
-
-    } catch (error) {
-
-      console.error(error);
-
-      res.status(500).json({
-
-        success: false,
-
-        message:
-          error.message
-
-      });
-
-    }
-
-  }
-);
-
-
-/**
- * =========================
- * 启动
- * =========================
- */
-
-async function start() {
-
+function safeJson(v,fallback) { try { return JSON.parse(v || ''); } catch { return fallback; } }
+
+app.get('/',(req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
+app.get('/admin',(req,res)=>res.sendFile(path.join(__dirname,'public','admin.html')));
+app.get('/api-responses',(req,res)=>res.sendFile(path.join(__dirname,'public','api-responses.html')));
+
+app.get('/api/monitors',(req,res)=>{
+  try { res.json({success:true,data:getMonitors(true).map(m=>({id:m.id,name:m.name,emojis:safeJson(m.emojis,[]),texts:safeJson(m.texts,[]),enabled:!!m.enabled,last_run_at:m.last_run_at,last_status:m.last_status}))}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.get('/api/monitors/:id/result',(req,res)=>{
+  try { const r=getMonitorResult(Number(req.params.id)); if(r){r.emoji_stats=safeJson(r.emoji_stats,{});r.text_stats=safeJson(r.text_stats,{});} res.json({success:true,data:r||null}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.get('/api/monitors/:id/history',(req,res)=>{
+  try { const limit=Math.min(Number(req.query.limit)||30,365); res.json({success:true,data:getDailyStats(Number(req.params.id),limit).map(x=>({...x,emoji_stats:safeJson(x.emoji_stats,{}),text_stats:safeJson(x.text_stats,{})}))}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.get('/api/monitors/:id/comments',(req,res)=>{
+  try { res.json({success:true,data:getComments(Number(req.params.id),Math.min(Number(req.query.limit)||100,1000))}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+
+app.get('/api/admin/monitors',checkAdmin,(req,res)=>{
+  try { res.json({success:true,data:getMonitors(false).map(m=>({...m,emojis:safeJson(m.emojis,[]),texts:safeJson(m.texts,[]),enabled:!!m.enabled}))}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.post('/api/admin/monitors',checkAdmin,(req,res)=>{
   try {
+    const {name,url,emojis=[],texts=[],enabled=true}=req.body;
+    if(!name||!url) return res.status(400).json({success:false,message:'名称和 URL 不能为空'});
+    const id=createMonitor({name,url,emojis,texts,enabled});
+    setImmediate(()=>runMonitor(id).catch(e=>console.error(e)));
+    res.json({success:true,id});
+  } catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.put('/api/admin/monitors/:id',checkAdmin,(req,res)=>{
+  try {
+    const id=Number(req.params.id); const m=getMonitor(id); if(!m) return res.status(404).json({success:false,message:'监控项目不存在'});
+    const {name,url,emojis=[],texts=[],enabled=true}=req.body;
+    updateMonitor(id,{name,url,emojis,texts,enabled});
+    setImmediate(()=>runMonitor(id).catch(e=>console.error(e)));
+    res.json({success:true});
+  } catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.delete('/api/admin/monitors/:id',checkAdmin,(req,res)=>{
+  try { deleteMonitor(Number(req.params.id)); res.json({success:true}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
+app.post('/api/admin/monitors/:id/run',checkAdmin,(req,res)=>{
+  const id=Number(req.params.id); if(!getMonitor(id)) return res.status(404).json({success:false,message:'监控项目不存在'});
+  setImmediate(()=>runMonitor(id).catch(e=>console.error(e)));
+  res.json({success:true,message:'已开始抓取'});
+});
 
-    /**
-     * 1.
-     * 初始化数据库
-     */
-
-    initDatabase();
-
-
-    /**
-     * 2.
-     * 读取 monitors.json
-     *
-     * 如果 JSON 中有新的 Monitor，
-     * 自动写入数据库。
-     *
-     * 如果已经存在，
-     * 自动更新配置。
-     */
-
-    console.log('');
-    console.log(
-      '开始同步 monitors.json...'
-    );
-
-
-    try {
-
-      syncMonitorsFromConfig();
-
-      console.log(
-        'monitors.json 同步完成'
-      );
-
-    } catch (error) {
-
-      console.error(
-        'monitors.json 同步失败：',
-        error
-      );
-
-      /**
-       * 配置文件错误时直接停止启动，
-       * 避免后台运行错误配置。
-       */
-
-      process.exit(1);
-
-    }
-
-
-    /**
-     * 3.
-     * 启动 HTTP Server
-     */
-
-    app.listen(
-      PORT,
-      async () => {
-
-        console.log('');
-
-        console.log(
-          '===================================='
-        );
-
-        console.log(
-          'Weibo Emoji Monitor'
-        );
-
-        console.log(
-          `http://localhost:${PORT}`
-        );
-
-        console.log(
-          `http://localhost:${PORT}/admin`
-        );
-
-        console.log(
-          '===================================='
-        );
-
-        console.log('');
-
-
-        /**
-         * 4.
-         * 启动后立即抓取
-         */
-
-        console.log(
-          '开始执行启动时抓取...'
-        );
-
-
-        try {
-
-          await runAllMonitors();
-
-        } catch (error) {
-
-          console.error(
-            '启动时抓取失败:',
-            error
-          );
-
-        }
-
-
-        /**
-         * 5.
-         * 启动每日 06:00 自动任务
-         */
-
-        startScheduler();
-
-
-        console.log(
-          '每日自动抓取任务已启动'
-        );
-
+// Response 管理页面数据：包含 Monitor 名称、是否成功、是否已经生成 comments。
+app.get('/api/admin/api-responses',checkAdmin,(req,res)=>{
+  try {
+    const monitorId=req.query.monitorId ? Number(req.query.monitorId) : null;
+    const rows=monitorId ? getApiResponses(monitorId,500) : getAllApiResponses(500);
+    const cache=new Map();
+    const data=rows.map(row=>{
+      let comments=[]; let generatedCount=0; let status='失败';
+      if(row.response_json){
+        try { comments=normalizeComments(JSON.parse(row.response_json)); } catch {}
       }
-    );
+      if(row.error_message){ status='请求失败'; }
+      else if(!comments.length){ status='无评论数据'; }
+      else {
+        if(!cache.has(row.monitor_id)) cache.set(row.monitor_id,getCommentIds(row.monitor_id));
+        const ids=cache.get(row.monitor_id);
+        generatedCount=comments.filter(c=>ids.has(String(c.commentId))).length;
+        status=generatedCount===comments.length?'已全部生成':generatedCount>0?'部分已生成':'未生成';
+      }
+      return {...row,comment_count:comments.length,generated_count:generatedCount,generation_status:status};
+    });
+    res.json({success:true,data});
+  } catch(e){res.status(500).json({success:false,message:e.message});}
+});
 
-  } catch (error) {
+app.get('/api/admin/api-responses/:id',checkAdmin,(req,res)=>{
+  try { const row=getApiResponseById(Number(req.params.id)); if(!row)return res.status(404).json({success:false,message:'Response 不存在'}); res.json({success:true,data:row}); }
+  catch(e){res.status(500).json({success:false,message:e.message});}
+});
 
-    console.error(
-      'Server startup failed:',
-      error
-    );
+// 手动把某条 response JSON 解析并写入 comments。已有 comment_id 不会重复插入，只会更新 last_seen_at。
+app.post('/api/admin/api-responses/:id/generate',checkAdmin,(req,res)=>{
+  try {
+    const row=getApiResponseById(Number(req.params.id));
+    if(!row) return res.status(404).json({success:false,message:'Response 不存在'});
+    if(!row.response_json) return res.status(400).json({success:false,message:'这条 Response 没有 JSON 数据'});
+    let raw; try { raw=JSON.parse(row.response_json); } catch { return res.status(400).json({success:false,message:'response_json 不是有效 JSON'}); }
+    const comments=normalizeComments(raw);
+    if(!comments.length) return res.status(400).json({success:false,message:'没有从 Response 中识别到评论'});
+    saveComments(row.monitor_id,comments);
+    res.json({success:true,message:`已生成 ${comments.length} 条评论`,count:comments.length});
+  } catch(e){res.status(500).json({success:false,message:e.message});}
+});
 
-    process.exit(1);
-
-  }
-
+async function start(){
+  initDatabase();
+  syncMonitorsFromConfig();
+  app.listen(PORT,async()=>{
+    console.log('====================================');
+    console.log('Weibo Emoji Monitor');
+    console.log(`http://localhost:${PORT}`);
+    console.log(`http://localhost:${PORT}/admin`);
+    console.log(`http://localhost:${PORT}/api-responses`);
+    console.log('====================================');
+    try { await runAllMonitors(); } catch(e){ console.error('启动时抓取失败:',e); }
+    startScheduler();
+  });
 }
-
-
-start();
+start().catch(e=>{console.error('Server startup failed:',e);process.exit(1);});
