@@ -393,6 +393,353 @@ app.get(
 );
 
 
+
+/**
+ * ==========================================
+ * 首页评论看板 API
+ * ==========================================
+ *
+ * 数据列表、统计都直接读取 comments 表。
+ *
+ * 属性规则：
+ * 1. 柠檬水：content 包含 🍋 / 💛 / 柠檬水 任意一个
+ * 2. 甜玉米：content 包含 🌽 / 甜玉米 任意一个
+ * 3. 两种都没命中：无属性
+ *
+ * 同一条评论允许同时属于“柠檬水”和“甜玉米”。
+ */
+app.get(
+  '/api/comments-dashboard',
+  (req, res) => {
+
+    try {
+
+      const requestedPage =
+        Math.max(
+          1,
+          Number(
+            req.query.page
+          ) || 1
+        );
+
+      const pageSize =
+        Math.min(
+          200,
+          Math.max(
+            20,
+            Number(
+              req.query.pageSize
+            ) || 100
+          )
+        );
+
+      const attribute =
+        String(
+          req.query.attribute || ''
+        ).trim();
+
+      const keyword =
+        String(
+          req.query.keyword || ''
+        ).trim();
+
+
+      const lemonCondition = `
+        (
+          c.content LIKE '%🍋%' OR
+          c.content LIKE '%💛%' OR
+          c.content LIKE '%老公%' OR
+		  c.content LIKE '%柠檬水%'
+        )
+      `;
+
+      const cornCondition = `
+        (
+          c.content LIKE '%🌽%' OR
+          c.content LIKE '%甜玉米%'  OR
+		  c.content LIKE '%雷朋%'
+        )
+      `;
+
+
+      /**
+       * 顶部统计：
+       * 永远统计 comments 表全部数据，
+       * 不受当前列表筛选影响。
+       */
+      const stats =
+        db.prepare(`
+          SELECT
+            SUM(
+              CASE
+                WHEN ${lemonCondition}
+                THEN 1
+                ELSE 0
+              END
+            ) AS lemon_count,
+
+            SUM(
+              CASE
+                WHEN ${cornCondition}
+                THEN 1
+                ELSE 0
+              END
+            ) AS corn_count,
+
+            SUM(
+              CASE
+                WHEN NOT ${lemonCondition}
+                 AND NOT ${cornCondition}
+                THEN 1
+                ELSE 0
+              END
+            ) AS none_count
+
+          FROM comments c
+        `).get();
+
+
+      const where = [];
+      const params = [];
+
+
+      if (
+        attribute === 'lemon'
+      ) {
+
+        where.push(
+          lemonCondition
+        );
+
+      } else if (
+        attribute === 'corn'
+      ) {
+
+        where.push(
+          cornCondition
+        );
+
+      } else if (
+        attribute === 'none'
+      ) {
+
+        where.push(`
+          NOT ${lemonCondition}
+          AND NOT ${cornCondition}
+        `);
+      }
+
+
+      if (keyword) {
+
+        where.push(`
+          (
+            c.comment_id LIKE ? OR
+            COALESCE(c.buyer_nickname, '') LIKE ? OR
+            COALESCE(c.sku_name, '') LIKE ? OR
+            c.content LIKE ?
+          )
+        `);
+
+        const like =
+          `%${keyword}%`;
+
+        params.push(
+          like,
+          like,
+          like,
+          like
+        );
+      }
+
+
+      const whereSql =
+        where.length
+          ? `WHERE ${where.join(' AND ')}`
+          : '';
+
+
+      const totalRow =
+        db.prepare(`
+          SELECT
+            COUNT(*) AS total
+          FROM comments c
+          ${whereSql}
+        `).get(
+          ...params
+        );
+
+
+      const total =
+        Number(
+          totalRow?.total || 0
+        );
+
+      const totalPages =
+        Math.max(
+          1,
+          Math.ceil(
+            total / pageSize
+          )
+        );
+
+      const page =
+        Math.min(
+          requestedPage,
+          totalPages
+        );
+
+      const offset =
+        (page - 1) *
+        pageSize;
+
+
+      const rows =
+        db.prepare(`
+          SELECT
+            c.id,
+            c.monitor_id,
+            c.comment_id,
+            c.buyer_nickname,
+            c.sku_name,
+            c.content,
+            c.comment_time,
+            c.first_seen_at,
+
+            CASE
+              WHEN ${lemonCondition}
+              THEN 1
+              ELSE 0
+            END AS is_lemon,
+
+            CASE
+              WHEN ${cornCondition}
+              THEN 1
+              ELSE 0
+            END AS is_corn
+
+          FROM comments c
+          ${whereSql}
+
+          ORDER BY
+            CASE
+              WHEN c.comment_time GLOB '[0-9]*'
+              THEN CAST(c.comment_time AS INTEGER)
+              ELSE 0
+            END DESC,
+            c.id DESC
+
+          LIMIT ?
+          OFFSET ?
+        `).all(
+          ...params,
+          pageSize,
+          offset
+        );
+
+
+      const data =
+        rows.map(
+          row => {
+
+            const attributes = [];
+
+            if (row.is_lemon) {
+              attributes.push(
+                '柠檬水'
+              );
+            }
+
+            if (row.is_corn) {
+              attributes.push(
+                '甜玉米'
+              );
+            }
+
+            if (
+              attributes.length === 0
+            ) {
+              attributes.push(
+                '无属性'
+              );
+            }
+
+            return {
+              id:
+                row.id,
+
+              monitor_id:
+                row.monitor_id,
+
+              comment_id:
+                row.comment_id,
+
+              buyer_nickname:
+                row.buyer_nickname || '',
+
+              sku_name:
+                row.sku_name || '',
+
+              content:
+                row.content || '',
+
+              comment_time:
+                row.comment_time,
+
+              first_seen_at:
+                row.first_seen_at,
+
+              attributes
+            };
+          }
+        );
+
+
+      res.json({
+        success: true,
+
+        stats: {
+          lemon:
+            Number(
+              stats?.lemon_count || 0
+            ),
+
+          corn:
+            Number(
+              stats?.corn_count || 0
+            ),
+
+          none:
+            Number(
+              stats?.none_count || 0
+            )
+        },
+
+        data,
+
+        pagination: {
+          page,
+          pageSize,
+          total,
+          totalPages
+        }
+      });
+
+
+    } catch (error) {
+
+      res
+        .status(500)
+        .json({
+          success: false,
+          message:
+            error.message
+        });
+    }
+  }
+);
+
+
 /**
  * ==========================================
  * Admin Monitor API
