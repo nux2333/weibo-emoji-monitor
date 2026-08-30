@@ -1,222 +1,222 @@
 const {
-  db,
-  initDatabase
+	db,
+	initDatabase
 } = require('./db');
 
 
 function isSuccessfulResponse(
-  raw
+	raw
 ) {
 
-  return (
-    raw &&
-    Number(
-      raw.code
-    ) === 100000
-  );
+	return (
+		raw &&
+		Number(
+			raw.code
+		) === 100000
+	);
 }
 
 
 function extractComments(
-  raw
+	raw
 ) {
 
-  if (
-    !raw ||
-    typeof raw !== 'object'
-  ) {
-    return [];
-  }
+	if (
+		!raw ||
+		typeof raw !== 'object'
+	) {
+		return [];
+	}
 
-  if (
-    Array.isArray(
-      raw?.data?.data?.result
-    )
-  ) {
-    return raw.data.data.result;
-  }
+	if (
+		Array.isArray(
+			raw?.data?.data?.result
+		)
+	) {
+		return raw.data.data.result;
+	}
 
-  if (
-    Array.isArray(
-      raw?.data?.result
-    )
-  ) {
-    return raw.data.result;
-  }
+	if (
+		Array.isArray(
+			raw?.data?.result
+		)
+	) {
+		return raw.data.result;
+	}
 
-  if (
-    Array.isArray(
-      raw?.result
-    )
-  ) {
-    return raw.result;
-  }
+	if (
+		Array.isArray(
+			raw?.result
+		)
+	) {
+		return raw.result;
+	}
 
-  return [];
+	return [];
 }
 
 
 function normalizeCommentTime(
-  value
+	value
 ) {
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return null;
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return null;
+	}
 
-  const text =
-    String(value).trim();
+	const text =
+		String(value).trim();
 
-  if (
-    /^\d{13}$/.test(
-      text
-    )
-  ) {
-    return text;
-  }
+	if (
+		/^\d{13}$/.test(
+			text
+		)
+	) {
+		return text;
+	}
 
-  if (
-    /^\d{10}$/.test(
-      text
-    )
-  ) {
-    return String(
-      Number(text) *
-      1000
-    );
-  }
+	if (
+		/^\d{10}$/.test(
+			text
+		)
+	) {
+		return String(
+			Number(text) *
+			1000
+		);
+	}
 
-  return text;
+	return text;
 }
 
 
 function getCommentId(
-  comment
+	comment
 ) {
 
-  const value =
-    comment?.comment_id ??
-    comment?.commentId ??
-    comment?.id ??
-    comment?.cid;
+	const value =
+		comment?.comment_id ??
+		comment?.commentId ??
+		comment?.id ??
+		comment?.cid;
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return null;
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return null;
+	}
 
-  return String(value);
+	return String(value);
 }
 
 
 function getBuyerNickname(
-  comment
+	comment
 ) {
 
-  const value =
-    comment?.buyer_nickname ??
-    comment?.buyerNickname ??
-    comment?.username ??
-    null;
+	const value =
+		comment?.buyer_nickname ??
+		comment?.buyerNickname ??
+		comment?.username ??
+		null;
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return null;
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return null;
+	}
 
-  return String(value);
+	return String(value);
 }
 
 
 function getSkuName(
-  comment
+	comment
 ) {
 
-  const value =
-    comment?.sku_name ??
-    comment?.skuName ??
-    comment?.product ??
-    null;
+	const value =
+		comment?.sku_name ??
+		comment?.skuName ??
+		comment?.product ??
+		null;
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return null;
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return null;
+	}
 
-  return String(value);
+	return String(value);
 }
 
 
 function getContent(
-  comment
+	comment
 ) {
 
-  return String(
-    comment?.content ??
-    comment?.text ??
-    ''
-  );
+	return String(
+		comment?.content ??
+		comment?.text ??
+		''
+	);
 }
 
 
 function getCommentTime(
-  comment
+	comment
 ) {
 
-  return normalizeCommentTime(
-    comment?.comment_time ??
-    comment?.commentTime ??
-    comment?.time ??
-    null
-  );
+	return normalizeCommentTime(
+		comment?.comment_time ??
+		comment?.commentTime ??
+		comment?.time ??
+		null
+	);
 }
 
 
 function getResponseRows({
-  monitorId = null,
-  responseId = null
+	monitorId = null,
+	responseId = null
 } = {}) {
 
-  if (responseId) {
+	if (responseId) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
       FROM api_responses
       WHERE id = ?
       ORDER BY id
     `).all(
-      responseId
-    );
-  }
+			responseId
+		);
+	}
 
 
-  if (monitorId) {
+	if (monitorId) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
       FROM api_responses
       WHERE monitor_id = ?
       ORDER BY id
     `).all(
-      monitorId
-    );
-  }
+			monitorId
+		);
+	}
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
     FROM api_responses
     ORDER BY id
@@ -225,33 +225,34 @@ function getResponseRows({
 
 
 function rebuildComments({
-  monitorId = null,
-  responseId = null
+	monitorId = null,
+	responseId = null
 } = {}) {
 
-  initDatabase();
+	initDatabase();
 
-  const responses =
-    getResponseRows({
-      monitorId,
-      responseId
-    });
-
-
-  const existsStmt =
-    db.prepare(`
-      SELECT
-        id,
-        buyer_nickname,
-        sku_name
-      FROM comments
-      WHERE comment_id = ?
-      LIMIT 1
-    `);
+	const responses =
+		getResponseRows({
+			monitorId,
+			responseId
+		});
 
 
-  const insertStmt =
-    db.prepare(`
+	const existsStmt =
+		db.prepare(`
+	    SELECT
+	      id,
+	      buyer_nickname,
+	      sku_name,
+	      comment_time
+	    FROM comments
+	    WHERE comment_id = ?
+	    LIMIT 1
+	  `);
+
+
+	const insertStmt =
+		db.prepare(`
       INSERT INTO comments(
         monitor_id,
         comment_id,
@@ -264,13 +265,13 @@ function rebuildComments({
     `);
 
 
-  /**
-   * 历史 comments 已经存在时，
-   * 不重新生成、不覆盖正文，
-   * 只允许补齐旧表缺失的用户名/商品字段。
-   */
-  const backfillStmt =
-    db.prepare(`
+	/**
+	 * 历史 comments 已经存在时，
+	 * 不重新生成、不覆盖正文，
+	 * 只允许补齐旧表缺失的用户名/商品字段。
+	 */
+	const backfillStmt =
+		db.prepare(`
       UPDATE comments
       SET
         buyer_nickname =
@@ -287,274 +288,283 @@ function rebuildComments({
               OR TRIM(sku_name) = ''
             THEN ?
             ELSE sku_name
+          END,
+
+        comment_time =
+          CASE
+            WHEN comment_time IS NULL
+              OR TRIM(comment_time) = ''
+            THEN ?
+            ELSE comment_time
           END
 
       WHERE id = ?
     `);
 
 
-  let parsedCommentCount = 0;
-  let insertedCount = 0;
-  let skippedCount = 0;
-  let invalidCommentCount = 0;
-  let insertErrorCount = 0;
-  let backfilledCount = 0;
-  let skippedResponseCount = 0;
+	let parsedCommentCount = 0;
+	let insertedCount = 0;
+	let skippedCount = 0;
+	let invalidCommentCount = 0;
+	let insertErrorCount = 0;
+	let backfilledCount = 0;
+	let skippedResponseCount = 0;
 
 
-  db.exec(
-    'BEGIN'
-  );
+	db.exec(
+		'BEGIN'
+	);
 
-  try {
+	try {
 
-    for (
-      const row
-      of responses
-    ) {
+		for (
+			const row
+			of responses
+		) {
 
-      const hasError =
-        row.error_message !== null &&
-        row.error_message !== undefined &&
-        String(
-          row.error_message
-        ).trim() !== '';
+			const hasError =
+				row.error_message !== null &&
+				row.error_message !== undefined &&
+				String(
+					row.error_message
+				).trim() !== '';
 
-      if (hasError) {
+			if (hasError) {
 
-        skippedResponseCount++;
+				skippedResponseCount++;
 
-        continue;
-      }
+				continue;
+			}
 
 
-      if (
-        !row.response_json
-      ) {
+			if (
+				!row.response_json
+			) {
 
-        skippedResponseCount++;
+				skippedResponseCount++;
 
-        continue;
-      }
+				continue;
+			}
 
 
-      let raw;
+			let raw;
 
-      try {
+			try {
 
-        raw =
-          JSON.parse(
-            row.response_json
-          );
+				raw =
+					JSON.parse(
+						row.response_json
+					);
 
-      } catch {
+			} catch {
 
-        skippedResponseCount++;
+				skippedResponseCount++;
 
-        continue;
-      }
+				continue;
+			}
 
 
-      if (
-        !isSuccessfulResponse(
-          raw
-        )
-      ) {
+			if (
+				!isSuccessfulResponse(
+					raw
+				)
+			) {
 
-        skippedResponseCount++;
+				skippedResponseCount++;
 
-        continue;
-      }
+				continue;
+			}
 
 
-      const comments =
-        extractComments(
-          raw
-        );
+			const comments =
+				extractComments(
+					raw
+				);
 
-      parsedCommentCount +=
-        comments.length;
+			parsedCommentCount +=
+				comments.length;
 
 
-      for (
-        const comment
-        of comments
-      ) {
+			for (
+				const comment
+				of comments
+			) {
 
-        const commentId =
-          getCommentId(
-            comment
-          );
+				const commentId =
+					getCommentId(
+						comment
+					);
 
 
-        if (!commentId) {
+				if (!commentId) {
 
-          invalidCommentCount++;
+					invalidCommentCount++;
 
-          continue;
-        }
+					continue;
+				}
 
 
-        const buyerNickname =
-          getBuyerNickname(
-            comment
-          );
+				const buyerNickname =
+					getBuyerNickname(
+						comment
+					);
 
-        const skuName =
-          getSkuName(
-            comment
-          );
+				const skuName =
+					getSkuName(
+						comment
+					);
 
+				const commentTime =
+					getCommentTime(comment);
 
-        const exists =
-          existsStmt.get(
-            commentId
-          );
+				const exists =
+					existsStmt.get(
+						commentId
+					);
 
 
-        if (exists) {
+				if (exists) {
+					skippedCount++;
 
-          skippedCount++;
+					if (
+					  (
+					    !exists.buyer_nickname &&
+					    buyerNickname
+					  ) ||
+					  (
+					    !exists.sku_name &&
+					    skuName
+					  ) ||
+					  (
+					    !exists.comment_time &&
+					    commentTime
+					  )
+					) {
+					  backfillStmt.run(
+					    buyerNickname,
+					    skuName,
+					    commentTime,
+					    exists.id
+					  );
 
-          if (
-            (
-              !exists.buyer_nickname &&
-              buyerNickname
-            ) ||
-            (
-              !exists.sku_name &&
-              skuName
-            )
-          ) {
+					  backfilledCount++;
+					}
 
-            backfillStmt.run(
-              buyerNickname,
-              skuName,
-              exists.id
-            );
+					continue;
+				}
 
-            backfilledCount++;
-          }
 
-          continue;
-        }
+				try {
 
+					insertStmt.run(
+					  row.monitor_id,
+					  commentId,
+					  buyerNickname,
+					  skuName,
+					  getContent(comment),
+					  commentTime
+					);
 
-        try {
+					insertedCount++;
 
-          insertStmt.run(
-            row.monitor_id,
-            commentId,
-            buyerNickname,
-            skuName,
-            getContent(
-              comment
-            ),
-            getCommentTime(
-              comment
-            )
-          );
+				} catch (error) {
 
-          insertedCount++;
+					insertErrorCount++;
 
-        } catch (error) {
+					console.error(
+						`comments INSERT 失败，comment_id=${commentId}:`,
+						error.message
+					);
+				}
+			}
+		}
 
-          insertErrorCount++;
 
-          console.error(
-            `comments INSERT 失败，comment_id=${commentId}:`,
-            error.message
-          );
-        }
-      }
-    }
+		db.exec(
+			'COMMIT'
+		);
 
 
-    db.exec(
-      'COMMIT'
-    );
+	} catch (error) {
 
+		db.exec(
+			'ROLLBACK'
+		);
 
-  } catch (error) {
+		throw error;
+	}
 
-    db.exec(
-      'ROLLBACK'
-    );
 
-    throw error;
-  }
+	const result = {
+		responseCount:
+			responses.length,
 
+		skippedResponseCount,
 
-  const result = {
-    responseCount:
-      responses.length,
+		parsedCommentCount,
 
-    skippedResponseCount,
+		insertedCount,
 
-    parsedCommentCount,
+		skippedCount,
 
-    insertedCount,
+		backfilledCount,
 
-    skippedCount,
+		invalidCommentCount,
 
-    backfilledCount,
+		insertErrorCount
+	};
 
-    invalidCommentCount,
 
-    insertErrorCount
-  };
+	console.log(
+		'========== rebuild-comments =========='
+	);
 
+	console.log(
+		JSON.stringify(
+			result,
+			null,
+			2
+		)
+	);
 
-  console.log(
-    '========== rebuild-comments =========='
-  );
+	console.log(
+		'======================================'
+	);
 
-  console.log(
-    JSON.stringify(
-      result,
-      null,
-      2
-    )
-  );
 
-  console.log(
-    '======================================'
-  );
-
-
-  return result;
+	return result;
 }
 
 
 if (
-  require.main === module
+	require.main === module
 ) {
 
-  try {
+	try {
 
-    const result =
-      rebuildComments();
+		const result =
+			rebuildComments();
 
-    console.log(
-      'rebuild-comments 完成：',
-      result
-    );
+		console.log(
+			'rebuild-comments 完成：',
+			result
+		);
 
-  } catch (error) {
+	} catch (error) {
 
-    console.error(
-      'rebuild-comments 失败：',
-      error
-    );
+		console.error(
+			'rebuild-comments 失败：',
+			error
+		);
 
-    process.exitCode = 1;
-  }
+		process.exitCode = 1;
+	}
 }
 
 
 module.exports = {
-  rebuildComments,
-  extractComments,
-  normalizeCommentTime,
-  isSuccessfulResponse
+	rebuildComments,
+	extractComments,
+	normalizeCommentTime,
+	isSuccessfulResponse
 };
