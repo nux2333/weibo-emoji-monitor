@@ -14,29 +14,16 @@ const { analyzeComments } = require('./emoji');
 const { rebuildComments } = require('./rebuild-comments');
 
 
-/**
- * ==========================================
- * 配置
- * ==========================================
- */
-
 const DEFAULT_PAGE_SIZE = 100;
 
-// 成功页之间随机等待 2～5 秒。
-// 不再 0.5 秒疯狂翻页。
-const PAGE_DELAY_MIN = 2000;
-const PAGE_DELAY_MAX = 5000;
+// 成功页之间等待 0.5 秒
+const PAGE_DELAY = 500;
 
-// 请求失败后固定等 30秒。
-// ★重试同一页，不跳页。
-const ERROR_RETRY_DELAY =  30 * 1000;
+// 失败后 1 分钟重试当前页
+const ERROR_RETRY_DELAY = 1 * 60 * 1000;
 
-// 单次请求超时
+// 单次 API 请求超时 60 秒
 const API_TIMEOUT = 60 * 1000;
-
-// 打印评论 API 的 Request Headers。
-// 稳定以后如果嫌日志多，可以改成 false。
-const DEBUG_REQUEST_HEADERS = true;
 
 
 const runningMonitors = new Set();
@@ -44,13 +31,6 @@ const runningMonitors = new Set();
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-
-function randomInt(min, max) {
-  return Math.floor(
-    Math.random() * (max - min + 1)
-  ) + min;
 }
 
 
@@ -66,38 +46,27 @@ function todayString() {
 
 
 /**
- * ==========================================
- * URL
- * ==========================================
+ * 构造分页 URL
  */
+function buildPageUrl(originalUrl, pageNum, pageSize) {
+  const u = new URL(originalUrl);
 
-function buildPageUrl(
-  originalUrl,
-  pageNum,
-  pageSize
-) {
-  const url = new URL(originalUrl);
+  u.searchParams.set('page_num', String(pageNum));
+  u.searchParams.set('page_size', String(pageSize));
 
-  url.searchParams.set(
-    'page_num',
-    String(pageNum)
-  );
-
-  url.searchParams.set(
-    'page_size',
-    String(pageSize)
-  );
-
-  return url.toString();
+  return u.toString();
 }
 
 
 /**
- * ==========================================
- * 微博 Response 判断
- * ==========================================
+ * 微博 API 是否业务成功
+ *
+ * 只有：
+ *
+ * code === 100000
+ *
+ * 才算成功。
  */
-
 function isApiSuccess(data) {
   return (
     data &&
@@ -107,6 +76,15 @@ function isApiSuccess(data) {
 }
 
 
+/**
+ * 是否还有下一页
+ *
+ * data.is_next = 1
+ * => 有下一页
+ *
+ * data.is_next = 0
+ * => 没有下一页
+ */
 function getApiNextState(data) {
   const value =
     data?.data?.is_next ??
@@ -123,26 +101,40 @@ function getApiNextState(data) {
 }
 
 
+/**
+ * 当前 response 返回多少条评论。
+ *
+ * monitor.js 不解析 comments，
+ * 这里只用于日志和兜底判断。
+ */
 function getResultCount(data) {
-  const result =
-    data?.data?.result ??
-    data?.result;
+  if (Array.isArray(data?.data?.result)) {
+    return data.data.result.length;
+  }
 
-  return Array.isArray(result)
-    ? result.length
-    : 0;
+  if (Array.isArray(data?.result)) {
+    return data.result.length;
+  }
+
+  return 0;
 }
 
 
 /**
- * ==========================================
- * 续跑判断
- * ==========================================
+ * 获取这个 monitor 最新的一条 api_response。
+ *
+ * 注意：
+ *
+ * 我们不再使用：
+ *
+ * getLatestFailedApiResponse()
+ *
+ * 因为那会找到“历史上的某次失败”，
+ * 而我们真正需要判断的是：
+ *
+ * 最新的一条 response 到底成功还是失败。
  */
-
-function getLatestApiResponseRecord(
-  monitorId
-) {
+function getLatestApiResponseRecord(monitorId) {
   return db.prepare(`
     SELECT
       id,
@@ -161,6 +153,9 @@ function getLatestApiResponseRecord(
 }
 
 
+/**
+ * 判断一条 DB response 是否业务成功。
+ */
 function responseRecordIsSuccess(record) {
   if (!record) {
     return false;
@@ -168,7 +163,6 @@ function responseRecordIsSuccess(record) {
 
   if (
     record.error_message !== null &&
-    record.error_message !== undefined &&
     String(record.error_message).trim() !== ''
   ) {
     return false;
@@ -180,73 +174,96 @@ function responseRecordIsSuccess(record) {
 
   try {
     const data =
-      JSON.parse(
-        record.response_json
-      );
+      JSON.parse(record.response_json);
 
     return isApiSuccess(data);
 
-  } catch {
-    return false;
-  }
-}
-
-
-function responseRecordIsLastPage(record) {
-  if (
-    !responseRecordIsSuccess(record)
-  ) {
-    return false;
-  }
-
-  try {
-    const data =
-      JSON.parse(
-        record.response_json
-      );
-
-    return (
-      getApiNextState(data) === false
-    );
-
-  } catch {
+  } catch (error) {
     return false;
   }
 }
 
 
 /**
- * 上一轮 success：
- *   新一轮 page1
+ * 判断最近一次成功 response 是否已经是最后一页。
+ */
+function responseRecordIsLastPage(record) {
+  if (!record) {
+    return false;
+  }
+
+  if (!responseRecordIsSuccess(record)) {
+    return false;
+  }
+
+  try {
+    const data =
+      JSON.parse(record.response_json);
+
+    return getApiNextState(data) === false;
+
+  } catch (error) {
+    return false;
+  }
+}
+
+
+/**
+ * ==========================================
+ * 重启 / 新一轮抓取的起点判断
+ * ==========================================
  *
- * 上一轮未结束：
+ * 情况 A
  *
- * latest error page59
- *   => page59
+ * monitor.last_status === success
  *
- * latest success page59
- *   => page60
+ * 表示上一轮已经完整结束。
  *
- * latest success + is_next=0
- *   => API 已经抓完，直接 rebuild
+ * => 新一轮从 page 1 开始
+ *
+ *
+ * 情况 B
+ *
+ * monitor.last_status === running / error
+ *
+ * 表示上一轮没有正常完成。
+ *
+ * 查看 api_responses 最新一条：
+ *
+ * 最新 page7 ERROR
+ * => page7 重试
+ *
+ * 最新 page7 SUCCESS
+ * => page8
+ *
+ *
+ * 情况 C
+ *
+ * 最新成功页已经：
+ *
+ * is_next = 0
+ *
+ * 说明实际上 response 已经全部抓完，
+ * 只是服务可能在 rebuild / 更新状态之前停止。
+ *
+ * => 不重新请求
+ * => 直接 rebuild-comments
  */
 function getResumeState(monitor) {
 
   /**
-   * 上一轮完整成功：
-   * 新的一轮重新从第一页开始。
+   * 上一轮完整完成。
+   *
+   * 今天 / 下一次 scheduler 再运行时，
+   * 属于新的抓取轮次。
    */
-  if (
-    monitor.last_status === 'success'
-  ) {
+  if (monitor.last_status === 'success') {
+
     return {
       startPage: 1,
-
-      responsesAlreadyComplete:
-        false,
-
+      responsesAlreadyComplete: false,
       reason:
-        '上一轮已经完整成功，本轮从第 1 页开始'
+        '上一轮已经成功完成，本轮从第 1 页开始'
     };
   }
 
@@ -257,13 +274,14 @@ function getResumeState(monitor) {
     );
 
 
+  /**
+   * 没有任何 response。
+   */
   if (!latest) {
+
     return {
       startPage: 1,
-
-      responsesAlreadyComplete:
-        false,
-
+      responsesAlreadyComplete: false,
       reason:
         '没有历史 response，从第 1 页开始'
     };
@@ -271,14 +289,12 @@ function getResumeState(monitor) {
 
 
   /**
-   * ★最新记录失败。
+   * 最新 response 是失败页。
    *
-   * 不管失败多少次，
-   * 永远还是这一页。
+   * ★重新请求当前失败页
    */
-  if (
-    !responseRecordIsSuccess(latest)
-  ) {
+  if (!responseRecordIsSuccess(latest)) {
+
     return {
       startPage:
         Number(latest.page_num),
@@ -287,18 +303,31 @@ function getResumeState(monitor) {
         false,
 
       reason:
-        `最新记录第 ${latest.page_num} 页失败，从第 ${latest.page_num} 页重试`
+        `最新记录第 ${latest.page_num} 页失败，重新请求第 ${latest.page_num} 页`
     };
   }
 
 
   /**
-   * 最后一页已经成功抓完，
-   * 但服务可能在 rebuild 前被关闭。
+   * 最新 response 成功，
+   * 而且已经是最后一页。
+   *
+   * 这种情况通常是：
+   *
+   * API 已经全部抓完
+   * ↓
+   * 还没 rebuild
+   * ↓
+   * 服务被关闭
+   *
+   * 那么重启后不要去请求不存在的下一页。
    */
   if (
-    responseRecordIsLastPage(latest)
+    responseRecordIsLastPage(
+      latest
+    )
   ) {
+
     return {
       startPage:
         Number(latest.page_num),
@@ -307,13 +336,15 @@ function getResumeState(monitor) {
         true,
 
       reason:
-        `第 ${latest.page_num} 页已经成功且 is_next=0，直接继续 rebuild`
+        `最新成功记录第 ${latest.page_num} 页已经 is_next=0，直接继续 rebuild`
     };
   }
 
 
   /**
-   * 最新成功页还有下一页。
+   * 最新页成功，但是还有下一页。
+   *
+   * ★成功页才跳下一页
    */
   return {
     startPage:
@@ -323,17 +354,23 @@ function getResumeState(monitor) {
       false,
 
     reason:
-      `第 ${latest.page_num} 页已经成功，从第 ${Number(latest.page_num) + 1} 页继续`
+      `最新记录第 ${latest.page_num} 页成功，从第 ${Number(latest.page_num) + 1} 页继续`
   };
 }
 
 
 /**
  * ==========================================
- * 单页 API 请求
+ * 请求单页
  * ==========================================
+ *
+ * 这里只负责：
+ *
+ * 1. 请求微博 API
+ * 2. 保存 api_responses
+ *
+ * ★完全不保存 comments
  */
-
 async function fetchCommentPage(
   page,
   originalUrl,
@@ -364,10 +401,7 @@ async function fetchCommentPage(
     const result =
       await page.evaluate(
 
-        async ({
-          url,
-          timeout
-        }) => {
+        async ({ url, timeout }) => {
 
           const controller =
             new AbortController();
@@ -375,8 +409,7 @@ async function fetchCommentPage(
 
           const timer =
             setTimeout(
-              () =>
-                controller.abort(),
+              () => controller.abort(),
               timeout
             );
 
@@ -389,11 +422,7 @@ async function fetchCommentPage(
                 {
                   method: 'GET',
 
-                  credentials:
-                    'include',
-
-                  cache:
-                    'no-store',
+                  credentials: 'include',
 
                   headers: {
                     Accept:
@@ -414,10 +443,12 @@ async function fetchCommentPage(
 
 
             try {
+
               data =
                 JSON.parse(text);
 
-            } catch {
+            } catch (error) {
+
               return {
                 ok: false,
 
@@ -431,17 +462,14 @@ async function fetchCommentPage(
                   text,
 
                 error:
-                  `返回内容不是 JSON：${text.slice(0, 1000)}`
+                  `API 返回的不是 JSON：${text.slice(0, 1000)}`
               };
             }
 
 
             return {
               ok: true,
-
-              status:
-                response.status,
-
+              status: response.status,
               data
             };
 
@@ -452,8 +480,7 @@ async function fetchCommentPage(
               ok: false,
 
               type:
-                error.name ===
-                'AbortError'
+                error.name === 'AbortError'
                   ? 'timeout'
                   : 'network',
 
@@ -484,14 +511,15 @@ async function fetchCommentPage(
 
 
     /**
-     * ======================================
-     * HTTP Response 正常收到
-     * ======================================
+     * ========================================
+     * fetch 正常拿到 HTTP response
+     * ========================================
      */
     if (result.ok) {
 
+
       /**
-       * HTTP 层失败。
+       * HTTP 本身失败。
        */
       if (
         result.status < 200 ||
@@ -527,13 +555,17 @@ async function fetchCommentPage(
 
 
       /**
-       * ==================================
-       * ★微博业务结果
-       * ==================================
+       * ========================================
+       * ★微博业务 code 判断
+       * ========================================
        *
-       * HTTP 200 不代表成功。
+       * HTTP 200 也不能代表成功。
        *
-       * 只有 code = 100000 才成功。
+       * 只有：
+       *
+       * code === 100000
+       *
+       * 才能继续下一页。
        */
       if (
         !isApiSuccess(
@@ -541,29 +573,34 @@ async function fetchCommentPage(
         )
       ) {
 
-        let errorJson;
+        /**
+         * 你要求：
+         *
+         * response_json：
+         * 保存完整 response
+         *
+         * error_message：
+         * 也保存完整 response JSON
+         */
+        let errorResponseJson;
+
 
         try {
-          errorJson =
+
+          errorResponseJson =
             JSON.stringify(
               result.data
             );
 
-        } catch {
-          errorJson =
-            String(result.data);
+        } catch (error) {
+
+          errorResponseJson =
+            String(
+              result.data
+            );
         }
 
 
-        /**
-         * 你的规则：
-         *
-         * response_json：
-         * 保存完整 JSON
-         *
-         * error_message：
-         * 同样保存完整 JSON
-         */
         saveApiResponse({
           monitorId,
           pageNum,
@@ -576,7 +613,7 @@ async function fetchCommentPage(
             result.data,
 
           errorMessage:
-            errorJson
+            errorResponseJson
         });
 
 
@@ -584,15 +621,19 @@ async function fetchCommentPage(
 
 
         throw new Error(
-          `微博 API 业务错误：${errorJson}`
+          `微博 API 业务错误：${errorResponseJson}`
         );
       }
 
 
       /**
-       * ==================================
-       * 真正成功
-       * ==================================
+       * ========================================
+       * ★真正成功
+       * ========================================
+       *
+       * HTTP 2xx
+       * +
+       * code === 100000
        */
       saveApiResponse({
         monitorId,
@@ -618,37 +659,44 @@ async function fetchCommentPage(
 
 
     /**
-     * ======================================
-     * 网络 / Timeout / JSON 错误
-     * ======================================
+     * ========================================
+     * 网络 / 超时 / 非 JSON
+     * ========================================
      */
 
     let errorMessage =
       result.error ||
-      '未知请求错误';
+      '未知 API 错误';
 
 
     if (
       result.type === 'timeout'
     ) {
+
       errorMessage =
-        `请求超时（${API_TIMEOUT / 1000} 秒）`;
+        `API 请求超时（${API_TIMEOUT / 1000} 秒）`;
 
     } else if (
       result.type === 'network'
     ) {
+
       errorMessage =
-        `网络错误：${errorMessage}`;
+        `网络请求失败：${errorMessage}`;
     }
 
 
     let responseData = null;
 
 
+    /**
+     * 即使不是 JSON，
+     * 也尽量把服务器返回内容留下。
+     */
     if (
       result.responseText !== null &&
       result.responseText !== undefined
     ) {
+
       responseData = {
         raw_response:
           result.responseText
@@ -680,8 +728,11 @@ async function fetchCommentPage(
 
   } catch (error) {
 
+
     /**
-     * 防止同一个错误保存两次。
+     * 如果异常发生在 Playwright 层，
+     * 前面还没有保存过 response，
+     * 那么这里补一条错误记录。
      */
     if (!responseSaved) {
 
@@ -714,44 +765,25 @@ async function fetchCommentPage(
 
 /**
  * ==========================================
- * 创建真实 Chrome
+ * 抓取全部 response
  * ==========================================
  *
- * 关键：
+ * ★核心原则：
  *
- * 不再：
+ * 失败：
  *
- * headless: true
+ * pageNum 不增加
  *
- * 因为你刚才实际日志已经显示：
  *
- * sec-ch-ua:
- * "HeadlessChrome";v="151"
+ * 成功：
  *
- * 这里直接调用电脑安装的 Google Chrome。
+ * 才 pageNum++
+ *
+ *
+ * monitor.js：
+ *
+ * 完全不写 comments。
  */
-async function createBrowser() {
-
-  console.log('');
-  console.log(
-    '启动 Playwright Chromium...'
-  );
-
-  return chromium.launch({
-    headless: false,
-
-    args: [
-      '--disable-blink-features=AutomationControlled'
-    ]
-  });
-}
-
-/**
- * ==========================================
- * 抓取所有 Response
- * ==========================================
- */
-
 async function fetchAllResponses(
   url,
   monitorId,
@@ -759,201 +791,119 @@ async function fetchAllResponses(
 ) {
 
   const browser =
-    await createBrowser();
-
-
-  /**
-   * 保留你成功浏览器请求的移动端环境：
-   *
-   * Android 15
-   * Pixel 9
-   * Chrome 151
-   *
-   * channel=chrome 会让 sec-ch-ua
-   * 使用真正 Google Chrome，
-   * 而不是 HeadlessChrome。
-   */
-  const context =
-    await browser.newContext({
-
-      viewport: {
-        width: 412,
-        height: 915
-      },
-
-      userAgent:
-        'Mozilla/5.0 (Linux; Android 15; Pixel 9) ' +
-        'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-        'Chrome/151.0.0.0 Mobile Safari/537.36',
-
-      isMobile: true,
-
-      hasTouch: true,
-
-      deviceScaleFactor: 2.625,
-
-      locale: 'zh-CN',
-
-      extraHTTPHeaders: {
-
-        'sec-ch-ua':
-          '"Not=A?Brand";v="99", "Google Chrome";v="151", "Chromium";v="151"',
-
-        'sec-ch-ua-mobile':
-          '?1',
-
-        'sec-ch-ua-platform':
-          '"Android"',
-
-        'accept':
-          'application/json, text/plain, */*',
-
-        'accept-language':
-          'zh-CN'
-      }
+    await chromium.launch({
+      headless: true
     });
 
 
-  let page =
+	const context =
+	  await browser.newContext({
+	    viewport: {
+	      width: 412,
+	      height: 915
+	    },
+
+	    userAgent:
+	      'Mozilla/5.0 (Linux; Android 15; Pixel 9) ' +
+	      'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+	      'Chrome/151.0.0.0 Mobile Safari/537.36',
+
+	    isMobile: true,
+	    hasTouch: true,
+	    deviceScaleFactor: 2.625,
+
+	    locale: 'zh-CN'
+	  });
+
+	const page =
 	  await context.newPage();
 
 
   let pageNum =
-    Number(startPage);
+    startPage;
 
 
   let successPages = 0;
 
 
-  /**
-   * Debug：
-   *
-   * 看真实发出去的 API Headers。
-   */
-  if (
-    DEBUG_REQUEST_HEADERS
-  ) {
-
-    page.on(
-      'request',
-      request => {
-
-        if (
-          !request
-            .url()
-            .includes(
-              '/aj/shop/product/comments'
-            )
-        ) {
-          return;
-        }
-
-
-        console.log('');
-        console.log(
-          '========== PROGRAM REQUEST =========='
-        );
-
-        console.log(
-          'URL:',
-          request.url()
-        );
-
-        console.log(
-          JSON.stringify(
-            request.headers(),
-            null,
-            2
-          )
-        );
-
-        console.log(
-          '====================================='
-        );
-      }
-    );
-  }
-
-
   try {
 
     console.log('');
-    console.log(
-      '================================'
-    );
-
-    console.log(
-      `开始抓取：${url}`
-    );
-
-    console.log(
-      `开始页：${pageNum}`
-    );
-
-    console.log(
-      '浏览器：Google Chrome'
-    );
-
-    console.log(
-      '模式：headed'
-    );
-
-    console.log(
-      '成功页等待：随机 2～5 秒'
-    );
-
-    console.log(
-      '失败页等待：3 分钟'
-    );
-
-    console.log(
-      '抓取阶段只写 api_responses'
-    );
-
-    console.log(
-      '================================'
-    );
+    console.log('================================');
+    console.log(`开始抓取：${url}`);
+    console.log(`开始页：${pageNum}`);
+    console.log('抓取阶段只保存 api_responses');
+    console.log('不会写入 comments');
+    console.log('================================');
 
 
-    /**
-     * 先打开原 URL，
-     * 建立页面 / Cookie / 同源环境。
-     */
-	try {
+	page.on(
+	  'request',
+	  request => {
 
-	  await page.goto(
-	    'https://daogou.e.weibo.com/',
-	    {
-	      waitUntil: 'domcontentloaded',
-	      timeout: 60000
+	    if (
+	      request.url().includes(
+	        '/aj/shop/product/comments'
+	      )
+	    ) {
+
+	      console.log('');
+	      console.log('========== PROGRAM REQUEST ==========');
+	      console.log('URL:', request.url());
+	      console.log(
+	        JSON.stringify(
+	          request.headers(),
+	          null,
+	          2
+	        )
+	      );
+	      console.log('=====================================');
 	    }
-	  );
-
-	} catch (error) {
-
-	  console.log(
-	    `初始化微博页面失败，但继续尝试 API：${error.message}`
-	  );
-	}
-
-	await sleep(2000);
-
+	  }
+	);
+	
     /**
-     * ======================================
-     * 主分页循环
-     * ======================================
+     * 先访问原页面。
+     *
+     * 主要用于：
+     *
+     * Cookie
+     * 登录状态
+     * 浏览器环境
      */
+    await page.goto(
+      url,
+      {
+        waitUntil:
+          'domcontentloaded',
+
+        timeout:
+          60000
+      }
+    );
+
+
+    await page.waitForTimeout(
+      2000
+    );
+
+
     while (true) {
+
 
       let data;
 
 
       /**
-       * ==================================
-       * 当前页 Retry Loop
-       * ==================================
+       * ======================================
+       * 当前页 retry loop
+       * ======================================
        *
-       * ★这里绝对不会 pageNum++
+       * 注意：
+       *
+       * 这个 while 里面绝对没有 pageNum++
+       *
+       * 所以失败以后永远还在当前页。
        */
       while (true) {
 
@@ -970,7 +920,7 @@ async function fetchAllResponses(
 
 
           /**
-           * 当前页成功。
+           * ★只有成功才 break
            */
           break;
 
@@ -999,12 +949,12 @@ async function fetchAllResponses(
           );
 
           console.error(
-            `30秒后继续重试第 ${pageNum} 页`
+            `${ERROR_RETRY_DELAY / 60000} 分钟后继续重试第 ${pageNum} 页`
           );
 
 
           /**
-           * ★失败不加页。
+           * ★没有 pageNum++
            */
           await sleep(
             ERROR_RETRY_DELAY
@@ -1012,105 +962,77 @@ async function fetchAllResponses(
 
 
           /**
-           * 重新进入原页面，
-           * 刷新当前浏览器环境。
+           * 重试前重新进入原页面。
+           *
+           * 尽量刷新：
+           *
+           * Cookie
+           * session
+           * 页面状态
            */
           try {
 
-            console.log('');
-            console.log(
-              '重新刷新页面环境...'
+            await page.goto(
+              url,
+              {
+                waitUntil:
+                  'domcontentloaded',
+
+                timeout:
+                  60000
+              }
             );
 
 
-			try {
-
-			  if (
-			    page.isClosed()
-			  ) {
-
-			    console.log(
-			      '页面已经关闭，重新创建页面'
-			    );
-
-			    page =
-			      await context.newPage();
-			  }
+            await page.waitForTimeout(
+              2000
+            );
 
 
-			  await page.goto(
-			    'https://daogou.e.weibo.com/',
-			    {
-			      waitUntil:
-			        'domcontentloaded',
-
-			      timeout:
-			        60000
-			    }
-			  );
-
-
-			} catch (refreshError) {
-
-			  console.error(
-			    `刷新微博页面环境失败：${refreshError.message}`
-			  );
-			}
-
-
-			await sleep(
-			  randomInt(
-			    2000,
-			    4000
-			  )
-			);
-
-
-          } catch (
-            refreshError
-          ) {
+          } catch (openError) {
 
             console.error(
-              `重新打开页面失败：${refreshError.message}`
+              `重新打开页面失败：${openError.message}`
             );
           }
-
-
-          /**
-           * 回到 while(true)
-           *
-           * ★还是当前 pageNum
-           */
         }
       }
 
 
       /**
        * ======================================
-       * 当前页成功
+       * 到这里说明当前页真正成功
        * ======================================
+       *
+       * HTTP 2xx
+       * +
+       * code === 100000
        */
 
       successPages++;
 
 
       const resultCount =
-        getResultCount(data);
+        getResultCount(
+          data
+        );
 
 
-      console.log('');
       console.log(
         `第 ${pageNum} 页成功，result=${resultCount} 条`
       );
 
 
       const hasNext =
-        getApiNextState(data);
+        getApiNextState(
+          data
+        );
 
 
       /**
-       * is_next=0：
-       * 全部抓完。
+       * API 明确：
+       *
+       * is_next = 0
        */
       if (
         hasNext === false
@@ -1128,7 +1050,6 @@ async function fetchAllResponses(
 
         return {
           successPages,
-
           lastPage:
             pageNum
         };
@@ -1136,10 +1057,10 @@ async function fetchAllResponses(
 
 
       /**
-       * 没有 is_next，
-       * 同时 result 为空：
+       * API 没有 is_next，
+       * 同时 result = 0。
        *
-       * 防止死循环。
+       * 防止无限翻页。
        */
       if (
         hasNext === null &&
@@ -1148,13 +1069,12 @@ async function fetchAllResponses(
 
         console.log('');
         console.log(
-          'API 没有 is_next 且 result=0，停止'
+          'API 没有 is_next，并且 result=0，停止翻页'
         );
 
 
         return {
           successPages,
-
           lastPage:
             pageNum
         };
@@ -1162,60 +1082,44 @@ async function fetchAllResponses(
 
 
       /**
-       * ==================================
-       * ★唯一 pageNum++ 的地方
-       * ==================================
+       * ======================================
+       * ★★★ 唯一 pageNum++ 的位置 ★★★
+       * ======================================
        *
-       * 只有成功 response 才能走到这里。
+       * 只有成功页才能来到这里。
        */
       pageNum++;
 
 
-      /**
-       * 不再固定 500ms。
-       *
-       * 随机 2～5 秒。
-       */
-      const delay =
-        randomInt(
-          PAGE_DELAY_MIN,
-          PAGE_DELAY_MAX
+      if (
+        PAGE_DELAY > 0
+      ) {
+
+        await sleep(
+          PAGE_DELAY
         );
-
-
-      console.log(
-        `等待 ${(delay / 1000).toFixed(1)} 秒后请求第 ${pageNum} 页`
-      );
-
-
-      await sleep(delay);
+      }
     }
 
 
   } finally {
 
-    await context
-      .close()
-      .catch(() => {});
-
-
-    await browser
-      .close()
-      .catch(() => {});
+    await browser.close();
   }
 }
 
 
 /**
  * ==========================================
- * 单个 Monitor
+ * 执行单个 Monitor
  * ==========================================
  */
+async function runMonitor(monitorId) {
 
-async function runMonitor(
-  monitorId
-) {
 
+  /**
+   * 防止同一个 monitor 重复执行。
+   */
   if (
     runningMonitors.has(
       monitorId
@@ -1231,8 +1135,15 @@ async function runMonitor(
 
 
   /**
-   * ★必须先读取旧 last_status，
-   * 再 update running。
+   * ★必须在 updateMonitorStatus('running') 之前读取。
+   *
+   * 因为我们需要知道：
+   *
+   * 上一次状态到底是：
+   *
+   * success
+   * running
+   * error
    */
   const monitor =
     getMonitor(
@@ -1241,6 +1152,7 @@ async function runMonitor(
 
 
   if (!monitor) {
+
     throw new Error(
       `Monitor ${monitorId} 不存在`
     );
@@ -1280,7 +1192,7 @@ async function runMonitor(
 
     /**
      * ======================================
-     * 先判断续跑点
+     * ★先算续跑点
      * ======================================
      */
     const resume =
@@ -1295,8 +1207,7 @@ async function runMonitor(
 
 
     /**
-     * 判断完成以后，
-     * 才更新 running。
+     * 算完以后再改成 running。
      */
     updateMonitorStatus(
       monitorId,
@@ -1306,7 +1217,9 @@ async function runMonitor(
 
     /**
      * ======================================
-     * STEP 1：抓 api_responses
+     * STEP 1
+     *
+     * 抓取 response
      * ======================================
      */
     if (
@@ -1322,49 +1235,44 @@ async function runMonitor(
 
 
       console.log('');
+      console.log('================================');
+      console.log('response 抓取完成');
       console.log(
-        '================================'
-      );
-
-      console.log(
-        'response 抓取完成'
-      );
-
-      console.log(
-        `本次成功页数：${fetchResult.successPages}`
+        `本次成功请求页数：${fetchResult.successPages}`
       );
 
       console.log(
         `最后页：${fetchResult.lastPage}`
       );
 
-      console.log(
-        '================================'
-      );
+      console.log('================================');
 
 
     } else {
 
       console.log('');
       console.log(
-        'API response 已经全部抓完'
+        '上一次 response 实际已经全部抓完'
       );
 
       console.log(
-        '跳过请求，直接 rebuild comments'
+        '跳过 API 请求，直接继续 rebuild-comments'
       );
     }
 
 
     /**
      * ======================================
-     * STEP 2：统一生成 comments
+     * STEP 2
+     *
+     * response 全部完成后：
+     *
+     * rebuild comments
      * ======================================
      */
-
     console.log('');
     console.log(
-      '开始 rebuild comments...'
+      '开始从 api_responses 统一解析 comments...'
     );
 
 
@@ -1374,17 +1282,19 @@ async function runMonitor(
       });
 
 
+    console.log('');
     console.log(
-      `rebuild 完成：新增 ${rebuildResult.insertedCount} 条，已存在跳过 ${rebuildResult.skippedCount} 条`
+      `comments rebuild 完成：新增 ${rebuildResult.insertedCount} 条，已存在跳过 ${rebuildResult.skippedCount} 条`
     );
 
 
     /**
      * ======================================
-     * STEP 3：重新统计
+     * STEP 3
+     *
+     * 重新计算当前 comments 总统计
      * ======================================
      */
-
     const emojis =
       JSON.parse(
         monitor.emojis ||
@@ -1407,6 +1317,7 @@ async function runMonitor(
 
     const stats =
       analyzeComments(
+
         allComments.map(
           comment => ({
             content:
@@ -1419,6 +1330,9 @@ async function runMonitor(
       );
 
 
+    /**
+     * 保存当天统计。
+     */
     saveDailyStats({
       monitorId,
 
@@ -1429,6 +1343,9 @@ async function runMonitor(
     });
 
 
+    /**
+     * 整轮真正完成。
+     */
     updateMonitorStatus(
       monitorId,
       'success'
@@ -1445,7 +1362,7 @@ async function runMonitor(
     );
 
     console.log(
-      `本次新增：${rebuildResult.insertedCount}`
+      `本次 rebuild 新增：${rebuildResult.insertedCount}`
     );
 
 
@@ -1481,14 +1398,15 @@ async function runMonitor(
 
 /**
  * ==========================================
- * 全部 Monitor
+ * 执行全部启用 Monitor
  * ==========================================
  */
-
 async function runAllMonitors() {
 
   const monitors =
-    getMonitors(true);
+    getMonitors(
+      true
+    );
 
 
   console.log(
@@ -1519,11 +1437,8 @@ async function runAllMonitors() {
 
 
 /**
- * ==========================================
- * 每天 06:00
- * ==========================================
+ * 下一次 06:00
  */
-
 function getNextSixAM() {
 
   const now =
@@ -1531,7 +1446,9 @@ function getNextSixAM() {
 
 
   const next =
-    new Date(now);
+    new Date(
+      now
+    );
 
 
   next.setHours(
@@ -1556,6 +1473,9 @@ function getNextSixAM() {
 }
 
 
+/**
+ * 每天 06:00 scheduler
+ */
 function startScheduler() {
 
   const schedule =
