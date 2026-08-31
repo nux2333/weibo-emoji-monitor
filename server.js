@@ -1702,7 +1702,7 @@ async function start() {
        */
       try {
 
-        await runAllMonitors();
+       // await runAllMonitors();
 
       } catch (error) {
 
@@ -1716,7 +1716,7 @@ async function start() {
       /**
        * 每日 Scheduler
        */
-      startScheduler();
+      // startScheduler();
     }
   );
 }
