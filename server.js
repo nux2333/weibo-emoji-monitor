@@ -1083,11 +1083,22 @@ app.get(
 
       const generationStatus =
         String(
-          req.query.generationStatus || ''
+          req.query.generationStatus ||
+          ''
         ).trim();
 
 
-      const page =
+      /**
+       * JSON 模糊检索关键词
+       */
+      const keyword =
+        String(
+          req.query.keyword ||
+          ''
+        ).trim();
+
+
+      const requestedPage =
         Math.max(
           1,
           Number(
@@ -1109,71 +1120,129 @@ app.get(
 
 
       /**
-       * 这里不再限制 500 条。
+       * ==================================================
+       * 查询 api_responses
+       * ==================================================
        *
-       * 因为 generation_status 不是数据库字段，
-       * 必须先把符合 Monitor 条件的 Response 取出，
-       * 计算生成状态后再筛选、再分页。
+       * keyword：
+       *
+       * response_json LIKE '%keyword%'
+       *
+       * 所以可以搜索：
+       *
+       * comment_id
+       * buyer_nickname
+       * 评论正文
+       * uid
+       * sku
+       * 以及 JSON 中任何文本
+       *
+       * 是对数据库全部 api_responses 检索，
+       * 不是只搜当前页。
        */
-      let rows;
+      const where = [];
+
+      const params = [];
 
 
-      if (monitorId) {
+      if (
+        monitorId
+      ) {
 
-        rows =
-          db.prepare(`
-            SELECT
-              ar.*,
-              m.name AS monitor_name
-            FROM api_responses ar
-            LEFT JOIN monitors m
-              ON m.id = ar.monitor_id
-            WHERE ar.monitor_id = ?
-            ORDER BY ar.id DESC
-          `)
-            .all(
-              monitorId
-            );
+        where.push(
+          'ar.monitor_id = ?'
+        );
 
-      } else {
+        params.push(
+          monitorId
+        );
 
-        rows =
-          db.prepare(`
-            SELECT
-              ar.*,
-              m.name AS monitor_name
-            FROM api_responses ar
-            LEFT JOIN monitors m
-              ON m.id = ar.monitor_id
-            ORDER BY ar.id DESC
-          `)
-            .all();
       }
 
 
+      if (
+        keyword
+      ) {
+
+        where.push(
+          `COALESCE(
+            ar.response_json,
+            ''
+          ) LIKE ?`
+        );
+
+        params.push(
+          `%${keyword}%`
+        );
+
+      }
+
+
+      const whereSql =
+        where.length
+
+          ? `WHERE ${
+              where.join(
+                ' AND '
+              )
+            }`
+
+          : '';
+
+
+      const rows =
+        db.prepare(`
+          SELECT
+            ar.*,
+            m.name AS monitor_name
+
+          FROM api_responses ar
+
+          LEFT JOIN monitors m
+            ON m.id =
+               ar.monitor_id
+
+          ${whereSql}
+
+          ORDER BY
+            ar.id DESC
+        `)
+          .all(
+            ...params
+          );
+
+
       /**
-       * 一次性读出 comments 表所有 comment_id。
-       *
-       * 避免每条 response 都去查数据库。
-       *
-       * ★全局 comment_id
+       * ==================================================
+       * comments 表中已有 comment_id
+       * ==================================================
        */
       const generatedIds =
         new Set(
+
           db.prepare(`
-            SELECT comment_id
+            SELECT
+              comment_id
             FROM comments
           `)
+
             .all()
+
             .map(
               row =>
                 String(
                   row.comment_id
                 )
             )
+
         );
 
 
+      /**
+       * ==================================================
+       * 计算生成状态
+       * ==================================================
+       */
       let data =
         rows.map(
           row => {
@@ -1187,16 +1256,24 @@ app.get(
 
 
             /**
-             * 失败 response
+             * 请求失败
              */
             if (
-              hasErrorMessage(row)
+              hasErrorMessage(
+                row
+              )
             ) {
 
               currentGenerationStatus =
                 '请求失败';
 
-            } else if (
+            }
+
+
+            /**
+             * 有 Response JSON
+             */
+            else if (
               row.response_json
             ) {
 
@@ -1208,6 +1285,9 @@ app.get(
                   );
 
 
+                /**
+                 * API 本身返回失败
+                 */
                 if (
                   !isSuccessfulResponse(
                     raw
@@ -1217,7 +1297,9 @@ app.get(
                   currentGenerationStatus =
                     '请求失败';
 
-                } else {
+                }
+
+                else {
 
                   comments =
                     extractComments(
@@ -1225,23 +1307,37 @@ app.get(
                     );
 
 
+                  /**
+                   * Response 中没有评论
+                   */
                   if (
-                    comments.length === 0
+                    comments.length ===
+                    0
                   ) {
 
                     currentGenerationStatus =
                       '无评论数据';
 
-                  } else {
+                  }
 
+                  else {
+
+                    /**
+                     * 判断这些 comment_id
+                     * 有多少已经存在 comments 表
+                     */
                     generatedCount =
                       comments.filter(
                         comment => {
 
                           const rawId =
+
                             comment.comment_id ??
+
                             comment.commentId ??
+
                             comment.id ??
+
                             comment.cid;
 
 
@@ -1252,18 +1348,25 @@ app.get(
                           ) {
 
                             return false;
+
                           }
 
 
-                          return generatedIds.has(
-                            String(
-                              rawId
+                          return (
+                            generatedIds.has(
+                              String(
+                                rawId
+                              )
                             )
                           );
+
                         }
                       ).length;
 
 
+                    /**
+                     * 全部存在
+                     */
                     if (
                       generatedCount ===
                       comments.length
@@ -1272,37 +1375,59 @@ app.get(
                       currentGenerationStatus =
                         '已全部生成';
 
-                    } else if (
+                    }
+
+
+                    /**
+                     * 部分存在
+                     */
+                    else if (
                       generatedCount > 0
                     ) {
 
                       currentGenerationStatus =
                         '部分已生成';
 
-                    } else {
+                    }
+
+
+                    /**
+                     * 一个都没有
+                     */
+                    else {
 
                       currentGenerationStatus =
                         '未生成';
-                    }
-                  }
-                }
 
+                    }
+
+                  }
+
+                }
 
               } catch (error) {
 
                 currentGenerationStatus =
                   'JSON解析失败';
+
               }
 
+            }
 
-            } else {
+
+            /**
+             * 没有 Response JSON
+             */
+            else {
 
               currentGenerationStatus =
                 '无 Response JSON';
+
             }
 
 
             return {
+
               ...row,
 
               comment_count:
@@ -1313,15 +1438,21 @@ app.get(
 
               generation_status:
                 currentGenerationStatus
+
             };
+
           }
         );
 
 
       /**
-       * 先按生成状态筛选，再分页。
+       * ==================================================
+       * 生成状态过滤
+       * ==================================================
        */
-      if (generationStatus) {
+      if (
+        generationStatus
+      ) {
 
         data =
           data.filter(
@@ -1329,9 +1460,15 @@ app.get(
               row.generation_status ===
               generationStatus
           );
+
       }
 
 
+      /**
+       * ==================================================
+       * 分页
+       * ==================================================
+       */
       const total =
         data.length;
 
@@ -1340,37 +1477,51 @@ app.get(
         Math.max(
           1,
           Math.ceil(
-            total / pageSize
+            total /
+            pageSize
           )
         );
 
 
       const currentPage =
         Math.min(
-          page,
+          requestedPage,
           totalPages
         );
 
 
       const startIndex =
-        (currentPage - 1) *
+        (
+          currentPage - 1
+        ) *
         pageSize;
 
 
       const pageData =
         data.slice(
+
           startIndex,
-          startIndex + pageSize
+
+          startIndex +
+          pageSize
+
         );
 
 
+      /**
+       * ==================================================
+       * Response
+       * ==================================================
+       */
       res.json({
+
         success: true,
 
         data:
           pageData,
 
         pagination: {
+
           page:
             currentPage,
 
@@ -1379,19 +1530,32 @@ app.get(
           total,
 
           totalPages
+
         }
+
       });
 
-
     } catch (error) {
+
+      console.error(
+        '查询 api_responses 失败：',
+        error
+      );
+
 
       res
         .status(500)
         .json({
+
           success: false,
-          message: error.message
+
+          message:
+            error.message
+
         });
+
     }
+
   }
 );
 

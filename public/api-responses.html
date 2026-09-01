@@ -1,83 +1,268 @@
 <!doctype html>
 <html lang="zh-CN">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>API Response 管理</title>
-<link rel="stylesheet" href="/style.css">
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width,initial-scale=1"
+  >
+
+  <title>API Response 管理</title>
+
+  <link
+    rel="stylesheet"
+    href="/style.css"
+  >
 </head>
+
 <body>
-	<main class="container wide">
-		<header class="page-header">
-			<div>
-				<h1>API Response 管理</h1>
-				<p>查看每一次分页请求，并手动把 Response 生成到 comments 表</p>
-			</div>
-			<div>
-				<a class="button" href="/admin">返回后台</a>
-				<button class="button" onclick="load()">刷新</button>
-			</div>
-		</header>
 
-		<section class="card">
-			<div class="row" style="gap:12px;align-items:center;flex-wrap:wrap;">
-				<input id="token" type="password" placeholder="ADMIN_TOKEN" style="display:none">
+<main class="container wide">
 
-				<select id="status" onchange="changeFilter()">
-					<option value="">全部生成状态</option>
-					<option value="请求失败">请求失败</option>
-					<option value="无评论数据">无评论数据</option>
-					<option value="未生成">未生成</option>
-					<option value="部分已生成">部分已生成</option>
-					<option value="已全部生成">已全部生成</option>
-					<option value="JSON解析失败">JSON解析失败</option>
-					<option value="无 Response JSON">无 Response JSON</option>
-				</select>
+  <header class="page-header">
 
-				<select id="monitor" onchange="changeFilter()">
-					<option value="">全部 Monitor</option>
-				</select>
+    <div>
+      <h1>API Response 管理</h1>
 
-				<select id="pageSize" onchange="changePageSize()">
-					<option value="20">每页 20 条</option>
-					<option value="50" selected>每页 50 条</option>
-					<option value="100">每页 100 条</option>
-					<option value="200">每页 200 条</option>
-				</select>
+      <p>
+        查看分页 Response，并支持 JSON 内容模糊检索
+      </p>
+    </div>
 
-				<span id="summary" style="margin-left:auto;"></span>
-			</div>
-		</section>
+    <div>
 
-		<section class="card">
-			<div id="message"></div>
-			<div class="table-wrap">
-				<table>
-					<thead>
-						<tr>
-							<th>ID</th>
-							<th>name</th>
-							<th>页码</th>
-							<th>HTTP</th>
-							<th>抓取时间</th>
-							<th>评论数</th>
-							<th>生成状态</th>
-							<th>错误</th>
-							<th>操作</th>
-						</tr>
-					</thead>
-					<tbody id="rows"></tbody>
-				</table>
-			</div>
+      <a
+        class="button"
+        href="/admin"
+      >
+        返回后台
+      </a>
 
-			<div id="pagination" style="display:flex;gap:8px;align-items:center;justify-content:center;flex-wrap:wrap;margin-top:16px;"></div>
-		</section>
+      <button
+        class="button"
+        onclick="load()"
+      >
+        刷新
+      </button>
 
-		<section class="card">
-			<h2>Response JSON</h2>
-			<pre id="json">点击每行“查看”</pre>
-		</section>
-	</main>
-	<script src="/api-responses.js"></script>
+    </div>
+
+  </header>
+
+
+  <!--
+    Token 继续保留 DOM，
+    但是完全隐藏。
+  -->
+  <input
+    id="token"
+    type="hidden"
+  >
+
+
+  <section class="card">
+
+    <div
+      class="row"
+      style="
+        gap:12px;
+        align-items:center;
+        flex-wrap:wrap;
+      "
+    >
+
+      <select
+        id="status"
+        onchange="changeFilter()"
+      >
+
+        <option value="">
+          全部生成状态
+        </option>
+
+        <option value="请求失败">
+          请求失败
+        </option>
+
+        <option value="无评论数据">
+          无评论数据
+        </option>
+
+        <option value="未生成">
+          未生成
+        </option>
+
+        <option value="部分已生成">
+          部分已生成
+        </option>
+
+        <option value="已全部生成">
+          已全部生成
+        </option>
+
+        <option value="JSON解析失败">
+          JSON解析失败
+        </option>
+
+        <option value="无 Response JSON">
+          无 Response JSON
+        </option>
+
+      </select>
+
+
+      <select
+        id="monitor"
+        onchange="changeFilter()"
+      >
+
+        <option value="">
+          全部 Monitor
+        </option>
+
+      </select>
+
+
+      <input
+        id="keyword"
+        type="text"
+        placeholder="模糊查询 Response JSON，例如用户名、comment_id、评论内容"
+        style="
+          min-width:360px;
+          flex:1;
+        "
+        onkeydown="handleKeywordKeydown(event)"
+      >
+
+
+      <button
+        class="button primary"
+        onclick="searchKeyword()"
+      >
+        查询
+      </button>
+
+
+      <button
+        class="button"
+        onclick="clearKeyword()"
+      >
+        清空
+      </button>
+
+
+      <select
+        id="pageSize"
+        onchange="changePageSize()"
+      >
+
+        <option value="20">
+          每页 20 条
+        </option>
+
+        <option
+          value="50"
+          selected
+        >
+          每页 50 条
+        </option>
+
+        <option value="100">
+          每页 100 条
+        </option>
+
+        <option value="200">
+          每页 200 条
+        </option>
+
+      </select>
+
+
+      <span
+        id="summary"
+        style="margin-left:auto;"
+      ></span>
+
+    </div>
+
+  </section>
+
+
+  <section class="card">
+
+    <div id="message"></div>
+
+
+    <div class="table-wrap">
+
+      <table>
+
+        <thead>
+
+          <tr>
+
+            <th>ID</th>
+
+            <th>name</th>
+
+            <th>页码</th>
+
+            <th>HTTP</th>
+
+            <th>抓取时间</th>
+
+            <th>评论数</th>
+
+            <th>生成状态</th>
+
+            <th>错误</th>
+
+            <th>操作</th>
+
+          </tr>
+
+        </thead>
+
+
+        <tbody id="rows"></tbody>
+
+      </table>
+
+    </div>
+
+
+    <div
+      id="pagination"
+      style="
+        display:flex;
+        gap:8px;
+        align-items:center;
+        justify-content:center;
+        flex-wrap:wrap;
+        margin-top:16px;
+      "
+    ></div>
+
+  </section>
+
+
+  <section class="card">
+
+    <h2>Response JSON</h2>
+
+    <pre id="json">
+点击每行“查看”
+    </pre>
+
+  </section>
+
+</main>
+
+
+<script src="/api-responses.js"></script>
+
 </body>
+
 </html>
