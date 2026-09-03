@@ -396,6 +396,158 @@ app.get(
 
 /**
  * ==========================================
+ * 超Like候选帖子
+ * ==========================================
+ */
+app.get(
+  '/api/superlike-posts',
+  (req, res) => {
+
+    try {
+
+      const keyword =
+        String(
+          req.query.keyword || ''
+        ).trim();
+
+
+      const params = [];
+
+      let where = `
+        WHERE
+          current_has_superlike = 0
+
+          AND comments_count < 20
+      `;
+
+
+      if (keyword) {
+
+        where += `
+          AND (
+            uid LIKE ?
+            OR username LIKE ?
+            OR post_text LIKE ?
+          )
+        `;
+
+        const pattern =
+          `%${keyword}%`;
+
+        params.push(
+          pattern,
+          pattern,
+          pattern
+        );
+      }
+
+
+      const data =
+        db.prepare(`
+          SELECT
+
+            id,
+
+            post_id,
+
+            uid,
+
+            username,
+
+            post_link,
+
+            post_text,
+
+            comments_count,
+
+            current_has_superlike,
+
+            icon_summary,
+
+            experience_7d,
+
+            post_created_at,
+
+            first_seen_at,
+
+            last_seen_at
+
+          FROM superlike_posts
+
+          ${where}
+
+          ORDER BY
+            first_seen_at DESC
+
+          LIMIT 2000
+        `).all(
+          ...params
+        );
+
+
+      const stats =
+        db.prepare(`
+          SELECT
+
+            COUNT(*) AS total,
+
+            COUNT(
+              DISTINCT uid
+            ) AS user_count,
+
+            SUM(
+              CASE
+                WHEN experience_7d
+                  IS NOT NULL
+                THEN 1
+                ELSE 0
+              END
+            ) AS experience_known
+
+          FROM superlike_posts
+
+          WHERE
+            current_has_superlike = 0
+
+            AND comments_count < 20
+        `).get();
+
+
+      res.json({
+
+        success: true,
+
+        stats,
+
+        data
+      });
+
+
+    } catch (
+      error
+    ) {
+
+      console.error(
+        '读取SuperLike候选失败：',
+        error
+      );
+
+
+      res
+        .status(500)
+        .json({
+
+          success: false,
+
+          message:
+            error.message
+        });
+    }
+  }
+);
+
+/**
+ * ==========================================
  * 首页评论看板 API
  * ==========================================
  *

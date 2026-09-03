@@ -1,0 +1,12 @@
+MuMu “I?˜¢ Root
+"C:\Program Files\Netease\MuMuPlayer\nx_device\15.0\shell\adb.exe"  shell
+
+C:\Users\admin>"C:\Program Files\Netease\MuMuPlayer\nx_device\15.0\shell\adb.exe"  root
+restarting adbd as root
+adb.exe: unknown command shel
+
+C:\Users\admin>"C:\Program Files\Netease\MuMuPlayer\nx_device\15.0\shell\adb.exe"  shell
+a53x:/ # id
+uid=0(root)
+a53x:/ #
+

@@ -138,6 +138,28 @@ function getBuyerNickname(
 }
 
 
+function getCustomerId(
+	comment
+) {
+
+	const value =
+		comment?.uid ??
+		comment?.customerid ??
+		comment?.customer_id ??
+		null;
+
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return null;
+	}
+
+	return String(value);
+}
+
+
 function getSkuName(
 	comment
 ) {
@@ -243,6 +265,7 @@ function rebuildComments({
 	    SELECT
 	      id,
 	      buyer_nickname,
+	      customerid,
 	      sku_name,
 	      comment_time
 	    FROM comments
@@ -257,11 +280,12 @@ function rebuildComments({
         monitor_id,
         comment_id,
         buyer_nickname,
+        customerid,
         sku_name,
         content,
         comment_time
       )
-      VALUES(?,?,?,?,?,?)
+      VALUES(?,?,?,?,?,?,?)
     `);
 
 
@@ -280,6 +304,14 @@ function rebuildComments({
               OR TRIM(buyer_nickname) = ''
             THEN ?
             ELSE buyer_nickname
+          END,
+
+        customerid =
+          CASE
+            WHEN customerid IS NULL
+              OR TRIM(customerid) = ''
+            THEN ?
+            ELSE customerid
           END,
 
         sku_name =
@@ -409,6 +441,11 @@ function rebuildComments({
 						comment
 					);
 
+				const customerid =
+					getCustomerId(
+						comment
+					);
+
 				const skuName =
 					getSkuName(
 						comment
@@ -432,6 +469,10 @@ function rebuildComments({
 					    buyerNickname
 					  ) ||
 					  (
+					    !exists.customerid &&
+					    customerid
+					  ) ||
+					  (
 					    !exists.sku_name &&
 					    skuName
 					  ) ||
@@ -442,6 +483,7 @@ function rebuildComments({
 					) {
 					  backfillStmt.run(
 					    buyerNickname,
+					    customerid,
 					    skuName,
 					    commentTime,
 					    exists.id
@@ -460,6 +502,7 @@ function rebuildComments({
 					  row.monitor_id,
 					  commentId,
 					  buyerNickname,
+					  customerid,
 					  skuName,
 					  getContent(comment),
 					  commentTime

@@ -1504,7 +1504,7 @@ async function runLatestBatch(
     );
 
 
-    throw error;
+   // throw error;
 
 
   } finally {

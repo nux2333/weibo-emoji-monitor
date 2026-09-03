@@ -19,32 +19,32 @@ const db = new DatabaseSync(DB_FILE);
  */
 
 function tableHasColumn(tableName, columnName) {
-  return db
-    .prepare(`PRAGMA table_info(${tableName})`)
-    .all()
-    .some(row => row.name === columnName);
+	return db
+		.prepare(`PRAGMA table_info(${tableName})`)
+		.all()
+		.some(row => row.name === columnName);
 }
 
 
 function ensureColumn(tableName, columnName, definition) {
-  if (tableHasColumn(tableName, columnName)) {
-    return;
-  }
+	if (tableHasColumn(tableName, columnName)) {
+		return;
+	}
 
-  db.exec(`
+	db.exec(`
     ALTER TABLE ${tableName}
     ADD COLUMN ${columnName} ${definition}
   `);
 
-  console.log(
-    `数据库字段已补充：${tableName}.${columnName}`
-  );
+	console.log(
+		`数据库字段已补充：${tableName}.${columnName}`
+	);
 }
 
 
 function initDatabase() {
 
-  db.exec(`
+	db.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA busy_timeout = 10000;
 
@@ -74,6 +74,7 @@ function initDatabase() {
       comment_id TEXT NOT NULL,
 
       buyer_nickname TEXT,
+      customerid TEXT,
       sku_name TEXT,
 
       content TEXT NOT NULL,
@@ -146,92 +147,143 @@ function initDatabase() {
         REFERENCES monitors(id)
         ON DELETE CASCADE
     );
+	
+	
+	  CREATE TABLE IF NOT EXISTS superlike_posts (
+	    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+	    post_id TEXT NOT NULL UNIQUE,
+
+	    uid TEXT,
+	    username TEXT,
+
+	    post_link TEXT,
+	    post_text TEXT,
+
+	    comments_count INTEGER NOT NULL DEFAULT 0,
+
+	    current_has_superlike INTEGER NOT NULL DEFAULT 0,
+
+	    icon_summary TEXT,
+
+	    experience_7d INTEGER,
+
+	    post_created_at TEXT,
+
+	    first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+	    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+	    raw_json TEXT
+	  );
+
+	  CREATE INDEX IF NOT EXISTS
+	    idx_superlike_posts_uid
+	    ON superlike_posts(uid);
+
+	  CREATE INDEX IF NOT EXISTS
+	    idx_superlike_posts_comments
+	    ON superlike_posts(comments_count);
+
+	  CREATE INDEX IF NOT EXISTS
+	    idx_superlike_posts_superlike
+	    ON superlike_posts(current_has_superlike);
+
+	  CREATE INDEX IF NOT EXISTS
+	    idx_superlike_posts_last_seen
+	    ON superlike_posts(last_seen_at);
+	
   `);
 
 
-  /*
-   * ==========================================================
-   * 兼容你的旧 monitor.db
-   *
-   * 不删除任何旧数据。
-   * 缺哪个字段就自动 ALTER TABLE 补哪个字段。
-   * ==========================================================
-   */
+	/*
+	 * ==========================================================
+	 * 兼容你的旧 monitor.db
+	 *
+	 * 不删除任何旧数据。
+	 * 缺哪个字段就自动 ALTER TABLE 补哪个字段。
+	 * ==========================================================
+	 */
 
-  ensureColumn(
-    'comments',
-    'buyer_nickname',
-    'TEXT'
-  );
+	ensureColumn(
+		'comments',
+		'buyer_nickname',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'comments',
-    'sku_name',
-    'TEXT'
-  );
+	ensureColumn(
+		'comments',
+		'customerid',
+		'TEXT'
+	);
 
-
-  /*
-   * Latest / History 拆分后的新字段
-   */
-
-  ensureColumn(
-    'monitors',
-    'history_next_page',
-    'INTEGER'
-  );
-
-  ensureColumn(
-    'monitors',
-    'history_completed',
-    'INTEGER NOT NULL DEFAULT 0'
-  );
-
-  ensureColumn(
-    'monitors',
-    'latest_last_run_at',
-    'TEXT'
-  );
-
-  ensureColumn(
-    'monitors',
-    'latest_last_status',
-    'TEXT'
-  );
-
-  ensureColumn(
-    'monitors',
-    'history_last_run_at',
-    'TEXT'
-  );
-
-  ensureColumn(
-    'monitors',
-    'history_last_status',
-    'TEXT'
-  );
+	ensureColumn(
+		'comments',
+		'sku_name',
+		'TEXT'
+	);
 
 
-  /*
-   * 用来区分：
-   *
-   * latest
-   * history
-   * legacy
-   */
+	/*
+	 * Latest / History 拆分后的新字段
+	 */
 
-  ensureColumn(
-    'api_responses',
-    'crawl_type',
-    "TEXT NOT NULL DEFAULT 'legacy'"
-  );
+	ensureColumn(
+		'monitors',
+		'history_next_page',
+		'INTEGER'
+	);
+
+	ensureColumn(
+		'monitors',
+		'history_completed',
+		'INTEGER NOT NULL DEFAULT 0'
+	);
+
+	ensureColumn(
+		'monitors',
+		'latest_last_run_at',
+		'TEXT'
+	);
+
+	ensureColumn(
+		'monitors',
+		'latest_last_status',
+		'TEXT'
+	);
+
+	ensureColumn(
+		'monitors',
+		'history_last_run_at',
+		'TEXT'
+	);
+
+	ensureColumn(
+		'monitors',
+		'history_last_status',
+		'TEXT'
+	);
 
 
-  /*
-   * 索引
-   */
+	/*
+	 * 用来区分：
+	 *
+	 * latest
+	 * history
+	 * legacy
+	 */
 
-  db.exec(`
+	ensureColumn(
+		'api_responses',
+		'crawl_type',
+		"TEXT NOT NULL DEFAULT 'legacy'"
+	);
+
+
+	/*
+	 * 索引
+	 */
+
+	db.exec(`
 
     CREATE INDEX IF NOT EXISTS
       idx_comments_monitor
@@ -284,20 +336,20 @@ function initDatabase() {
 
 function getMonitors(onlyEnabled = true) {
 
-  initDatabase();
+	initDatabase();
 
-  if (onlyEnabled) {
+	if (onlyEnabled) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
       FROM monitors
       WHERE enabled = 1
       ORDER BY id
     `).all();
-  }
+	}
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
     FROM monitors
     ORDER BY id
@@ -307,9 +359,9 @@ function getMonitors(onlyEnabled = true) {
 
 function getMonitor(id) {
 
-  initDatabase();
+	initDatabase();
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
     FROM monitors
     WHERE id = ?
@@ -319,9 +371,9 @@ function getMonitor(id) {
 
 function getMonitorByUrl(url) {
 
-  initDatabase();
+	initDatabase();
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
     FROM monitors
     WHERE url = ?
@@ -331,17 +383,17 @@ function getMonitorByUrl(url) {
 
 
 function createMonitor({
-  name,
-  url,
-  emojis = [],
-  texts = [],
-  enabled = true
+	name,
+	url,
+	emojis = [],
+	texts = [],
+	enabled = true
 }) {
 
-  initDatabase();
+	initDatabase();
 
 
-  const result = db.prepare(`
+	const result = db.prepare(`
     INSERT INTO monitors(
       name,
       url,
@@ -358,45 +410,45 @@ function createMonitor({
     )
   `).run(
 
-    name,
+		name,
 
-    url,
+		url,
 
-    JSON.stringify(
-      emojis
-    ),
+		JSON.stringify(
+			emojis
+		),
 
-    JSON.stringify(
-      texts
-    ),
+		JSON.stringify(
+			texts
+		),
 
-    enabled
-      ? 1
-      : 0
-  );
+		enabled
+			? 1
+			: 0
+	);
 
 
-  return Number(
-    result.lastInsertRowid
-  );
+	return Number(
+		result.lastInsertRowid
+	);
 }
 
 
 function updateMonitor(
-  id,
-  {
-    name,
-    url,
-    emojis = [],
-    texts = [],
-    enabled = true
-  }
+	id,
+	{
+		name,
+		url,
+		emojis = [],
+		texts = [],
+		enabled = true
+	}
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
     SET
       name = ?,
@@ -411,24 +463,24 @@ function updateMonitor(
     WHERE id = ?
   `).run(
 
-    name,
+		name,
 
-    url,
+		url,
 
-    JSON.stringify(
-      emojis
-    ),
+		JSON.stringify(
+			emojis
+		),
 
-    JSON.stringify(
-      texts
-    ),
+		JSON.stringify(
+			texts
+		),
 
-    enabled
-      ? 1
-      : 0,
+		enabled
+			? 1
+			: 0,
 
-    id
-  );
+		id
+	);
 }
 
 
@@ -442,14 +494,14 @@ function updateMonitor(
  */
 
 function updateMonitorStatus(
-  id,
-  status
+	id,
+	status
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -463,9 +515,9 @@ function updateMonitorStatus(
 
     WHERE id = ?
   `).run(
-    status,
-    id
-  );
+		status,
+		id
+	);
 }
 
 
@@ -476,14 +528,14 @@ function updateMonitorStatus(
  */
 
 function updateLatestStatus(
-  monitorId,
-  status
+	monitorId,
+	status
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -503,12 +555,12 @@ function updateLatestStatus(
     WHERE id = ?
   `).run(
 
-    status,
+		status,
 
-    status,
+		status,
 
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -519,14 +571,14 @@ function updateLatestStatus(
  */
 
 function updateHistoryStatus(
-  monitorId,
-  status
+	monitorId,
+	status
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -540,9 +592,9 @@ function updateHistoryStatus(
 
     WHERE id = ?
   `).run(
-    status,
-    monitorId
-  );
+		status,
+		monitorId
+	);
 }
 
 
@@ -551,14 +603,14 @@ function updateHistoryStatus(
  */
 
 function setHistoryNextPage(
-  monitorId,
-  pageNum
+	monitorId,
+	pageNum
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -570,12 +622,12 @@ function setHistoryNextPage(
     WHERE id = ?
   `).run(
 
-    Number(
-      pageNum
-    ),
+		Number(
+			pageNum
+		),
 
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -584,13 +636,13 @@ function setHistoryNextPage(
  */
 
 function markHistoryCompleted(
-  monitorId
+	monitorId
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -607,8 +659,8 @@ function markHistoryCompleted(
 
     WHERE id = ?
   `).run(
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -618,14 +670,14 @@ function markHistoryCompleted(
  */
 
 function resetHistoryProgress(
-  monitorId,
-  pageNum = 1
+	monitorId,
+	pageNum = 1
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     UPDATE monitors
 
     SET
@@ -643,12 +695,12 @@ function resetHistoryProgress(
     WHERE id = ?
   `).run(
 
-    Number(
-      pageNum
-    ),
+		Number(
+			pageNum
+		),
 
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -681,53 +733,53 @@ function resetHistoryProgress(
  */
 
 function getInitialHistoryPage(
-  monitorId
+	monitorId
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  const monitor =
-    getMonitor(
-      monitorId
-    );
+	const monitor =
+		getMonitor(
+			monitorId
+		);
 
 
-  if (!monitor) {
+	if (!monitor) {
 
-    throw new Error(
-      `Monitor ${monitorId} 不存在`
-    );
-  }
-
-
-  /*
-   * 已经有正式 History 断点，
-   * 直接使用。
-   */
-
-  if (
-    monitor.history_next_page !== null &&
-    monitor.history_next_page !== undefined &&
-    Number(
-      monitor.history_next_page
-    ) >= 1
-  ) {
-
-    return Number(
-      monitor.history_next_page
-    );
-  }
+		throw new Error(
+			`Monitor ${monitorId} 不存在`
+		);
+	}
 
 
-  /*
-   * 第一次升级。
-   *
-   * 从旧 response 找最大成功页。
-   */
+	/*
+	 * 已经有正式 History 断点，
+	 * 直接使用。
+	 */
 
-  const rows =
-    db.prepare(`
+	if (
+		monitor.history_next_page !== null &&
+		monitor.history_next_page !== undefined &&
+		Number(
+			monitor.history_next_page
+		) >= 1
+	) {
+
+		return Number(
+			monitor.history_next_page
+		);
+	}
+
+
+	/*
+	 * 第一次升级。
+	 *
+	 * 从旧 response 找最大成功页。
+	 */
+
+	const rows =
+		db.prepare(`
       SELECT
         page_num,
         http_status,
@@ -752,124 +804,124 @@ function getInitialHistoryPage(
         page_num DESC,
         id DESC
     `).all(
-      monitorId
-    );
+			monitorId
+		);
 
 
-  let maxSuccessfulPage = 0;
+	let maxSuccessfulPage = 0;
 
 
-  for (
-    const row of rows
-  ) {
+	for (
+		const row of rows
+	) {
 
-    const hasError =
-      row.error_message !== null &&
-      row.error_message !== undefined &&
-      String(
-        row.error_message
-      ).trim() !== '';
-
-
-    if (hasError) {
-      continue;
-    }
+		const hasError =
+			row.error_message !== null &&
+			row.error_message !== undefined &&
+			String(
+				row.error_message
+			).trim() !== '';
 
 
-    if (
-      !row.response_json
-    ) {
-      continue;
-    }
+		if (hasError) {
+			continue;
+		}
 
 
-    /*
-     * HTTP 状态异常不算成功。
-     */
-
-    if (
-      row.http_status !== null &&
-      (
-        Number(
-          row.http_status
-        ) < 200 ||
-
-        Number(
-          row.http_status
-        ) >= 300
-      )
-    ) {
-
-      continue;
-    }
+		if (
+			!row.response_json
+		) {
+			continue;
+		}
 
 
-    /*
-     * 还要检查微博自己的：
-     *
-     * code === 100000
-     */
+		/*
+		 * HTTP 状态异常不算成功。
+		 */
 
-    try {
+		if (
+			row.http_status !== null &&
+			(
+				Number(
+					row.http_status
+				) < 200 ||
 
-      const raw =
-        JSON.parse(
-          row.response_json
-        );
+				Number(
+					row.http_status
+				) >= 300
+			)
+		) {
 
-
-      if (
-        Number(
-          raw?.code
-        ) !== 100000
-      ) {
-
-        continue;
-      }
+			continue;
+		}
 
 
-      maxSuccessfulPage =
-        Math.max(
+		/*
+		 * 还要检查微博自己的：
+		 *
+		 * code === 100000
+		 */
 
-          maxSuccessfulPage,
+		try {
 
-          Number(
-            row.page_num
-          ) || 0
-        );
-
-    } catch {
-
-      /*
-       * JSON 坏掉的旧 response
-       * 不作为成功页。
-       */
-
-    }
-  }
+			const raw =
+				JSON.parse(
+					row.response_json
+				);
 
 
-  const nextPage =
+			if (
+				Number(
+					raw?.code
+				) !== 100000
+			) {
 
-    maxSuccessfulPage > 0
-
-      ? maxSuccessfulPage + 1
-
-      : 1;
-
-
-  setHistoryNextPage(
-    monitorId,
-    nextPage
-  );
+				continue;
+			}
 
 
-  console.log(
-    `Monitor ${monitorId} 初始化 History 断点：${nextPage}`
-  );
+			maxSuccessfulPage =
+				Math.max(
+
+					maxSuccessfulPage,
+
+					Number(
+						row.page_num
+					) || 0
+				);
+
+		} catch {
+
+			/*
+			 * JSON 坏掉的旧 response
+			 * 不作为成功页。
+			 */
+
+		}
+	}
 
 
-  return nextPage;
+	const nextPage =
+
+		maxSuccessfulPage > 0
+
+			? maxSuccessfulPage + 1
+
+			: 1;
+
+
+	setHistoryNextPage(
+		monitorId,
+		nextPage
+	);
+
+
+	console.log(
+		`Monitor ${monitorId} 初始化 History 断点：${nextPage}`
+	);
+
+
+	return nextPage;
 }
 
 
@@ -881,15 +933,15 @@ function getInitialHistoryPage(
 
 function deleteMonitor(id) {
 
-  initDatabase();
+	initDatabase();
 
 
-  db.prepare(`
+	db.prepare(`
     DELETE FROM monitors
     WHERE id = ?
   `).run(
-    id
-  );
+		id
+	);
 }
 
 
@@ -900,22 +952,22 @@ function deleteMonitor(id) {
  */
 
 function normalizeNullable(
-  value
+	value
 ) {
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
 
-    return null;
-  }
+		return null;
+	}
 
 
-  return String(
-    value
-  );
+	return String(
+		value
+	);
 }
 
 
@@ -939,85 +991,85 @@ function normalizeNullable(
  */
 
 function saveComment(
-  monitorId,
-  comment
+	monitorId,
+	comment
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  const commentId =
-    String(
+	const commentId =
+		String(
 
-      comment.comment_id ??
+			comment.comment_id ??
 
-      comment.commentId ??
+			comment.commentId ??
 
-      comment.id ??
+			comment.id ??
 
-      comment.cid ??
+			comment.cid ??
 
-      ''
-    );
-
-
-  if (!commentId) {
-
-    return false;
-  }
+			''
+		);
 
 
-  const content =
-    String(
+	if (!commentId) {
 
-      comment.content ??
-
-      comment.text ??
-
-      ''
-    );
+		return false;
+	}
 
 
-  const commentTime =
-    normalizeNullable(
+	const content =
+		String(
 
-      comment.comment_time ??
+			comment.content ??
 
-      comment.commentTime ??
+			comment.text ??
 
-      comment.time ??
-
-      null
-    );
+			''
+		);
 
 
-  const buyerNickname =
-    normalizeNullable(
+	const commentTime =
+		normalizeNullable(
 
-      comment.buyer_nickname ??
+			comment.comment_time ??
 
-      comment.buyerNickname ??
+			comment.commentTime ??
 
-      comment.username ??
+			comment.time ??
 
-      null
-    );
-
-
-  const skuName =
-    normalizeNullable(
-
-      comment.sku_name ??
-
-      comment.skuName ??
-
-      comment.product ??
-
-      null
-    );
+			null
+		);
 
 
-  db.prepare(`
+	const buyerNickname =
+		normalizeNullable(
+
+			comment.buyer_nickname ??
+
+			comment.buyerNickname ??
+
+			comment.username ??
+
+			null
+		);
+
+
+	const skuName =
+		normalizeNullable(
+
+			comment.sku_name ??
+
+			comment.skuName ??
+
+			comment.product ??
+
+			null
+		);
+
+
+	db.prepare(`
     INSERT INTO comments(
       monitor_id,
       comment_id,
@@ -1116,21 +1168,21 @@ function saveComment(
 
   `).run(
 
-    monitorId,
+		monitorId,
 
-    commentId,
+		commentId,
 
-    buyerNickname,
+		buyerNickname,
 
-    skuName,
+		skuName,
 
-    content,
+		content,
 
-    commentTime
-  );
+		commentTime
+	);
 
 
-  return true;
+	return true;
 }
 
 
@@ -1139,55 +1191,55 @@ function saveComment(
  */
 
 function saveComments(
-  monitorId,
-  comments
+	monitorId,
+	comments
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  let count = 0;
+	let count = 0;
 
 
-  db.exec(
-    'BEGIN'
-  );
+	db.exec(
+		'BEGIN'
+	);
 
 
-  try {
+	try {
 
-    for (
-      const comment of comments || []
-    ) {
+		for (
+			const comment of comments || []
+		) {
 
-      if (
-        saveComment(
-          monitorId,
-          comment
-        )
-      ) {
+			if (
+				saveComment(
+					monitorId,
+					comment
+				)
+			) {
 
-        count++;
-      }
-    }
-
-
-    db.exec(
-      'COMMIT'
-    );
+				count++;
+			}
+		}
 
 
-    return count;
-
-  } catch (error) {
-
-    db.exec(
-      'ROLLBACK'
-    );
+		db.exec(
+			'COMMIT'
+		);
 
 
-    throw error;
-  }
+		return count;
+
+	} catch (error) {
+
+		db.exec(
+			'ROLLBACK'
+		);
+
+
+		throw error;
+	}
 }
 
 
@@ -1196,14 +1248,14 @@ function saveComments(
  */
 
 function getComments(
-  monitorId,
-  limit = 100
+	monitorId,
+	limit = 100
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
 
     FROM comments
@@ -1233,9 +1285,9 @@ function getComments(
 
     LIMIT ?
   `).all(
-    monitorId,
-    limit
-  );
+		monitorId,
+		limit
+	);
 }
 
 
@@ -1259,18 +1311,18 @@ function getComments(
  */
 
 function getAllComments(
-  monitorId = null
+	monitorId = null
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  if (
-    monitorId !== null &&
-    monitorId !== undefined
-  ) {
+	if (
+		monitorId !== null &&
+		monitorId !== undefined
+	) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
 
       FROM comments
@@ -1299,12 +1351,12 @@ function getAllComments(
         id DESC
 
     `).all(
-      monitorId
-    );
-  }
+			monitorId
+		);
+	}
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
 
     FROM comments
@@ -1343,33 +1395,33 @@ function getAllComments(
  */
 
 function getCommentIds(
-  monitorId
+	monitorId
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  const rows =
-    db.prepare(`
+	const rows =
+		db.prepare(`
       SELECT comment_id
 
       FROM comments
 
       WHERE monitor_id = ?
     `).all(
-      monitorId
-    );
+			monitorId
+		);
 
 
-  return new Set(
+	return new Set(
 
-    rows.map(
-      row =>
-        String(
-          row.comment_id
-        )
-    )
-  );
+		rows.map(
+			row =>
+				String(
+					row.comment_id
+				)
+		)
+	);
 }
 
 
@@ -1380,49 +1432,49 @@ function getCommentIds(
  */
 
 function saveApiResponse({
-  monitorId,
-  pageNum,
-  apiUrl,
+	monitorId,
+	pageNum,
+	apiUrl,
 
-  httpStatus = null,
+	httpStatus = null,
 
-  responseData = null,
+	responseData = null,
 
-  errorMessage = null,
+	errorMessage = null,
 
-  crawlType = 'legacy'
+	crawlType = 'legacy'
 }) {
 
-  initDatabase();
+	initDatabase();
 
 
-  let responseJson = null;
+	let responseJson = null;
 
 
-  try {
+	try {
 
-    responseJson =
+		responseJson =
 
-      responseData == null
+			responseData == null
 
-        ? null
+				? null
 
-        : JSON.stringify(
-            responseData
-          );
+				: JSON.stringify(
+					responseData
+				);
 
-  } catch (error) {
+	} catch (error) {
 
-    responseJson =
-      JSON.stringify({
-        serializationError:
-          error.message
-      });
-  }
+		responseJson =
+			JSON.stringify({
+				serializationError:
+					error.message
+			});
+	}
 
 
-  const result =
-    db.prepare(`
+	const result =
+		db.prepare(`
       INSERT INTO api_responses(
         monitor_id,
 
@@ -1444,37 +1496,37 @@ function saveApiResponse({
       )
     `).run(
 
-      monitorId,
+			monitorId,
 
-      pageNum,
+			pageNum,
 
-      apiUrl,
+			apiUrl,
 
-      httpStatus,
+			httpStatus,
 
-      responseJson,
+			responseJson,
 
-      errorMessage,
+			errorMessage,
 
-      crawlType || 'legacy'
-    );
+			crawlType || 'legacy'
+		);
 
 
-  return Number(
-    result.lastInsertRowid
-  );
+	return Number(
+		result.lastInsertRowid
+	);
 }
 
 
 function getApiResponses(
-  monitorId,
-  limit = 500
+	monitorId,
+	limit = 500
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT
       ar.*,
 
@@ -1495,20 +1547,20 @@ function getApiResponses(
 
     LIMIT ?
   `).all(
-    monitorId,
-    limit
-  );
+		monitorId,
+		limit
+	);
 }
 
 
 function getAllApiResponses(
-  limit = 500
+	limit = 500
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT
       ar.*,
 
@@ -1526,19 +1578,19 @@ function getAllApiResponses(
 
     LIMIT ?
   `).all(
-    limit
-  );
+		limit
+	);
 }
 
 
 function getApiResponseById(
-  id
+	id
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT
       ar.*,
 
@@ -1554,8 +1606,8 @@ function getApiResponseById(
     WHERE
       ar.id = ?
   `).get(
-    id
-  );
+		id
+	);
 }
 
 
@@ -1569,16 +1621,16 @@ function getApiResponseById(
  */
 
 function getLatestFailedApiResponse(
-  monitorId,
-  crawlType = null
+	monitorId,
+	crawlType = null
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  if (crawlType) {
+	if (crawlType) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
 
       FROM api_responses
@@ -1600,13 +1652,13 @@ function getLatestFailedApiResponse(
 
       LIMIT 1
     `).get(
-      monitorId,
-      crawlType
-    );
-  }
+			monitorId,
+			crawlType
+		);
+	}
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
 
     FROM api_responses
@@ -1626,8 +1678,8 @@ function getLatestFailedApiResponse(
 
     LIMIT 1
   `).get(
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -1636,16 +1688,16 @@ function getLatestFailedApiResponse(
  */
 
 function getLatestApiResponse(
-  monitorId,
-  crawlType = null
+	monitorId,
+	crawlType = null
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  if (crawlType) {
+	if (crawlType) {
 
-    return db.prepare(`
+		return db.prepare(`
       SELECT *
 
       FROM api_responses
@@ -1660,13 +1712,13 @@ function getLatestApiResponse(
 
       LIMIT 1
     `).get(
-      monitorId,
-      crawlType
-    );
-  }
+			monitorId,
+			crawlType
+		);
+	}
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
 
     FROM api_responses
@@ -1679,8 +1731,8 @@ function getLatestApiResponse(
 
     LIMIT 1
   `).get(
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -1706,74 +1758,74 @@ function getLatestApiResponse(
  */
 
 function saveDailyStats(
-  monitorIdOrObject,
-  maybeStats = null
+	monitorIdOrObject,
+	maybeStats = null
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  let monitorId;
+	let monitorId;
 
-  let stats;
-
-
-  if (
-    typeof monitorIdOrObject ===
-      'object' &&
-
-    monitorIdOrObject !== null &&
-
-    maybeStats === null
-  ) {
-
-    monitorId =
-      Number(
-        monitorIdOrObject.monitorId
-      );
+	let stats;
 
 
-    stats = {
-      ...monitorIdOrObject
-    };
+	if (
+		typeof monitorIdOrObject ===
+		'object' &&
+
+		monitorIdOrObject !== null &&
+
+		maybeStats === null
+	) {
+
+		monitorId =
+			Number(
+				monitorIdOrObject.monitorId
+			);
 
 
-    delete stats.monitorId;
-
-  } else {
-
-    monitorId =
-      Number(
-        monitorIdOrObject
-      );
+		stats = {
+			...monitorIdOrObject
+		};
 
 
-    stats =
-      maybeStats || {};
-  }
+		delete stats.monitorId;
+
+	} else {
+
+		monitorId =
+			Number(
+				monitorIdOrObject
+			);
 
 
-  if (!monitorId) {
-
-    throw new Error(
-      'saveDailyStats 缺少 monitorId'
-    );
-  }
+		stats =
+			maybeStats || {};
+	}
 
 
-  const statDate =
+	if (!monitorId) {
 
-    stats.statDate ||
-
-    new Date()
-      .toISOString()
-      .slice(
-        0,
-        10
-      );
+		throw new Error(
+			'saveDailyStats 缺少 monitorId'
+		);
+	}
 
 
-  db.prepare(`
+	const statDate =
+
+		stats.statDate ||
+
+		new Date()
+			.toISOString()
+			.slice(
+				0,
+				10
+			);
+
+
+	db.prepare(`
     INSERT INTO daily_stats(
 
       monitor_id,
@@ -1823,41 +1875,41 @@ function saveDailyStats(
 
   `).run(
 
-    monitorId,
+		monitorId,
 
-    statDate,
+		statDate,
 
-    stats.totalComments ??
-      0,
+		stats.totalComments ??
+		0,
 
-    stats.emojiTotal ??
-      0,
+		stats.emojiTotal ??
+		0,
 
-    stats.nonEmojiTotal ??
-      0,
+		stats.nonEmojiTotal ??
+		0,
 
-    JSON.stringify(
-      stats.emojiStats ||
-      {}
-    ),
+		JSON.stringify(
+			stats.emojiStats ||
+			{}
+		),
 
-    JSON.stringify(
-      stats.textStats ||
-      {}
-    )
-  );
+		JSON.stringify(
+			stats.textStats ||
+			{}
+		)
+	);
 }
 
 
 function getDailyStats(
-  monitorId,
-  limit = 30
+	monitorId,
+	limit = 30
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT *
 
     FROM daily_stats
@@ -1870,20 +1922,20 @@ function getDailyStats(
 
     LIMIT ?
   `).all(
-    monitorId,
-    limit
-  );
+		monitorId,
+		limit
+	);
 }
 
 
 function getMonitorResult(
-  monitorId
+	monitorId
 ) {
 
-  initDatabase();
+	initDatabase();
 
 
-  return db.prepare(`
+	return db.prepare(`
     SELECT
       ds.*,
 
@@ -1904,8 +1956,8 @@ function getMonitorResult(
 
     LIMIT 1
   `).get(
-    monitorId
-  );
+		monitorId
+	);
 }
 
 
@@ -1917,86 +1969,86 @@ function getMonitorResult(
 
 module.exports = {
 
-  db,
+	db,
 
-  initDatabase,
-
-
-  /*
-   * Monitor
-   */
-
-  getMonitors,
-
-  getMonitor,
-
-  getMonitorByUrl,
-
-  createMonitor,
-
-  updateMonitor,
-
-  updateMonitorStatus,
-
-  deleteMonitor,
+	initDatabase,
 
 
-  /*
-   * Latest / History
-   */
+	/*
+	 * Monitor
+	 */
 
-  updateLatestStatus,
+	getMonitors,
 
-  updateHistoryStatus,
+	getMonitor,
 
-  setHistoryNextPage,
+	getMonitorByUrl,
 
-  markHistoryCompleted,
+	createMonitor,
 
-  resetHistoryProgress,
+	updateMonitor,
 
-  getInitialHistoryPage,
+	updateMonitorStatus,
 
-
-  /*
-   * Comments
-   */
-
-  saveComment,
-
-  saveComments,
-
-  getComments,
-
-  getAllComments,
-
-  getCommentIds,
+	deleteMonitor,
 
 
-  /*
-   * Responses
-   */
+	/*
+	 * Latest / History
+	 */
 
-  saveApiResponse,
+	updateLatestStatus,
 
-  getApiResponses,
+	updateHistoryStatus,
 
-  getAllApiResponses,
+	setHistoryNextPage,
 
-  getApiResponseById,
+	markHistoryCompleted,
 
-  getLatestFailedApiResponse,
+	resetHistoryProgress,
 
-  getLatestApiResponse,
+	getInitialHistoryPage,
 
 
-  /*
-   * Stats
-   */
+	/*
+	 * Comments
+	 */
 
-  saveDailyStats,
+	saveComment,
 
-  getDailyStats,
+	saveComments,
 
-  getMonitorResult
+	getComments,
+
+	getAllComments,
+
+	getCommentIds,
+
+
+	/*
+	 * Responses
+	 */
+
+	saveApiResponse,
+
+	getApiResponses,
+
+	getAllApiResponses,
+
+	getApiResponseById,
+
+	getLatestFailedApiResponse,
+
+	getLatestApiResponse,
+
+
+	/*
+	 * Stats
+	 */
+
+	saveDailyStats,
+
+	getDailyStats,
+
+	getMonitorResult
 };

@@ -12,3 +12,8 @@
     "playwright": "^1.55.0"
   }
 }
+
+"scripts": {
+  "start": "node server.js",
+  "scan-superlike": "node scripts/superlike-batch.js"
+}

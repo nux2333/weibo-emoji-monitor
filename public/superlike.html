@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+
+<html lang="zh-CN">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>
+    超Like候选池
+  </title>
+
+  <link
+    rel="stylesheet"
+    href="/style.css"
+  >
+
+  <style>
+
+    body {
+      background: #f5f6f8;
+      margin: 0;
+      font-family:
+        Arial,
+        "Microsoft YaHei",
+        sans-serif;
+    }
+
+    .superlike-container {
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .superlike-title {
+      font-size: 26px;
+      font-weight: 700;
+      margin-bottom: 20px;
+    }
+
+    .stats {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+
+    .stat-card {
+      background: white;
+      border-radius: 10px;
+      padding: 16px 24px;
+      min-width: 150px;
+      box-shadow:
+        0 1px 4px
+        rgba(0,0,0,.08);
+    }
+
+    .stat-value {
+      font-size: 26px;
+      font-weight: bold;
+    }
+
+    .stat-label {
+      margin-top: 6px;
+      color: #777;
+      font-size: 13px;
+    }
+
+    .toolbar {
+      background: white;
+      padding: 16px;
+      border-radius: 10px;
+      margin-bottom: 16px;
+    }
+
+    .toolbar input {
+      width: 300px;
+      max-width: 70%;
+      padding: 9px 12px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+    }
+
+    .toolbar button {
+      padding: 9px 18px;
+      margin-left: 8px;
+      cursor: pointer;
+    }
+
+    .table-wrap {
+      background: white;
+      border-radius: 10px;
+      overflow-x: auto;
+      box-shadow:
+        0 1px 4px
+        rgba(0,0,0,.08);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 1200px;
+    }
+
+    th,
+    td {
+      padding: 12px 10px;
+      border-bottom:
+        1px solid #eee;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #fafafa;
+      position: sticky;
+      top: 0;
+      white-space: nowrap;
+    }
+
+    .post-text {
+      width: 400px;
+      max-width: 400px;
+      line-height: 1.5;
+    }
+
+    .uid {
+      font-family: monospace;
+      white-space: nowrap;
+    }
+
+    .comment-low {
+      font-weight: bold;
+    }
+
+    .icon-tag {
+      display: inline-block;
+      padding: 3px 8px;
+      background: #f0f0f0;
+      border-radius: 12px;
+      font-size: 12px;
+    }
+
+    .no-icon {
+      color: #999;
+    }
+
+    .unknown-exp {
+      color: #aaa;
+    }
+
+    .link-button {
+      display: inline-block;
+      text-decoration: none;
+      padding: 6px 12px;
+      border-radius: 6px;
+      background: #222;
+      color: white;
+      white-space: nowrap;
+    }
+
+    .time {
+      white-space: nowrap;
+      font-size: 12px;
+      color: #777;
+    }
+
+  </style>
+
+</head>
+
+
+<body>
+
+<div class="superlike-container">
+
+  <div class="superlike-title">
+    超Like候选池
+  </div>
+
+
+  <div class="stats">
+
+    <div class="stat-card">
+
+      <div
+        class="stat-value"
+        id="totalCount"
+      >
+        -
+      </div>
+
+      <div class="stat-label">
+        候选帖子
+      </div>
+
+    </div>
+
+
+    <div class="stat-card">
+
+      <div
+        class="stat-value"
+        id="userCount"
+      >
+        -
+      </div>
+
+      <div class="stat-label">
+        不同用户
+      </div>
+
+    </div>
+
+
+    <div class="stat-card">
+
+      <div
+        class="stat-value"
+        id="experienceKnown"
+      >
+        -
+      </div>
+
+      <div class="stat-label">
+        已有7天经验值
+      </div>
+
+    </div>
+
+  </div>
+
+
+  <div class="toolbar">
+
+    <input
+      id="keyword"
+      placeholder="搜索UID / 用户名 / 帖子内容"
+    >
+
+    <button
+      onclick="loadData()"
+    >
+      搜索
+    </button>
+
+    <button
+      onclick="clearSearch()"
+    >
+      清空
+    </button>
+
+  </div>
+
+
+  <div class="table-wrap">
+
+    <table>
+
+      <thead>
+
+        <tr>
+
+          <th>
+            用户ID
+          </th>
+
+          <th>
+            用户名
+          </th>
+
+          <th>
+            帖子内容
+          </th>
+
+          <th>
+            评论
+          </th>
+
+          <th>
+            当前Icon
+          </th>
+
+          <th>
+            近7天经验值
+          </th>
+
+          <th>
+            首次发现
+          </th>
+
+          <th>
+            最后确认
+          </th>
+
+          <th>
+            Link
+          </th>
+
+        </tr>
+
+      </thead>
+
+
+      <tbody
+        id="tbody"
+      >
+      </tbody>
+
+    </table>
+
+  </div>
+
+</div>
+
+
+<script
+  src="/superlike.js"
+></script>
+
+</body>
+
+</html>
