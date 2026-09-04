@@ -91,6 +91,44 @@ const LIGHT_ROUND_INTERVAL_MS =
   || 3 * 60 * 1000;
 
 
+const LIST_FIRST_RUN_MAX_PAGES =
+  Number(
+    process.env.SUPERLIKE_LIST_FIRST_RUN_MAX_PAGES
+  )
+  || 50;
+
+const LIST_DAY_INTERVAL_MS =
+  Number(
+    process.env.SUPERLIKE_LIST_DAY_INTERVAL_MS
+  )
+  || 20 * 60 * 1000;
+
+const LIST_NIGHT_INTERVAL_MS =
+  Number(
+    process.env.SUPERLIKE_LIST_NIGHT_INTERVAL_MS
+  )
+  || 5 * 60 * 1000;
+
+const LIST_NIGHT_START_HOUR =
+  Number(
+    process.env.SUPERLIKE_LIST_NIGHT_START_HOUR
+  )
+  || 19;
+
+const LIST_REQUEST_DELAY_MS =
+  Number(
+    process.env.SUPERLIKE_LIST_REQUEST_DELAY_MS
+  )
+  || 250;
+
+
+const LIST_DELTA_SAFETY_PAGES =
+  Number(
+    process.env.SUPERLIKE_LIST_DELTA_SAFETY_PAGES
+  )
+  || 30;
+
+
 /**
  * ============================================================
  * DB
@@ -194,6 +232,394 @@ function deleteAllPostsByUid(
 
 
   return result.changes;
+}
+
+
+function initSuperLikeListStateTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS superlike_list_state (
+      monitor_id INTEGER PRIMARY KEY,
+      last_uid TEXT,
+      scan_date TEXT,
+      last_total INTEGER,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
+  const columns =
+    db.prepare(`
+      PRAGMA table_info(superlike_list_state)
+    `).all();
+
+  const names =
+    new Set(
+      columns.map(
+        column =>
+          String(column.name)
+      )
+    );
+
+  if (!names.has('scan_date')) {
+    db.exec(`
+      ALTER TABLE superlike_list_state
+      ADD COLUMN scan_date TEXT
+    `);
+  }
+
+  if (!names.has('last_total')) {
+    db.exec(`
+      ALTER TABLE superlike_list_state
+      ADD COLUMN last_total INTEGER
+    `);
+  }
+}
+
+function getSuperLikeListState(
+  monitorId
+) {
+  initSuperLikeListStateTable();
+
+  const row =
+    db.prepare(`
+      SELECT
+        last_uid,
+        scan_date,
+        last_total,
+        updated_at
+      FROM superlike_list_state
+      WHERE monitor_id = ?
+    `).get(
+      monitorId
+    );
+
+  return row
+    ? {
+        lastUid:
+          row.last_uid
+            ? String(row.last_uid)
+            : null,
+
+        scanDate:
+          row.scan_date
+            ? String(row.scan_date)
+            : null,
+
+        lastTotal:
+          Number.isFinite(
+            Number(row.last_total)
+          )
+            ? Number(row.last_total)
+            : null,
+
+        updatedAt:
+          row.updated_at
+          || null
+      }
+    : null;
+}
+
+function saveSuperLikeListState(
+  monitorId,
+  lastUid,
+  scanDate,
+  lastTotal
+) {
+  if (!lastUid) {
+    return;
+  }
+
+  initSuperLikeListStateTable();
+
+  db.prepare(`
+    INSERT INTO superlike_list_state(
+      monitor_id,
+      last_uid,
+      scan_date,
+      last_total,
+      updated_at
+    )
+    VALUES(?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(monitor_id) DO UPDATE SET
+      last_uid = excluded.last_uid,
+      scan_date = excluded.scan_date,
+      last_total = excluded.last_total,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    monitorId,
+    String(lastUid),
+    scanDate || null,
+    Number.isFinite(
+      Number(lastTotal)
+    )
+      ? Number(lastTotal)
+      : null
+  );
+}
+
+function getWeiboScanDate() {
+  const parts =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone:
+          'Asia/Shanghai',
+
+        year:
+          'numeric',
+
+        month:
+          '2-digit',
+
+        day:
+          '2-digit'
+      }
+    ).formatToParts(
+      new Date()
+    );
+
+  const map = {};
+
+  for (
+    const part
+    of parts
+  ) {
+    map[part.type] =
+      part.value;
+  }
+
+  return `${map.year}-${map.month}-${map.day}`;
+}
+
+function parseSuperLikeTotalText(
+  value
+) {
+  if (!value) {
+    return null;
+  }
+
+  const text =
+    String(value);
+
+  const wanMatch =
+    text.match(
+      /超\s*LIKE\s*\(\s*([\d.]+)\s*万\s*人?\s*\)/i
+    );
+
+  if (wanMatch) {
+    const number =
+      Number(
+        wanMatch[1]
+      );
+
+    return Number.isFinite(number)
+      ? Math.round(
+          number * 10000
+        )
+      : null;
+  }
+
+  const plainMatch =
+    text.match(
+      /超\s*LIKE\s*\(\s*([\d,]+)\s*人?\s*\)/i
+    );
+
+  if (plainMatch) {
+    const number =
+      Number(
+        plainMatch[1]
+          .replace(/,/g, '')
+      );
+
+    return Number.isFinite(number)
+      ? number
+      : null;
+  }
+
+  return null;
+}
+
+function extractSuperLikeTotal(
+  json
+) {
+  const visited =
+    new Set();
+
+  function walk(value) {
+    if (
+      value === null
+      ||
+      value === undefined
+    ) {
+      return null;
+    }
+
+    if (
+      typeof value === 'string'
+    ) {
+      return parseSuperLikeTotalText(
+        value
+      );
+    }
+
+    if (
+      typeof value !== 'object'
+    ) {
+      return null;
+    }
+
+    if (
+      visited.has(value)
+    ) {
+      return null;
+    }
+
+    visited.add(value);
+
+    if (
+      typeof value.desc === 'string'
+    ) {
+      const parsed =
+        parseSuperLikeTotalText(
+          value.desc
+        );
+
+      if (parsed !== null) {
+        return parsed;
+      }
+    }
+
+    if (Array.isArray(value)) {
+      for (
+        const item
+        of value
+      ) {
+        const result =
+          walk(item);
+
+        if (result !== null) {
+          return result;
+        }
+      }
+
+      return null;
+    }
+
+    for (
+      const child
+      of Object.values(value)
+    ) {
+      const result =
+        walk(child);
+
+      if (result !== null) {
+        return result;
+      }
+    }
+
+    return null;
+  }
+
+  return walk(json);
+}
+
+function calculateListMaxPages(
+  currentTotal,
+  previousTotal
+) {
+  if (
+    !Number.isFinite(
+      Number(currentTotal)
+    )
+    ||
+    !Number.isFinite(
+      Number(previousTotal)
+    )
+  ) {
+    return null;
+  }
+
+  const delta =
+    Math.max(
+      0,
+      Number(currentTotal)
+        - Number(previousTotal)
+    );
+
+  return Math.max(
+    LIST_DELTA_SAFETY_PAGES,
+    Math.ceil(
+      delta / 20
+    )
+      + LIST_DELTA_SAFETY_PAGES
+  );
+}
+
+function deletePostsByUidSet(
+  monitorId,
+  uidSet
+) {
+  const uids =
+    Array.from(uidSet || [])
+      .map(
+        uid =>
+          String(uid || '').trim()
+      )
+      .filter(Boolean);
+
+  if (uids.length === 0) {
+    return 0;
+  }
+
+  const CHUNK_SIZE = 500;
+  let deleted = 0;
+
+  db.exec('BEGIN');
+
+  try {
+    for (
+      let i = 0;
+      i < uids.length;
+      i += CHUNK_SIZE
+    ) {
+      const chunk =
+        uids.slice(
+          i,
+          i + CHUNK_SIZE
+        );
+
+      const placeholders =
+        chunk
+          .map(() => '?')
+          .join(',');
+
+      const result =
+        db.prepare(`
+          DELETE FROM superlike_posts
+          WHERE monitor_id = ?
+            AND uid IN (${placeholders})
+        `).run(
+          monitorId,
+          ...chunk
+        );
+
+      deleted +=
+        result.changes
+        || 0;
+    }
+
+    db.exec('COMMIT');
+
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore
+    }
+
+    throw error;
+  }
+
+  return deleted;
 }
 
 
@@ -1690,6 +2116,15 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('########################################');
 
   let context = null;
+  let page = null;
+
+  const profileDir =
+    path.join(
+      __dirname,
+      '..',
+      'data',
+      'superlike-browser-profile-scan'
+    );
 
   const onAbort = () => {
     if (context) {
@@ -1705,6 +2140,23 @@ async function runLightSuperLikeRecheck(signal = null) {
     );
   }
 
+  async function launchVisibleContext() {
+    await launchVisibleContext();
+  }
+
+  async function closeCurrentContext() {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    context = null;
+    page = null;
+  }
+
   try {
     throwIfAborted(signal);
 
@@ -1715,14 +2167,6 @@ async function runLightSuperLikeRecheck(signal = null) {
      * 使用和 SuperLike 扫描一致的持久化 Profile。
      * 这样可以复用已经建立好的微博 visitor/session。
      */
-    const profileDir =
-      path.join(
-        __dirname,
-        '..',
-        'data',
-        'superlike-browser-profile-scan'
-      );
-
     context =
       await chromium.launchPersistentContext(
         profileDir,
@@ -2419,6 +2863,871 @@ async function runLightCommentRecheck(signal = null) {
 }
 
 
+
+/**
+ * ============================================================
+ * 模式4：直接读取超LIKE List，只取 UID，批量删除 DB
+ *
+ * 规则：
+ * - 第一次：最多读取 50 页
+ * - 后续：从第一页开始，一直读到上次保存的 last_uid
+ * - 白天：20分钟一次
+ * - 19点以后：5分钟一次
+ * ============================================================
+ */
+
+function buildSuperLikeListApiUrl(
+  config,
+  sinceId = null
+) {
+  const url =
+    new URL(
+      'https://m.weibo.cn/api/container/getIndex'
+    );
+
+  url.searchParams.set(
+    'containerid',
+    config.chaoLikeListContainerId
+  );
+
+  url.searchParams.set(
+    'title',
+    '超LIKE榜'
+  );
+
+  if (sinceId) {
+    url.searchParams.set(
+      'since_id',
+      String(sinceId)
+    );
+  }
+
+  return url.toString();
+}
+
+function extractSuperLikeListUids(
+  json
+) {
+  const result = [];
+
+  const cards =
+    Array.isArray(
+      json?.data?.cards
+    )
+      ? json.data.cards
+      : [];
+
+  for (
+    const card
+    of cards
+  ) {
+    const groups =
+      Array.isArray(
+        card?.card_group
+      )
+        ? card.card_group
+        : [];
+
+    for (
+      const item
+      of groups
+    ) {
+      const uid =
+        item?.user?.id
+        ??
+        item?.user?.idstr;
+
+      if (
+        uid !== undefined
+        &&
+        uid !== null
+        &&
+        String(uid).trim() !== ''
+      ) {
+        result.push(
+          String(uid)
+        );
+      }
+    }
+  }
+
+  return result;
+}
+
+function extractSuperLikeListNextSinceId(
+  json
+) {
+  const value =
+    json?.data?.cardlistInfo?.since_id
+    ?? null;
+
+  return (
+    value === null
+    ||
+    value === undefined
+    ||
+    value === ''
+  )
+    ? null
+    : String(value);
+}
+
+async function fetchSuperLikeListPage(
+  page,
+  config,
+  sinceId = null,
+  signal = null
+) {
+  throwIfAborted(signal);
+
+  const url =
+    buildSuperLikeListApiUrl(
+      config,
+      sinceId
+    );
+
+  let response;
+
+  try {
+    response =
+      await page.goto(
+        url,
+        {
+          waitUntil:
+            'domcontentloaded',
+
+          timeout:
+            LIGHT_REQUEST_TIMEOUT_MS
+        }
+      );
+
+  } catch (error) {
+    if (
+      signal?.aborted
+      ||
+      isAbortError(error)
+    ) {
+      throw error;
+    }
+
+    return {
+      ok: false,
+      blocked: false,
+      status: 0,
+      finalUrl:
+        page.url()
+        || url,
+      bodyPreview: '',
+      message:
+        `chaolikenew page.goto失败：${error.message}`
+    };
+  }
+
+  throwIfAborted(signal);
+
+  const status =
+    response
+      ? response.status()
+      : 0;
+
+  const finalUrl =
+    page.url()
+    || url;
+
+  let body = '';
+
+  try {
+    body =
+      response
+        ? await response.text()
+        : '';
+
+  } catch {
+    try {
+      body =
+        await page.locator('body')
+          .innerText();
+
+    } catch {
+      body = '';
+    }
+  }
+
+  const bodyPreview =
+    String(body || '')
+      .replace(/\s+/g, ' ')
+      .slice(0, 300);
+
+  if (status === 418) {
+    return {
+      ok: false,
+      blocked: true,
+      status,
+      finalUrl,
+      bodyPreview,
+      message:
+        'chaolikenew HTTP 418'
+    };
+  }
+
+  if (
+    status < 200
+    ||
+    status >= 300
+  ) {
+    return {
+      ok: false,
+      blocked: false,
+      status,
+      finalUrl,
+      bodyPreview,
+      message:
+        `chaolikenew HTTP ${status}`
+    };
+  }
+
+  if (
+    /passport\.weibo\.com\/sso\/signin/i.test(
+      finalUrl
+    )
+  ) {
+    return {
+      ok: false,
+      blocked: false,
+      status,
+      finalUrl,
+      bodyPreview,
+      message:
+        'chaolikenew 被重定向到微博登录页'
+    };
+  }
+
+  let json;
+
+  try {
+    json =
+      JSON.parse(
+        body
+      );
+
+  } catch (error) {
+    return {
+      ok: false,
+      blocked: false,
+      status,
+      finalUrl,
+      bodyPreview,
+      message:
+        `chaolikenew JSON解析失败：${error.message}`
+    };
+  }
+
+  if (
+    Number(
+      json?.ok
+      ?? 0
+    )
+    !== 1
+  ) {
+    return {
+      ok: false,
+      blocked: false,
+      status,
+      finalUrl,
+      bodyPreview,
+      message:
+        `chaolikenew API ok=${json?.ok}`
+    };
+  }
+
+  return {
+    ok: true,
+    blocked: false,
+    status,
+    json,
+    url,
+    finalUrl,
+    bodyPreview
+  };
+}
+
+
+function isWeiboLoginPageUrl(
+  url
+) {
+  return /passport\.weibo\.com\/sso\/signin/i.test(
+    String(url || '')
+  );
+}
+
+
+async function runSuperLikeListRecheck(
+  signal = null
+) {
+  const monitors =
+    getSuperLikeMonitors();
+
+  console.log('');
+  console.log('########################################');
+  console.log('# SuperLike Recheck - 模式4 List UID模式（可视浏览器）');
+  console.log(`# 当天首次最多 ${LIST_FIRST_RUN_MAX_PAGES} 页`);
+  console.log(`# 后续最大页数 = 人数增量 / 20 + ${LIST_DELTA_SAFETY_PAGES} 页保险`);
+  console.log('# 同时命中上次 last_uid 可提前停止');
+  console.log(`# 白天 ${LIST_DAY_INTERVAL_MS / 60000} 分钟一次`);
+  console.log(`# 19:00-23:59 ${LIST_NIGHT_INTERVAL_MS / 60000} 分钟一次`);
+  console.log('########################################');
+
+  let context = null;
+  let page = null;
+
+  const profileDir =
+    path.join(
+      __dirname,
+      '..',
+      'data',
+      'superlike-browser-profile-scan'
+    );
+
+  const onAbort = () => {
+    if (context) {
+      context.close().catch(() => {});
+    }
+  };
+
+  if (signal) {
+    signal.addEventListener(
+      'abort',
+      onAbort,
+      { once: true }
+    );
+  }
+
+  async function closeCurrentContext() {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    context = null;
+    page = null;
+  }
+
+  async function launchHeadlessContext() {
+    const { chromium } =
+      require('playwright');
+
+    context =
+      await chromium
+        .launchPersistentContext(
+          profileDir,
+          {
+            headless: false,
+            viewport: {
+              width: 1280,
+              height: 900
+            }
+          }
+        );
+
+    page =
+      context.pages()[0]
+      || await context.newPage();
+  }
+
+  try {
+    const { chromium } =
+      require('playwright');
+
+    context =
+      await chromium
+        .launchPersistentContext(
+          profileDir,
+          {
+            headless: false,
+            viewport: {
+              width: 1280,
+              height: 900
+            }
+          }
+        );
+
+    page =
+      context.pages()[0]
+      || await context.newPage();
+
+    for (
+      const monitor
+      of monitors
+    ) {
+      throwIfAborted(signal);
+
+      const config =
+        parseTopicHomepage(
+          monitor.url
+        );
+
+      const state =
+        getSuperLikeListState(
+          monitor.id
+        );
+
+      const previousLastUid =
+        state?.lastUid
+        || null;
+
+      const today =
+        getWeiboScanDate();
+
+      const sameDay =
+        state?.scanDate ===
+        today;
+
+      let currentTotal =
+        null;
+
+      let maxPages =
+        LIST_FIRST_RUN_MAX_PAGES;
+
+      let firstRun =
+        !sameDay;
+
+      let sinceId =
+        null;
+
+      let pageNumber =
+        0;
+
+      let reachedBoundary =
+        false;
+
+      let completed =
+        false;
+
+      let newestUid =
+        null;
+
+      const uidSet =
+        new Set();
+
+      console.log('');
+      console.log(
+        `[模式4] Monitor=${monitor.name}`
+      );
+
+      console.log(
+        firstRun
+          ? `[模式4] 当天首次运行：最多抓 ${LIST_FIRST_RUN_MAX_PAGES} 页`
+          : `[模式4] 上次状态：日期=${state?.scanDate || '-'} | 总人数=${state?.lastTotal ?? '-'} | 边界UID=${previousLastUid || '-'}`
+      );
+
+      while (true) {
+        throwIfAborted(signal);
+
+        if (
+          pageNumber >=
+            maxPages
+        ) {
+          completed =
+            true;
+
+          console.log(
+            firstRun
+              ? `[模式4] 当天首次运行已成功抓满 ${maxPages} 页。`
+              : `[模式4] 已达到本轮人数增量计算上限 ${maxPages} 页。`
+          );
+
+          break;
+        }
+
+        let result =
+          await fetchSuperLikeListPage(
+            page,
+            config,
+            sinceId,
+            signal
+          );
+
+        if (!result.ok) {
+          if (result.blocked) {
+            console.log(
+              `[模式4] HTTP 418，本轮停止 | Monitor=${monitor.name} | ` +
+              `status=${result.status ?? '-'} | ` +
+              `url=${result.finalUrl || '-'} | ` +
+              `body=${result.bodyPreview || '-'}`
+            );
+            break;
+          }
+
+          if (
+            isWeiboLoginPageUrl(
+              result.finalUrl
+            )
+            ||
+            /登录页/i.test(
+              String(
+                result.message
+                || ''
+              )
+            )
+          ) {
+            console.log(
+              `[模式4] 第${pageNumber + 1}页需要微博登录。`
+            );
+
+            console.log(
+              '[模式4] 请在当前可视浏览器中完成登录，程序会自动重试当前页。'
+            );
+
+            let loginOk =
+              false;
+
+            for (
+              let retry = 0;
+              retry < 300;
+              retry++
+            ) {
+              throwIfAborted(signal);
+
+              await page.waitForTimeout(
+                2000
+              );
+
+              result =
+                await fetchSuperLikeListPage(
+                  page,
+                  config,
+                  sinceId,
+                  signal
+                );
+
+              if (result.ok) {
+                loginOk =
+                  true;
+
+                console.log(
+                  `[模式4] 登录状态已确认，继续第${pageNumber + 1}页。`
+                );
+
+                break;
+              }
+
+              if (
+                !isWeiboLoginPageUrl(
+                  result.finalUrl
+                )
+                &&
+                !/登录页/i.test(
+                  String(
+                    result.message
+                    || ''
+                  )
+                )
+              ) {
+                break;
+              }
+            }
+
+            if (!loginOk) {
+              console.log(
+                `[模式4] 第${pageNumber + 1}页登录后仍无法读取 | ${result.message} | ` +
+                `status=${result.status ?? '-'} | ` +
+                `url=${result.finalUrl || '-'} | ` +
+                `body=${result.bodyPreview || '-'}`
+              );
+
+              console.log(
+                '[模式4] 本轮未完整结束，不更新扫描边界。'
+              );
+
+              break;
+            }
+
+          } else {
+            console.log(
+              `[模式4] 第${pageNumber + 1}页失败 | ${result.message} | ` +
+              `status=${result.status ?? '-'} | ` +
+              `url=${result.finalUrl || '-'} | ` +
+              `body=${result.bodyPreview || '-'}`
+            );
+
+            console.log(
+              `[模式4] 本轮未完整结束，不更新扫描边界。`
+            );
+
+            break;
+          }
+        }
+
+        pageNumber++;
+
+        const uids =
+          extractSuperLikeListUids(
+            result.json
+          );
+
+        if (
+          pageNumber === 1
+        ) {
+          currentTotal =
+            extractSuperLikeTotal(
+              result.json
+            );
+
+          if (
+            uids.length > 0
+          ) {
+            newestUid =
+              uids[0];
+          }
+
+          if (
+            !firstRun
+            &&
+            Number.isFinite(
+              Number(currentTotal)
+            )
+            &&
+            Number.isFinite(
+              Number(state?.lastTotal)
+            )
+          ) {
+            if (
+              Number(currentTotal)
+              <
+              Number(state.lastTotal)
+            ) {
+              firstRun =
+                true;
+
+              maxPages =
+                LIST_FIRST_RUN_MAX_PAGES;
+
+              console.log(
+                `[模式4] 当前总人数 ${currentTotal} < 上次 ${state.lastTotal}，视为榜单重算，按当天首次 ${maxPages} 页处理。`
+              );
+
+            } else {
+              const delta =
+                Number(currentTotal)
+                -
+                Number(state.lastTotal);
+
+              maxPages =
+                calculateListMaxPages(
+                  currentTotal,
+                  state.lastTotal
+                );
+
+              console.log(
+                `[模式4] 超LIKE总人数：上次=${state.lastTotal} | 当前=${currentTotal} | 增量≈${delta} | 本轮最多=${maxPages}页（含${LIST_DELTA_SAFETY_PAGES}页保险）`
+              );
+            }
+
+          } else if (
+            firstRun
+          ) {
+            console.log(
+              `[模式4] 当天首次总人数=${currentTotal ?? '未解析'} | 本轮最多=${maxPages}页`
+            );
+
+          } else {
+            console.log(
+              `[模式4] 总人数无法计算增量，回退到 ${maxPages} 页上限 + last_uid 边界。`
+            );
+          }
+        }
+
+        const nextSinceId =
+          extractSuperLikeListNextSinceId(
+            result.json
+          );
+
+        console.log(
+          `[模式4] 第${pageNumber}页 | UID=${uids.length} | ` +
+          `请求since_id=${sinceId || '-'} | ` +
+          `返回since_id=${nextSinceId || '-'} | ` +
+          `url=${result.finalUrl || result.url || '-'}`
+        );
+
+        for (
+          const uid
+          of uids
+        ) {
+          if (
+            !firstRun
+            &&
+            previousLastUid
+            &&
+            uid === previousLastUid
+          ) {
+            reachedBoundary =
+              true;
+
+            console.log(
+              `[模式4] 命中上次边界 UID=${uid}`
+            );
+
+            break;
+          }
+
+          uidSet.add(uid);
+        }
+
+        if (reachedBoundary) {
+          completed =
+            true;
+
+          break;
+        }
+
+        if (
+          !nextSinceId
+          ||
+          nextSinceId ===
+            sinceId
+        ) {
+          console.log(
+            '[模式4] 没有下一页 since_id，正常结束。'
+          );
+
+          completed =
+            true;
+
+          break;
+        }
+
+        sinceId =
+          nextSinceId;
+
+        await sleep(
+          LIST_REQUEST_DELAY_MS,
+          signal
+        );
+      }
+
+      const deleted =
+        deletePostsByUidSet(
+          monitor.id,
+          uidSet
+        );
+
+      console.log(
+        `[模式4] Monitor=${monitor.name} | 扫描页=${pageNumber} | ` +
+        `UID=${uidSet.size} | 删除DB记录=${deleted} | ` +
+        `完整结束=${completed ? '是' : '否'} | ` +
+        `命中旧边界=${reachedBoundary ? '是' : '否'}`
+      );
+
+      if (
+        completed
+        &&
+        newestUid
+      ) {
+        saveSuperLikeListState(
+          monitor.id,
+          newestUid,
+          today,
+          currentTotal
+        );
+
+        console.log(
+          `[模式4] 已更新状态：日期=${today} | 总人数=${currentTotal ?? '-'} | 边界UID=${newestUid}`
+        );
+
+      } else {
+        console.log(
+          `[模式4] 本轮 incomplete，保留旧边界不变。`
+        );
+      }
+    }
+
+  } finally {
+    if (signal) {
+      signal.removeEventListener(
+        'abort',
+        onAbort
+      );
+    }
+
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+function getMode4IntervalMs() {
+  const hour =
+    new Date().getHours();
+
+  return hour >=
+    LIST_NIGHT_START_HOUR
+      ? LIST_NIGHT_INTERVAL_MS
+      : LIST_DAY_INTERVAL_MS;
+}
+
+async function runMode4Forever() {
+  let round = 0;
+
+  while (true) {
+    round++;
+
+    const intervalMs =
+      getMode4IntervalMs();
+
+    console.log('');
+    console.log(
+      `[Recheck] ===== 模式4 第${round}轮开始 | 当前间隔=${intervalMs / 60000}分钟 =====`
+    );
+
+    const startedAt =
+      Date.now();
+
+    const controller =
+      new AbortController();
+
+    try {
+      await runSuperLikeListRecheck(
+        controller.signal
+      );
+
+    } catch (error) {
+      if (!isAbortError(error)) {
+        console.error(
+          `[Recheck] 模式4 第${round}轮异常：`,
+          error
+        );
+      }
+    }
+
+    const elapsed =
+      Date.now() - startedAt;
+
+    const waitMs =
+      Math.max(
+        0,
+        intervalMs - elapsed
+      );
+
+    if (waitMs > 0) {
+      console.log(
+        `[Recheck] 模式4 第${round}轮结束，${Math.round(waitMs / 60000)}分钟后进入下一轮。`
+      );
+
+      await sleep(
+        waitMs
+      );
+    }
+  }
+}
+
+
 /**
  * ============================================================
  * 模式2/3常驻轮询
@@ -2543,6 +3852,7 @@ function askRecheckMode() {
     process.env.SUPERLIKE_RECHECK_MODE === '1'
     || process.env.SUPERLIKE_RECHECK_MODE === '2'
     || process.env.SUPERLIKE_RECHECK_MODE === '3'
+    || process.env.SUPERLIKE_RECHECK_MODE === '4'
   ) {
     return Promise.resolve(
       process.env.SUPERLIKE_RECHECK_MODE
@@ -2560,15 +3870,18 @@ function askRecheckMode() {
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 轻量评论逻辑（每3分钟一轮，DB id从大到小，评论 > 21 删除）');
     console.log('3 = SuperLike复检逻辑（每3分钟一轮，按最新DB id从大到小，复用scanner的Profile检查，有SuperLike立即删除）');
+    console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
-    rl.question('请输入 1、2 或 3：', answer => {
+    rl.question('请输入 1、2、3 或 4：', answer => {
       rl.close();
 
       const mode =
         String(answer || '').trim();
 
       resolve(
-        mode === '2' || mode === '3'
+        mode === '2'
+        || mode === '3'
+        || mode === '4'
           ? mode
           : '1'
       );
@@ -2585,11 +3898,17 @@ function askRecheckMode() {
 async function main() {
 
   initDatabase();
+  initSuperLikeListStateTable();
 
 
   const mode =
     await askRecheckMode();
 
+
+  if (mode === '4') {
+    await runMode4Forever();
+    return;
+  }
 
   if (mode === '2' || mode === '3') {
     await runLightModeForever(mode);
@@ -2597,7 +3916,7 @@ async function main() {
   }
 
 
-  // 模式2/3都已在上面 return；只有模式1才加载 Playwright。
+  // 模式2/3/4都已在上面 return；只有模式1才加载 Playwright。
   const { chromium } = require('playwright');
 
 
