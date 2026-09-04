@@ -1400,13 +1400,25 @@ function buildProfileInPageApiUrl(
  * ============================================================
  */
 function profileHasSuperLike(
-  profileText
+  profileData
 ) {
-  if (
-    typeof profileText !== 'string'
-  ) {
+  let profileText;
+
+  try {
+    profileText =
+      typeof profileData === 'string'
+        ? profileData
+        : JSON.stringify(profileData);
+  } catch (error) {
+    console.log(
+      `[SuperLike][ProfileText转换失败] ${error.message}`
+    );
     return false;
   }
+
+  console.log(
+    `[SuperLike][ProfileText] ${profileText}`
+  );
 
   return profileText.includes(
     'fans_title_superlike_on.png'

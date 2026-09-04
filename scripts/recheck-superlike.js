@@ -112,8 +112,7 @@ function getDistinctUsers(
       AND uid <> ''
 
       -- 只复检最近5天发布的帖子
-      AND post_created_at IS NOT NULL
-      AND datetime(post_created_at) >= datetime('now', '-5 days')
+      AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     GROUP BY uid
     ORDER BY first_id ASC
@@ -143,8 +142,7 @@ function getPostsByUid(
       AND uid = ?
 
       -- 只复检最近5天发布的帖子
-      AND post_created_at IS NOT NULL
-      AND datetime(post_created_at) >= datetime('now', '-5 days')
+      AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     ORDER BY first_seen_at
   `).all(
