@@ -249,7 +249,8 @@ app.get('/api/superlike-posts', (req, res) => {
       FROM superlike_posts sp
       LEFT JOIN monitors m ON m.id=sp.monitor_id
       ${whereSql}
-      ORDER BY sp.first_seen_at DESC
+	  AND datetime(sp.first_seen_at) >= datetime('now', '-5 days')
+      ORDER BY datetime(sp.post_created_at) DESC, sp.id DESC
       LIMIT 2000
     `).all(...params);
 
@@ -262,6 +263,7 @@ app.get('/api/superlike-posts', (req, res) => {
       FROM superlike_posts
       WHERE current_has_superlike=0
         AND comments_count<20
+		AND datetime(first_seen_at) >= datetime('now', '-5 days')
     `).get();
 
     const monitors = db.prepare(`

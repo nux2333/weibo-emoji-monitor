@@ -38,7 +38,7 @@ const CSV_COLUMNS = [
   {
     key: 'post_created_at',
     label: '发帖时间',
-    defaultChecked: false
+    defaultChecked: true
   },
   {
     key: 'first_seen_at',
@@ -139,6 +139,81 @@ function formatTime(
   return date
     .toLocaleString(
       'zh-CN'
+    );
+}
+
+
+
+/*
+ * 微博 post_created_at 通常类似：
+ * Thu Sep 04 14:20:30 +0800 2026
+ *
+ * 这里按微博发布时间本身解析，并固定显示为北京时间。
+ * 不使用 SQLite CURRENT_TIMESTAMP 的 UTC 处理方式。
+ */
+function formatPostTime(
+  value
+) {
+
+  if (!value) {
+    return '-';
+  }
+
+
+  let date =
+    new Date(
+      value
+    );
+
+
+  /*
+   * 如果未来数据库保存成：
+   * YYYY-MM-DD HH:mm:ss
+   * 则按北京时间理解。
+   */
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+    &&
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+      String(value)
+    )
+  ) {
+    date =
+      new Date(
+        String(value)
+          .replace(
+            ' ',
+            'T'
+          )
+        +
+        '+08:00'
+      );
+  }
+
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+  ) {
+    return String(
+      value
+    );
+  }
+
+
+  return date
+    .toLocaleString(
+      'zh-CN',
+      {
+        timeZone:
+          'Asia/Shanghai',
+
+        hour12:
+          false
+      }
     );
 }
 
@@ -281,7 +356,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="9"
+          colspan="8"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -380,6 +455,15 @@ function renderTable() {
       <td class="post-text">
         ${escapeHtml(
           row.post_text || ''
+        )}
+      </td>
+
+
+      <td class="time">
+        ${escapeHtml(
+          formatPostTime(
+            row.post_created_at
+          )
         )}
       </td>
 
@@ -894,6 +978,16 @@ function csvValue(
   row,
   key
 ) {
+
+  if (
+    key === 'post_created_at'
+  ) {
+
+    return formatPostTime(
+      row[key]
+    );
+  }
+
 
   if (
     key === 'first_seen_at'

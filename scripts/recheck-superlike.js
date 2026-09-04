@@ -110,6 +110,11 @@ function getDistinctUsers(
     WHERE monitor_id = ?
       AND uid IS NOT NULL
       AND uid <> ''
+
+      -- 只复检最近5天发布的帖子
+      AND post_created_at IS NOT NULL
+      AND datetime(post_created_at) >= datetime('now', '-5 days')
+
     GROUP BY uid
     ORDER BY first_id ASC
   `).all(
@@ -131,17 +136,22 @@ function getPostsByUid(
       uid,
       username,
       post_link,
-      comments_count
+      comments_count,
+      post_created_at
     FROM superlike_posts
     WHERE monitor_id = ?
       AND uid = ?
+
+      -- 只复检最近5天发布的帖子
+      AND post_created_at IS NOT NULL
+      AND datetime(post_created_at) >= datetime('now', '-5 days')
+
     ORDER BY first_seen_at
   `).all(
     monitorId,
     uid
   );
 }
-
 
 /**
  * 用户已经获得超LIKE：

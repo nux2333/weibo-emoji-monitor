@@ -1400,87 +1400,18 @@ function buildProfileInPageApiUrl(
  * ============================================================
  */
 function profileHasSuperLike(
-  value,
-  visited = new Set()
+  profileText
 ) {
   if (
-    value === null
-    ||
-    value === undefined
+    typeof profileText !== 'string'
   ) {
     return false;
   }
 
-  if (
-    typeof value === 'string'
-  ) {
-    const lower =
-      value.toLowerCase();
-
-    return (
-      lower.includes(
-        'union_id=chao_like'
-      )
-      ||
-      lower.includes(
-        'union_id%3dchao_like'
-      )
-      ||
-      lower.includes(
-        'union_id%253dchao_like'
-      )
-    );
-  }
-
-  if (
-    typeof value !== 'object'
-  ) {
-    return false;
-  }
-
-  if (
-    visited.has(value)
-  ) {
-    return false;
-  }
-
-  visited.add(value);
-
-  if (
-    String(
-      value.title_sub
-      ?? ''
-    )
-      .trim()
-      .toLowerCase()
-    ===
-    '超like'
-  ) {
-    return true;
-  }
-
-  const children =
-    Array.isArray(value)
-      ? value
-      : Object.values(value);
-
-  for (
-    const child
-    of children
-  ) {
-    if (
-      profileHasSuperLike(
-        child,
-        visited
-      )
-    ) {
-      return true;
-    }
-  }
-
-  return false;
+  return profileText.includes(
+    'fans_title_superlike_on.png'
+  );
 }
-
 
 /**
  * ============================================================
