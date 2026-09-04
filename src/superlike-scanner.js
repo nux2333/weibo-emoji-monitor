@@ -261,31 +261,20 @@ function getPostCreatedAt(post) {
 }
 
 function getPostLink(post) {
-  const candidates = [
-    post?.url,
-    post?.mblog_url,
-    post?.detail_url,
-    post?.scheme
-  ];
-
-  for (const value of candidates) {
-    if (
-      typeof value === 'string'
-      &&
-      /^https?:\/\//i.test(value)
-      &&
-      value.toLowerCase().includes('weibo')
-    ) {
-      return value;
-    }
-  }
+  const uid =
+    getUid(post);
 
   const postId =
     getPostId(post);
 
-  return postId
-    ? `https://m.weibo.cn/detail/${postId}`
-    : '';
+  if (
+    !uid ||
+    !postId
+  ) {
+    return '';
+  }
+
+  return `https://weibo.com/${uid}/${postId}`;
 }
 
 
@@ -1419,12 +1408,11 @@ function profileHasSuperLike(
     return false;
   }
 
-  console.log(
-    `[SuperLike][ProfileText] ${profileText}`
-  );
 
-  return profileText.includes(
-    'fans_title_superlike_on.png'
+  return (
+    profileText.includes('fans_title_superlike.png') ||
+    profileText.includes('fans_title_superlike_on.png') ||
+    profileText.includes('superlike') 
   );
 }
 
