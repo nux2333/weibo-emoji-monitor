@@ -13,5 +13,13 @@
       "柠檬水"
     ],
     "enabled": true
-  }
+  },
+  {
+     "name": "田栩宁超话 SuperLike",
+     "url": "https://weibo.com/ajax_proxy/chaohua/page?flowId=100808f1d33f71dff693a2708cb3e8ef584a44_-_sort_time&page=2&since_id=%7B%22max_id%22:5339339518642849%7D&max_id=0L",
+     "enabled": true,
+     "monitor_type": "superlike",
+     "emojis": [],
+     "texts": []
+    }
 ]

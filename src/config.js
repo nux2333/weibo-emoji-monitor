@@ -13,8 +13,6 @@ const {
 /**
  * monitors.json 的位置
  *
- * 如果你的项目结构是：
- *
  * project/
  * ├─ src/
  * │  ├─ config.js
@@ -23,8 +21,6 @@ const {
  * │
  * └─ config/
  *    └─ monitors.json
- *
- * 就是这里。
  */
 const CONFIG_FILE =
   path.join(
@@ -36,9 +32,9 @@ const CONFIG_FILE =
 
 
 /**
- * =========================
- * 读取 JSON
- * =========================
+ * ==========================================
+ * 读取 monitors.json
+ * ==========================================
  */
 function loadMonitorConfig() {
 
@@ -77,6 +73,14 @@ function loadMonitorConfig() {
   }
 
 
+  /**
+   * monitors.json 必须直接是数组：
+   *
+   * [
+   *   {...},
+   *   {...}
+   * ]
+   */
   if (
     !Array.isArray(config)
   ) {
@@ -92,9 +96,9 @@ function loadMonitorConfig() {
 
 
 /**
- * =========================
- * 校验配置
- * =========================
+ * ==========================================
+ * 校验单个 Monitor 配置
+ * ==========================================
  */
 function validateMonitorConfig(
   monitor,
@@ -103,7 +107,8 @@ function validateMonitorConfig(
 
   if (
     !monitor ||
-    typeof monitor !== 'object'
+    typeof monitor !== 'object' ||
+    Array.isArray(monitor)
   ) {
 
     throw new Error(
@@ -132,6 +137,9 @@ function validateMonitorConfig(
   }
 
 
+  /**
+   * URL 格式检查
+   */
   try {
 
     new URL(
@@ -146,6 +154,9 @@ function validateMonitorConfig(
   }
 
 
+  /**
+   * emojis 必须是数组
+   */
   if (
     monitor.emojis !== undefined &&
     !Array.isArray(
@@ -159,6 +170,9 @@ function validateMonitorConfig(
   }
 
 
+  /**
+   * texts 必须是数组
+   */
   if (
     monitor.texts !== undefined &&
     !Array.isArray(
@@ -170,18 +184,81 @@ function validateMonitorConfig(
       `monitors.json 第 ${index + 1} 项 texts 必须是数组`
     );
   }
+
+
+  /**
+   * monitor_type
+   *
+   * 当前只允许：
+   *
+   * comments
+   * superlike
+   *
+   * 没写则默认 comments。
+   */
+  if (
+    monitor.monitor_type !== undefined
+  ) {
+
+    const type =
+      String(
+        monitor.monitor_type
+      )
+        .trim()
+        .toLowerCase();
+
+
+    if (
+      type !== 'comments' &&
+      type !== 'superlike'
+    ) {
+
+      throw new Error(
+        `monitors.json 第 ${index + 1} 项 monitor_type 无效：${monitor.monitor_type}，只允许 comments 或 superlike`
+      );
+    }
+  }
 }
 
 
 /**
- * =========================
- * 同步配置到数据库
- * =========================
+ * ==========================================
+ * 规范化 monitor_type
+ * ==========================================
+ */
+function normalizeMonitorType(
+  value
+) {
+
+  if (
+    value === null ||
+    value === undefined ||
+    String(value).trim() === ''
+  ) {
+
+    return 'comments';
+  }
+
+
+  return String(value)
+    .trim()
+    .toLowerCase();
+}
+
+
+/**
+ * ==========================================
+ * 同步 monitors.json → SQLite
+ * ==========================================
  */
 function syncMonitorsFromConfig() {
 
   /**
-   * 确保数据库已经初始化
+   * 确保数据库已初始化。
+   *
+   * db.js 会自动补：
+   *
+   * monitors.monitor_type
    */
   initDatabase();
 
@@ -215,13 +292,13 @@ function syncMonitorsFromConfig() {
     const name =
       String(
         config.name
-      );
+      ).trim();
 
 
     const url =
       String(
         config.url
-      );
+      ).trim();
 
 
     const emojis =
@@ -240,12 +317,28 @@ function syncMonitorsFromConfig() {
         : [];
 
 
+    /**
+     * enabled 不写默认 true。
+     */
     const enabled =
       config.enabled !== false;
 
 
     /**
-     * 通过 URL 判断是不是已经存在
+     * ★ 新增
+     *
+     * 没写 monitor_type：
+     *
+     * 默认 comments。
+     */
+    const monitorType =
+      normalizeMonitorType(
+        config.monitor_type
+      );
+
+
+    /**
+     * 当前仍然按照 URL 判断是否已经存在。
      */
     const existing =
       getMonitorByUrl(
@@ -257,6 +350,11 @@ function syncMonitorsFromConfig() {
       !existing
     ) {
 
+      /**
+       * ======================================
+       * 新增 Monitor
+       * ======================================
+       */
       const id =
         createMonitor({
 
@@ -268,28 +366,39 @@ function syncMonitorsFromConfig() {
 
           texts,
 
-          enabled
+          enabled,
+
+          monitor_type:
+            monitorType
+
         });
 
 
       console.log(
-        `新增 Monitor：${name} (ID=${id})`
+        `新增 Monitor：${name} (ID=${id}, type=${monitorType})`
       );
 
 
     } else {
 
       /**
-       * 已存在：
+       * ======================================
+       * 已存在 Monitor
        *
-       * 更新名称 / Emoji / 文本 / enabled。
+       * 更新：
        *
-       * 评论不会被删除。
+       * name
+       * url
+       * emojis
+       * texts
+       * enabled
+       * monitor_type
+       *
+       * 不删除历史 comments。
+       * ======================================
        */
       updateMonitor(
-
         existing.id,
-
         {
 
           name,
@@ -300,13 +409,17 @@ function syncMonitorsFromConfig() {
 
           texts,
 
-          enabled
+          enabled,
+
+          monitor_type:
+            monitorType
+
         }
       );
 
 
       console.log(
-        `更新 Monitor：${name} (ID=${existing.id})`
+        `更新 Monitor：${name} (ID=${existing.id}, type=${monitorType})`
       );
     }
   }
@@ -315,10 +428,10 @@ function syncMonitorsFromConfig() {
   /**
    * 注意：
    *
-   * JSON 里删除某个 Monitor，
-   * 不会删除数据库里的 Monitor。
+   * 如果 monitors.json 里删除了一条配置，
+   * 不会自动 DELETE 数据库里的 Monitor。
    *
-   * 这样可以避免误删历史评论。
+   * 避免误删历史数据。
    */
   console.log(
     '========================================'
@@ -335,5 +448,10 @@ module.exports = {
 
   loadMonitorConfig,
 
+  validateMonitorConfig,
+
+  normalizeMonitorType,
+
   syncMonitorsFromConfig
+
 };
