@@ -3209,7 +3209,7 @@ async function fetchSuperLikeListPage(
   }
 
   if (
-    /passport\.weibo\.com\/sso\/signin/i.test(
+    isWeiboLoginPageUrl(
       finalUrl
     )
   ) {
@@ -3277,13 +3277,70 @@ async function fetchSuperLikeListPage(
 function isWeiboLoginPageUrl(
   url
 ) {
-  return /passport\.weibo\.com\/sso\/signin/i.test(
-    String(url || '')
+  const text =
+    String(url || '');
+
+  return (
+    /passport\.weibo\.com\/sso\/signin/i.test(text)
+    ||
+    /visitor\.passport\.weibo\.cn\/visitor\/visitor/i.test(text)
+    ||
+    /passport\.weibo\.cn/i.test(text)
   );
+}
+
+async function refreshWeiboVisitorSession(
+  page,
+  signal = null
+) {
+  throwIfAborted(signal);
+
+  console.log(
+    '[模式4] 检测到微博 Visitor/登录跳转，正在自动刷新 m.weibo.cn Session...'
+  );
+
+  try {
+    await page.goto(
+      'https://m.weibo.cn/',
+      {
+        waitUntil: 'domcontentloaded',
+        timeout: 30000
+      }
+    );
+
+    await page.waitForTimeout(
+      3000
+    );
+
+    throwIfAborted(signal);
+
+    console.log(
+      `[模式4] Session刷新页面已打开 | 当前URL=${page.url()}`
+    );
+
+    return true;
+
+  } catch (error) {
+    if (
+      signal?.aborted
+      ||
+      isAbortError(error)
+    ) {
+      throw error;
+    }
+
+    console.log(
+      `[模式4] 自动刷新 Session 失败：${error.message}`
+    );
+
+    return false;
+  }
 }
 
 
 async function runSuperLikeListRecheck(
+  context,
+  page,
   signal = null
 ) {
   const monitors =
@@ -3291,7 +3348,7 @@ async function runSuperLikeListRecheck(
 
   console.log('');
   console.log('########################################');
-  console.log('# SuperLike Recheck - 模式4 List UID模式（可视浏览器）');
+  console.log('# SuperLike Recheck - 模式4 List UID模式（浏览器常驻）');
   console.log(`# 当天首次最多 ${LIST_FIRST_RUN_MAX_PAGES} 页`);
   console.log(`# 后续最大页数 = 人数增量 / 20 + ${LIST_DELTA_SAFETY_PAGES} 页保险`);
   console.log('# 同时命中上次 last_uid 可提前停止');
@@ -3299,86 +3356,9 @@ async function runSuperLikeListRecheck(
   console.log(`# 19:00-23:59 ${LIST_NIGHT_INTERVAL_MS / 60000} 分钟一次`);
   console.log('########################################');
 
-  let context = null;
-  let page = null;
-
-  const profileDir =
-    path.join(
-      __dirname,
-      '..',
-      'data',
-      'superlike-browser-profile-scan'
-    );
-
-  const onAbort = () => {
-    if (context) {
-      context.close().catch(() => {});
-    }
-  };
-
-  if (signal) {
-    signal.addEventListener(
-      'abort',
-      onAbort,
-      { once: true }
-    );
+  if (!context || !page || page.isClosed()) {
+    throw new Error('模式4浏览器上下文不可用');
   }
-
-  async function closeCurrentContext() {
-    if (context) {
-      try {
-        await context.close();
-      } catch {
-        // ignore
-      }
-    }
-
-    context = null;
-    page = null;
-  }
-
-  async function launchHeadlessContext() {
-    const { chromium } =
-      require('playwright');
-
-    context =
-      await chromium
-        .launchPersistentContext(
-          profileDir,
-          {
-            headless: false,
-            viewport: {
-              width: 1280,
-              height: 900
-            }
-          }
-        );
-
-    page =
-      context.pages()[0]
-      || await context.newPage();
-  }
-
-  try {
-    const { chromium } =
-      require('playwright');
-
-    context =
-      await chromium
-        .launchPersistentContext(
-          profileDir,
-          {
-            headless: false,
-            viewport: {
-              width: 1280,
-              height: 900
-            }
-          }
-        );
-
-    page =
-      context.pages()[0]
-      || await context.newPage();
 
     for (
       const monitor
@@ -3499,59 +3479,115 @@ async function runSuperLikeListRecheck(
             )
           ) {
             console.log(
-              `[模式4] 第${pageNumber + 1}页需要微博登录。`
-            );
-
-            console.log(
-              '[模式4] 请在当前可视浏览器中完成登录，程序会自动重试当前页。'
+              `[模式4] 第${pageNumber + 1}页进入微博 Visitor/登录页面。`
             );
 
             let loginOk =
               false;
 
-            for (
-              let retry = 0;
-              retry < 300;
-              retry++
-            ) {
-              throwIfAborted(signal);
-
-              await page.waitForTimeout(
-                2000
+            const refreshed =
+              await refreshWeiboVisitorSession(
+                page,
+                signal
               );
 
-              result =
-                await fetchSuperLikeListPage(
-                  page,
-                  config,
-                  sinceId,
-                  signal
-                );
-
-              if (result.ok) {
-                loginOk =
-                  true;
-
-                console.log(
-                  `[模式4] 登录状态已确认，继续第${pageNumber + 1}页。`
-                );
-
-                break;
-              }
-
-              if (
-                !isWeiboLoginPageUrl(
-                  result.finalUrl
-                )
-                &&
-                !/登录页/i.test(
-                  String(
-                    result.message
-                    || ''
-                  )
-                )
+            if (refreshed) {
+              for (
+                let retry = 0;
+                retry < 10;
+                retry++
               ) {
-                break;
+                throwIfAborted(signal);
+
+                await page.waitForTimeout(
+                  1500
+                );
+
+                result =
+                  await fetchSuperLikeListPage(
+                    page,
+                    config,
+                    sinceId,
+                    signal
+                  );
+
+                if (result.ok) {
+                  loginOk =
+                    true;
+
+                  console.log(
+                    `[模式4] Visitor/Session 已恢复，继续第${pageNumber + 1}页。`
+                  );
+
+                  break;
+                }
+
+                if (
+                  !isWeiboLoginPageUrl(
+                    result.finalUrl
+                  )
+                  &&
+                  !/登录页|Visitor/i.test(
+                    String(
+                      result.message
+                      || ''
+                    )
+                  )
+                ) {
+                  break;
+                }
+              }
+            }
+
+            if (!loginOk) {
+              console.log(
+                '[模式4] 自动恢复失败；请把后台浏览器窗口打开并手动登录微博。'
+              );
+
+              for (
+                let retry = 0;
+                retry < 300;
+                retry++
+              ) {
+                throwIfAborted(signal);
+
+                await page.waitForTimeout(
+                  2000
+                );
+
+                result =
+                  await fetchSuperLikeListPage(
+                    page,
+                    config,
+                    sinceId,
+                    signal
+                  );
+
+                if (result.ok) {
+                  loginOk =
+                    true;
+
+                  console.log(
+                    `[模式4] 登录状态已恢复，继续第${pageNumber + 1}页。`
+                  );
+
+                  break;
+                }
+
+                if (
+                  !isWeiboLoginPageUrl(
+                    result.finalUrl
+                  )
+                  &&
+                  !/登录页|Visitor/i.test(
+                    String(
+                      result.message
+                      || ''
+                    )
+                  )
+                ) {
+                  break;
+                }
               }
             }
 
@@ -3803,22 +3839,6 @@ async function runSuperLikeListRecheck(
       }
     }
 
-  } finally {
-    if (signal) {
-      signal.removeEventListener(
-        'abort',
-        onAbort
-      );
-    }
-
-    if (context) {
-      try {
-        await context.close();
-      } catch {
-        // ignore
-      }
-    }
-  }
 }
 
 function getChinaHour() {
@@ -3864,59 +3884,120 @@ function getMode4IntervalMs() {
 }
 
 async function runMode4Forever() {
+  const { chromium } =
+    require('playwright');
+
+  const profileDir =
+    path.join(
+      __dirname,
+      '..',
+      'data',
+      'superlike-browser-profile-scan'
+    );
+
+  let context = null;
+  let page = null;
   let round = 0;
 
-  while (true) {
-    round++;
+  try {
+    context =
+      await chromium.launchPersistentContext(
+        profileDir,
+        {
+          headless: false,
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        }
+      );
 
-    const intervalMs =
-      getMode4IntervalMs();
+    page =
+      context.pages()[0]
+      || await context.newPage();
 
     console.log('');
     console.log(
-      `[Recheck] ===== 模式4 第${round}轮开始 | 当前间隔=${intervalMs / 60000}分钟 =====`
+      '[模式4] 浏览器已启动并将常驻；后续轮次不会再关闭。'
+    );
+    console.log(
+      `[模式4] Persistent Profile=${profileDir}`
     );
 
-    const startedAt =
-      Date.now();
+    while (true) {
+      round++;
 
-    const controller =
-      new AbortController();
+      const intervalMs =
+        getMode4IntervalMs();
 
-    try {
-      await runSuperLikeListRecheck(
-        controller.signal
+      console.log('');
+      console.log(
+        `[Recheck] ===== 模式4 第${round}轮开始 | 当前间隔=${intervalMs / 60000}分钟 =====`
       );
 
-    } catch (error) {
-      if (!isAbortError(error)) {
-        console.error(
-          `[Recheck] 模式4 第${round}轮异常：`,
-          error
+      const startedAt =
+        Date.now();
+
+      const controller =
+        new AbortController();
+
+      try {
+        if (
+          !page
+          ||
+          page.isClosed()
+        ) {
+          page =
+            context.pages()[0]
+            || await context.newPage();
+        }
+
+        await runSuperLikeListRecheck(
+          context,
+          page,
+          controller.signal
+        );
+
+      } catch (error) {
+        if (!isAbortError(error)) {
+          console.error(
+            `[Recheck] 模式4 第${round}轮异常：`,
+            error
+          );
+        }
+      }
+
+      const elapsed =
+        Date.now() - startedAt;
+
+      const waitMs =
+        Math.max(
+          0,
+          intervalMs - elapsed
+        );
+
+      if (waitMs > 0) {
+        console.log(
+          `[Recheck] 模式4 第${round}轮结束，${Math.round(waitMs / 60000)}分钟后进入下一轮；浏览器保持登录并继续常驻。`
+        );
+
+        await sleep(
+          waitMs
         );
       }
     }
 
-    const elapsed =
-      Date.now() - startedAt;
-
-    const waitMs =
-      Math.max(
-        0,
-        intervalMs - elapsed
-      );
-
-    if (waitMs > 0) {
-      console.log(
-        `[Recheck] 模式4 第${round}轮结束，${Math.round(waitMs / 60000)}分钟后进入下一轮。`
-      );
-
-      await sleep(
-        waitMs
-      );
+  } finally {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
     }
   }
 }
+
 
 
 /**
