@@ -58,10 +58,10 @@ const POST_DELAY_MS =
 /*
  * 与 scan-superlike 保持一致：
  *
- * 评论 >= 20
+ * 评论 > 21
  * → 删除
  */
-const MAX_COMMENTS = 20;
+const MAX_COMMENTS = 21;
 
 /*
  * 轻量评论复检模式：
@@ -1706,7 +1706,7 @@ async function recheckOneMonitor(
   );
 
   console.log(
-    `因评论>=${MAX_COMMENTS}删除：${stats.deletedByComments}`
+    `因评论>${MAX_COMMENTS}删除：${stats.deletedByComments}`
   );
 
   console.log(
@@ -4462,7 +4462,7 @@ async function main() {
     );
 
     console.log(
-      `# 评论>=${MAX_COMMENTS} → 删除当前帖子`
+      `# 评论>${MAX_COMMENTS} → 删除当前帖子`
     );
 
     console.log(
