@@ -109,6 +109,49 @@ function postIdExists(postId) {
 }
 
 
+function getExistingSuperLikeUids() {
+  return new Set(
+    db.prepare(`
+      SELECT DISTINCT uid
+      FROM superlike_posts
+      WHERE uid IS NOT NULL
+        AND uid <> ''
+    `).all()
+      .map(row => String(row.uid))
+  );
+}
+
+function deleteSuperLikeUsersByUid(uidSet) {
+  const uids = Array.from(uidSet || [])
+    .map(uid => String(uid || '').trim())
+    .filter(Boolean);
+
+  if (uids.length === 0) {
+    return 0;
+  }
+
+  const CHUNK_SIZE = 500;
+  let deleted = 0;
+
+  const deleteTx = db.transaction(() => {
+    for (let i = 0; i < uids.length; i += CHUNK_SIZE) {
+      const chunk = uids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+
+      const result = db.prepare(`
+        DELETE FROM superlike_posts
+        WHERE uid IN (${placeholders})
+      `).run(...chunk);
+
+      deleted += result.changes || 0;
+    }
+  });
+
+  deleteTx();
+  return deleted;
+}
+
+
 /* ============================================================
  * Monitor URL
  * ============================================================ */
@@ -276,6 +319,7 @@ function getPostLink(post) {
 
   return `https://weibo.com/${uid}/${postId}`;
 }
+
 
 
 /* ============================================================
@@ -1415,7 +1459,6 @@ function profileHasSuperLike(
     profileText.includes('superlike') 
   );
 }
-
 /**
  * ============================================================
  * 请求用户 profile_inpage 并判断当前是否有超LIKE
@@ -1693,7 +1736,9 @@ async function processPagePosts(
   seenThisRun,
   context,
   config,
-  profileCache
+  profileCache,
+  deleteUidSet,
+  existingUidSet
 ) {
   const stats = {
     found: 0,
@@ -1705,6 +1750,7 @@ async function processPagePosts(
     profileChecked: 0,
     profileHasSuperLike: 0,
     profileCheckFailed: 0,
+    deleteQueued: 0,
     target: 0,
     inserted: 0
   };
@@ -1748,20 +1794,160 @@ async function processPagePosts(
     stats.found++;
 
 
+    const uid =
+      getUid(
+        post
+      );
+
+
+    /*
+     * 只要当前帖子 Response 已明确显示 SuperLike，
+     * 就把该 UID 放进待删除集合。
+     * 不立刻 DELETE，等本轮所有 Monitor 扫描结束后统一批量删除。
+     *
+     * 注意：这一步必须放在 postIdExists() 前面，
+     * 否则 DB 已存在的帖子会直接 continue，无法清理“后来拿到 SuperLike”的用户。
+     */
     if (
-      postIdExists(
-        postId
+      hasSuperLike(
+        post
       )
     ) {
-      stats.existingInDb++;
+      stats.hasSuperLike++;
+
+      if (uid) {
+        if (!deleteUidSet.has(uid)) {
+          stats.deleteQueued++;
+        }
+
+        deleteUidSet.add(uid);
+        existingUidSet.delete(uid);
+
+        console.log(
+          `[SuperLike][待删除] UID=${uid} Response确认已有SuperLike`
+        );
+      }
+
       continue;
     }
+
+
+    const existsInDb =
+      postIdExists(
+        postId
+      );
 
 
     const commentsCount =
       getCommentsCount(
         post
       );
+
+
+    /*
+     * 为了性能，不对所有帖子都额外请求 profile：
+     * 1. 这个 UID 本来就在候选库里 -> 必须检查，便于清理旧数据；
+     * 2. 新帖子评论<20，准备作为候选 -> 按原逻辑检查。
+     */
+    const needsCandidateCheck =
+      !existsInDb
+      && commentsCount !== null
+      && commentsCount < MAX_COMMENTS;
+
+    const needsExistingUserCheck =
+      !!uid
+      && existingUidSet.has(uid);
+
+    const needsProfileCheck =
+      !!uid
+      && (
+        needsCandidateCheck
+        || needsExistingUserCheck
+      );
+
+
+    let profileResult = null;
+
+    if (needsProfileCheck) {
+      profileResult =
+        profileCache.get(
+          uid
+        );
+
+
+      if (!profileResult) {
+        console.log(
+          `[SuperLike][Profile检查] UID=${uid}`
+        );
+
+        profileResult =
+          await checkUserSuperLikeByProfile(
+            context,
+            config,
+            uid
+          );
+
+        profileCache.set(
+          uid,
+          profileResult
+        );
+
+        stats.profileChecked++;
+      }
+
+
+      if (
+        !profileResult.ok
+      ) {
+        stats.profileCheckFailed++;
+
+        console.log(
+          `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'}`
+        );
+
+        /*
+         * 如果这是 DB 里已有的帖子，Profile 检查失败也保留原记录，
+         * 只是本轮无法确认是否应该删除。
+         */
+        if (existsInDb) {
+          stats.existingInDb++;
+          continue;
+        }
+
+        /*
+         * 新候选 Profile 无法确认时不入库，
+         * 避免把已经有 SuperLike 的用户误当成候选。
+         */
+        continue;
+      }
+
+
+      if (
+        profileResult.hasSuperLike
+      ) {
+        stats.profileHasSuperLike++;
+        stats.hasSuperLike++;
+
+        if (!deleteUidSet.has(uid)) {
+          stats.deleteQueued++;
+        }
+
+        deleteUidSet.add(uid);
+        existingUidSet.delete(uid);
+
+        console.log(
+          `[SuperLike][待删除] UID=${uid} Profile确认已有SuperLike`
+        );
+
+        continue;
+      }
+    }
+
+
+    if (existsInDb) {
+      stats.existingInDb++;
+      continue;
+    }
 
 
     if (
@@ -1781,95 +1967,11 @@ async function processPagePosts(
     }
 
 
-    /*
-     * 第一层：
-     * 当前“最新发帖”Response 本身已经有 chao_like，
-     * 直接排除，不需要再请求 profile。
-     */
-    if (
-      hasSuperLike(
-        post
-      )
-    ) {
-      stats.hasSuperLike++;
-      continue;
-    }
-
-
-    /*
-     * 第二层：
-     * 帖子 Response 没有 chao_like 时，
-     * 再按 UID 请求 profile_inpage 做最终确认。
-     */
-    const uid =
-      getUid(
-        post
-      );
-
-
     if (!uid) {
       stats.profileCheckFailed++;
 
       console.log(
         `[SuperLike][Profile跳过] Post=${postId} 没有UID，不入库`
-      );
-
-      continue;
-    }
-
-
-    let profileResult =
-      profileCache.get(
-        uid
-      );
-
-
-    if (!profileResult) {
-      console.log(
-        `[SuperLike][Profile检查] UID=${uid}`
-      );
-
-      profileResult =
-        await checkUserSuperLikeByProfile(
-          context,
-          config,
-          uid
-        );
-
-      profileCache.set(
-        uid,
-        profileResult
-      );
-
-      stats.profileChecked++;
-    }
-
-
-    if (
-      !profileResult.ok
-    ) {
-      stats.profileCheckFailed++;
-
-      console.log(
-        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'}`
-      );
-
-      /*
-       * Profile 无法确认时不入库，
-       * 避免把已经有超LIKE的用户误当成候选。
-       */
-      continue;
-    }
-
-
-    if (
-      profileResult.hasSuperLike
-    ) {
-      stats.profileHasSuperLike++;
-      stats.hasSuperLike++;
-
-      console.log(
-        `[SuperLike][Profile排除] UID=${uid} 已有超LIKE`
       );
 
       continue;
@@ -1892,6 +1994,7 @@ async function processPagePosts(
         'inserted'
       ) {
         stats.inserted++;
+        existingUidSet.add(uid);
 
         console.log(
           [
@@ -1933,7 +2036,9 @@ async function processPagePosts(
  * ============================================================ */
 
 async function scanOneSuperLikeMonitor(
-  monitor
+  monitor,
+  deleteUidSet,
+  existingUidSet
 ) {
   const config =
     parseTopicHomepage(
@@ -1977,6 +2082,7 @@ async function scanOneSuperLikeMonitor(
     profileChecked: 0,
     profileHasSuperLike: 0,
     profileCheckFailed: 0,
+    deleteQueued: 0,
     target: 0,
     inserted: 0
   };
@@ -2028,10 +2134,10 @@ async function scanOneSuperLikeMonitor(
         .launchPersistentContext(
           profileDir,
           {
+            // 默认无窗口运行。
+            // 如需临时显示浏览器窗口，可设置 SUPERLIKE_HEADLESS=0
             headless:
-              process.env
-                .SUPERLIKE_HEADLESS
-              === '1',
+              process.env.SUPERLIKE_HEADLESS !== '0',
 
             viewport: {
               width: 1280,
@@ -2207,7 +2313,9 @@ async function scanOneSuperLikeMonitor(
           seenThisRun,
           browser,
           config,
-          profileCache
+          profileCache,
+          deleteUidSet,
+          existingUidSet
         );
 
 
@@ -2236,6 +2344,7 @@ async function scanOneSuperLikeMonitor(
           `Profile检查=${pageStats.profileChecked}`,
           `Profile已超Like=${pageStats.profileHasSuperLike}`,
           `Profile失败=${pageStats.profileCheckFailed}`,
+          `待删UID=${pageStats.deleteQueued}`,
           `新增=${pageStats.inserted}`
         ].join(' | ')
       );
@@ -2415,6 +2524,11 @@ async function scanOneSuperLikeMonitor(
     );
 
     console.log(
+      '本Monitor新增待删UID：',
+      total.deleteQueued
+    );
+
+    console.log(
       '符合候选：',
       total.target
     );
@@ -2462,6 +2576,17 @@ async function scanSuperLikePosts() {
     initDatabase();
 
 
+    const deleteUidSet =
+      new Set();
+
+    const existingUidSet =
+      getExistingSuperLikeUids();
+
+    console.log(
+      `[SuperLike] 本轮开始时数据库候选UID=${existingUidSet.size}`
+    );
+
+
     const monitors =
       getSuperLikeMonitors();
 
@@ -2493,7 +2618,9 @@ async function scanSuperLikePosts() {
     ) {
       try {
         await scanOneSuperLikeMonitor(
-          monitor
+          monitor,
+          deleteUidSet,
+          existingUidSet
         );
 
       } catch (error) {
@@ -2502,6 +2629,26 @@ async function scanSuperLikePosts() {
           error
         );
       }
+    }
+
+
+    if (deleteUidSet.size > 0) {
+      console.log(
+        `[SuperLike][批量删除] 本轮确认 SuperLike UID=${deleteUidSet.size}，开始统一删除数据库记录...`
+      );
+
+      const deletedRows =
+        deleteSuperLikeUsersByUid(
+          deleteUidSet
+        );
+
+      console.log(
+        `[SuperLike][批量删除完成] UID=${deleteUidSet.size} | 删除记录=${deletedRows}`
+      );
+    } else {
+      console.log(
+        '[SuperLike][批量删除] 本轮没有需要删除的 SuperLike 用户'
+      );
     }
 
   } finally {
@@ -2514,8 +2661,27 @@ async function scanSuperLikePosts() {
  * Batch
  * ============================================================ */
 
+async function runSuperLikeRoundSafely(label = '本轮') {
+  try {
+    await scanSuperLikePosts();
+  } catch (error) {
+    console.error(
+      `[SuperLike] ${label}扫描失败，但 Batch 不会中断：`,
+      error
+    );
+  }
+}
+
+
 async function startSuperLikeBatch() {
-  initDatabase();
+  try {
+    initDatabase();
+  } catch (error) {
+    console.error(
+      '[SuperLike] DB初始化失败，但 Batch 继续运行，下一轮会再次尝试：',
+      error
+    );
+  }
 
 
   console.log('');
@@ -2560,30 +2726,29 @@ async function startSuperLikeBatch() {
   );
 
 
-  await scanSuperLikePosts();
-
-
+  /*
+   * 先建立定时器，再执行首次扫描。
+   * 这样即使首次扫描发生异常，15分钟后的下一轮仍然存在。
+   */
   setInterval(
-    async () => {
+    () => {
       console.log('');
       console.log(
-        '[SuperLike] 15分钟到，重新开始。'
+        `[SuperLike] ${SCAN_INTERVAL_MS / 60000}分钟到，重新开始。`
       );
 
-
-      try {
-        await scanSuperLikePosts();
-
-      } catch (error) {
-        console.error(
-          '[SuperLike] 定时扫描失败：',
-          error
-        );
-      }
+      void runSuperLikeRoundSafely('定时');
     },
 
     SCAN_INTERVAL_MS
   );
+
+
+  /*
+   * 首次立即执行。
+   * 错误只记录，不向外抛出，不影响后续定时扫描。
+   */
+  await runSuperLikeRoundSafely('首次');
 }
 
 
@@ -2604,6 +2769,7 @@ module.exports = {
   initSuperLikeTable,
   getSuperLikeMonitors,
   scanSuperLikePosts,
+  runSuperLikeRoundSafely,
   scanOneSuperLikeMonitor,
   startSuperLikeBatch,
   hasSuperLike,
@@ -2616,6 +2782,8 @@ module.exports = {
   getPostLink,
   getCommentsCount,
   postIdExists,
+  getExistingSuperLikeUids,
+  deleteSuperLikeUsersByUid,
   parseTopicHomepage,
   parseChaohuaRequestUrl,
   clickPrimaryLatest,
@@ -2637,12 +2805,14 @@ if (
   startSuperLikeBatch()
     .catch(
       error => {
+        /*
+         * 最外层也不主动退出进程。
+         * 正常扫描异常已经由 runSuperLikeRoundSafely() 吸收。
+         */
         console.error(
-          '[SuperLike] Batch启动失败：',
+          '[SuperLike] Batch主程序异常，但不主动退出：',
           error
         );
-
-        process.exit(1);
       }
     );
 }
