@@ -2194,13 +2194,12 @@ async function scanOneSuperLikeMonitor(
 
 
   const profileDir =
-    path.join(
-      __dirname,
-      '..',
-      'data',
-      'superlike-browser-profile'
-    );
-
+	  path.join(
+	    __dirname,
+	    '..',
+	    'data',
+	    'superlike-browser-profile-scan'
+	  );
 
   let browser = null;
 

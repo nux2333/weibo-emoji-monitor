@@ -168,6 +168,8 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
   `);
+  db.pragma('busy_timeout = 5000');
+
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
   ensureColumn('comments', 'customerid', 'TEXT');
@@ -184,7 +186,7 @@ function initDatabase() {
   ensureColumn('api_responses', 'crawl_type', "TEXT NOT NULL DEFAULT 'legacy'");
 
   migrateSuperlikePostsIfNeeded();
-
+  
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_monitors_type_enabled
       ON monitors(monitor_type, enabled);

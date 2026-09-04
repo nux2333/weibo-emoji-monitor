@@ -1143,7 +1143,7 @@ async function main() {
       __dirname,
       '..',
       'data',
-      'superlike-browser-profile'
+      'superlike-browser-profile-recheck'
     );
 
 
