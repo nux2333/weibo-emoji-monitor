@@ -1,78 +1,80 @@
 const path = require('path');
-
-const {
-  chromium
-} = require('playwright');
-
-const {
-  db,
-  initDatabase
-} = require('../src/db');
-
-const {
-  parseTopicHomepage,
-  checkUserSuperLikeByProfile
-} = require('../src/superlike-scanner');
-
+const { chromium } = require('playwright');
+const { db, initDatabase } = require('./db');
 
 /**
  * ============================================================
- * 配置
+ * SuperLike Batch - 从 _feed Response 解析“最新发帖”版
+ *
+ * 流程：
+ * 1. 打开真实超话首页
+ * 2. 点击一级“最新”
+ * 3. 捕获 _-_feed 第一页真实 Response
+ * 4. 从 Response:
+ *      items
+ *        -> page_feed_child_tab
+ *        -> filter_group
+ *        -> name = 最新发帖
+ *        -> containerid = ..._-_sort_time
+ * 5. 在当前页面上下文中请求 sort_time 第一页
+ * 6. 从 sort_time Response 的 moreInfo.params 读取下一页：
+ *      page
+ *      since_id
+ *      max_id
+ * 7. 最多 50 页
+ * 8. DB 已有 post_id > 10 后结束
+ * 9. 评论 < 20 且无 chao_like 才入库
+ * 10. 15 分钟后重新开始
  * ============================================================
  */
 
-/*
- * 打开帖子后等待多久。
- */
-const POST_WAIT_MS =
-  Number(
-    process.env.SUPERLIKE_RECHECK_POST_WAIT_MS
-  )
-  || 2500;
+const SCAN_INTERVAL_MS =
+  Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
+  || 15 * 60 * 1000;
 
+const MAX_PAGES =
+  Number(process.env.SUPERLIKE_MAX_PAGES)
+  || 50;
 
-/*
- * 两个用户 Profile 检查之间稍微停一下。
- */
-const PROFILE_DELAY_MS =
-  Number(
-    process.env.SUPERLIKE_RECHECK_PROFILE_DELAY_MS
-  )
+const EXISTING_STOP_THRESHOLD =
+  Number(process.env.SUPERLIKE_EXISTING_STOP_THRESHOLD)
+  || 10;
+
+const INITIAL_WAIT_MS =
+  Number(process.env.SUPERLIKE_INITIAL_WAIT_MS)
+  || 3000;
+
+const FEED_WAIT_MS =
+  Number(process.env.SUPERLIKE_FEED_WAIT_MS)
+  || 10000;
+
+const PAGE_DELAY_MS =
+  Number(process.env.SUPERLIKE_PAGE_DELAY_MS)
   || 500;
 
-
-/*
- * 两个帖子检查之间稍微停一下。
- */
-const POST_DELAY_MS =
-  Number(
-    process.env.SUPERLIKE_RECHECK_POST_DELAY_MS
-  )
-  || 300;
-
-
-/*
- * 与 scan-superlike 保持一致：
- *
- * 评论 >= 20
- * → 删除
- */
 const MAX_COMMENTS = 20;
 
+let running = false;
 
-/**
- * ============================================================
+
+/* ============================================================
  * DB
- * ============================================================
- */
+ * ============================================================ */
+
+function initSuperLikeTable() {
+  initDatabase();
+}
 
 function getSuperLikeMonitors() {
+  initDatabase();
 
   return db.prepare(`
     SELECT
       id,
       name,
-      url
+      url,
+      enabled,
+      monitor_type
     FROM monitors
     WHERE enabled = 1
       AND monitor_type = 'superlike'
@@ -80,267 +82,917 @@ function getSuperLikeMonitors() {
   `).all();
 }
 
+function postIdExists(postId) {
+  if (!postId) {
+    return false;
+  }
 
-/**
- * 一个用户可能有很多帖子。
- *
- * Profile 只需要检查一次。
- */
-function getDistinctUsers(
-  monitorId
-) {
-
-  return db.prepare(`
-    SELECT
-      uid,
-      MAX(username) AS username,
-      COUNT(*) AS post_count
+  return !!db.prepare(`
+    SELECT 1
     FROM superlike_posts
-    WHERE monitor_id = ?
-      AND uid IS NOT NULL
-      AND uid <> ''
-    GROUP BY uid
-    ORDER BY uid
-  `).all(
-    monitorId
-  );
+    WHERE post_id = ?
+    LIMIT 1
+  `).get(postId);
 }
 
 
-/**
- * 获取某个用户当前数据库里的全部候选帖子。
- */
-function getPostsByUid(
-  monitorId,
-  uid
-) {
+/* ============================================================
+ * Monitor URL
+ * ============================================================ */
 
-  return db.prepare(`
-    SELECT
-      post_id,
-      uid,
-      username,
-      post_link,
-      comments_count
-    FROM superlike_posts
-    WHERE monitor_id = ?
-      AND uid = ?
-    ORDER BY first_seen_at
-  `).all(
-    monitorId,
-    uid
-  );
-}
-
-
-/**
- * 用户已经获得超LIKE：
- *
- * 删除这个 UID 在当前 Monitor 下的所有帖子。
- */
-function deleteAllPostsByUid(
-  monitorId,
-  uid
-) {
-
-  const result =
-    db.prepare(`
-      DELETE FROM superlike_posts
-      WHERE monitor_id = ?
-        AND uid = ?
-    `).run(
-      monitorId,
-      uid
+function parseTopicHomepage(topicUrl) {
+  const url =
+    new URL(
+      String(topicUrl || '').trim()
     );
 
-
-  return result.changes;
-}
-
-
-/**
- * 评论数已经达到阈值：
- *
- * 只删除当前帖子。
- */
-function deleteOnePost(
-  monitorId,
-  postId
-) {
-
-  const result =
-    db.prepare(`
-      DELETE FROM superlike_posts
-      WHERE monitor_id = ?
-        AND post_id = ?
-    `).run(
-      monitorId,
-      postId
+  const match =
+    url.pathname.match(
+      /^\/p\/(100808[a-zA-Z0-9]+)\/?$/
     );
 
+  if (!match) {
+    throw new Error(
+      `SuperLike monitor.url 必须是超话首页：https://weibo.com/p/100808xxxx。当前=${topicUrl}`
+    );
+  }
 
-  return result.changes;
+  const containerId =
+    match[1];
+
+  const topicHash =
+    containerId.replace(
+      /^100808/,
+      ''
+    );
+
+  return {
+    homepage:
+      `https://weibo.com/p/${containerId}`,
+
+    hotFlowId:
+      containerId,
+
+    feedFlowId:
+      `${containerId}_-_feed`,
+
+    topicHash,
+
+    profileContainerId:
+      `231140${topicHash}_-_profile_inpage`,
+
+    chaoLikeListContainerId:
+      `231140${topicHash}_-_chaolikenew`
+  };
 }
 
 
-/**
- * 评论数仍然 < 20：
- *
- * 更新最新 comments_count。
- */
-function updateCommentCount(
-  monitorId,
-  postId,
-  commentsCount
-) {
+/* ============================================================
+ * Post helpers
+ * ============================================================ */
 
-  db.prepare(`
-    UPDATE superlike_posts
-    SET
-      comments_count = ?,
-      last_seen_at = CURRENT_TIMESTAMP
-    WHERE monitor_id = ?
-      AND post_id = ?
-  `).run(
-    commentsCount,
-    monitorId,
-    postId
+function stripHtml(value) {
+  if (value == null) {
+    return '';
+  }
+
+  return String(value)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .trim();
+}
+
+function getPostId(post) {
+  const value =
+    post?.idstr
+    ?? post?.mid
+    ?? post?.id;
+
+  return (
+    value === null ||
+    value === undefined ||
+    value === ''
+  )
+    ? ''
+    : String(value);
+}
+
+function getUid(post) {
+  const value =
+    post?.user?.idstr
+    ?? post?.user?.id
+    ?? post?.uid;
+
+  return (
+    value === null ||
+    value === undefined ||
+    value === ''
+  )
+    ? ''
+    : String(value);
+}
+
+function getUsername(post) {
+  return (
+    post?.user?.screen_name
+    ?? post?.user?.name
+    ?? null
   );
 }
 
+function getPostText(post) {
+  return stripHtml(
+    post?.text
+    ?? post?.raw_text
+    ?? post?.text_raw
+    ?? ''
+  );
+}
 
-/**
- * ============================================================
- * 从 JSON 中递归寻找当前 Post 的 comments_count
- * ============================================================
- */
+function getCommentsCount(post) {
+  const value =
+    post?.comments_count
+    ?? post?.comment_count;
 
-function findPostCommentsCount(
+  if (
+    value === null ||
+    value === undefined ||
+    value === ''
+  ) {
+    return null;
+  }
+
+  const number =
+    Number(value);
+
+  return Number.isFinite(number)
+    ? number
+    : null;
+}
+
+function getPostCreatedAt(post) {
+  const value =
+    post?.created_at
+    ?? post?.createdAt
+    ?? null;
+
+  return value
+    ? String(value)
+    : null;
+}
+
+function getPostLink(post) {
+  const candidates = [
+    post?.url,
+    post?.mblog_url,
+    post?.detail_url,
+    post?.scheme
+  ];
+
+  for (const value of candidates) {
+    if (
+      typeof value === 'string'
+      &&
+      /^https?:\/\//i.test(value)
+      &&
+      value.toLowerCase().includes('weibo')
+    ) {
+      return value;
+    }
+  }
+
+  const postId =
+    getPostId(post);
+
+  return postId
+    ? `https://m.weibo.cn/detail/${postId}`
+    : '';
+}
+
+
+/* ============================================================
+ * Find Posts
+ * ============================================================ */
+
+function looksLikePost(obj) {
+  if (
+    !obj
+    ||
+    typeof obj !== 'object'
+    ||
+    Array.isArray(obj)
+  ) {
+    return false;
+  }
+
+  const postId =
+    obj.idstr
+    ?? obj.mid
+    ?? obj.id;
+
+  if (
+    !postId
+    ||
+    !obj.user
+  ) {
+    return false;
+  }
+
+  return (
+    obj.comments_count !== undefined
+    ||
+    obj.comment_count !== undefined
+    ||
+    obj.text !== undefined
+    ||
+    obj.raw_text !== undefined
+    ||
+    obj.text_raw !== undefined
+    ||
+    obj.reposts_count !== undefined
+    ||
+    obj.attitudes_count !== undefined
+  );
+}
+
+function findPosts(
   value,
-  targetPostId,
+  result = [],
   visited = new Set()
 ) {
-
   if (
     !value
     ||
     typeof value !== 'object'
-  ) {
-    return null;
-  }
-
-
-  if (
+    ||
     visited.has(value)
   ) {
-    return null;
+    return result;
   }
-
 
   visited.add(value);
 
+  if (looksLikePost(value)) {
+    result.push(value);
+  }
 
-  /*
-   * 微博不同接口可能：
-   *
-   * id
-   * idstr
-   * mid
-   */
-  const id =
-    value.idstr
-    ??
-    value.id
-    ??
-    value.mid;
-
-
-  if (
-    id !== undefined
-    &&
-    id !== null
-    &&
-    String(id)
-      ===
-      String(targetPostId)
-  ) {
-
-    const comments =
-      value.comments_count
-      ??
-      value.comment_count;
-
-
-    if (
-      comments !== undefined
-      &&
-      comments !== null
-      &&
-      Number.isFinite(
-        Number(comments)
-      )
-    ) {
-
-      return Number(
-        comments
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      findPosts(
+        item,
+        result,
+        visited
       );
     }
+
+    return result;
   }
-
-
-  if (
-    Array.isArray(value)
-  ) {
-
-    for (
-      const item
-      of value
-    ) {
-
-      const result =
-        findPostCommentsCount(
-          item,
-          targetPostId,
-          visited
-        );
-
-
-      if (
-        result !== null
-      ) {
-        return result;
-      }
-    }
-
-
-    return null;
-  }
-
 
   for (
     const child
     of Object.values(value)
   ) {
-
     if (
       child
       &&
       typeof child === 'object'
     ) {
+      findPosts(
+        child,
+        result,
+        visited
+      );
+    }
+  }
 
-      const result =
-        findPostCommentsCount(
-          child,
-          targetPostId,
-          visited
+  return result;
+}
+
+
+/* ============================================================
+ * SuperLike / icons
+ * ============================================================ */
+
+function hasSuperLike(post) {
+  /*
+   * 真实 Response 已确认：
+   *
+   * user.icons = [
+   *   {
+   *     name: "chao_like"
+   *   }
+   * ]
+   *
+   * 所以优先做精确判断。
+   */
+  const icons =
+    Array.isArray(
+      post?.user?.icons
+    )
+      ? post.user.icons
+      : [];
+
+  if (
+    icons.some(
+      icon =>
+        String(
+          icon?.name || ''
+        ).toLowerCase()
+        === 'chao_like'
+    )
+  ) {
+    return true;
+  }
+
+  /*
+   * 兼容未来字段变化。
+   */
+  let text = '';
+
+  try {
+    text =
+      JSON.stringify(
+        post?.user || {}
+      ).toLowerCase();
+
+  } catch {
+    return false;
+  }
+
+  return (
+    text.includes('"name":"chao_like"')
+    ||
+    text.includes('"name":"chaolike"')
+    ||
+    text.includes('"name":"super_like"')
+    ||
+    text.includes('"name":"superlike"')
+  );
+}
+
+function extractIcons(post) {
+  const icons =
+    Array.isArray(
+      post?.user?.icons
+    )
+      ? post.user.icons
+      : [];
+
+  return icons
+    .map(
+      icon =>
+        String(
+          icon?.name || ''
+        ).trim()
+    )
+    .filter(Boolean)
+    .filter(
+      name =>
+        name.toLowerCase()
+        !== 'chao_like'
+    );
+}
+
+
+/* ============================================================
+ * Save
+ * ============================================================ */
+
+function saveTargetPost(
+  monitorId,
+  post
+) {
+  const postId =
+    getPostId(post);
+
+  if (!postId) {
+    return {
+      status: 'skip',
+      reason: 'no_post_id'
+    };
+  }
+
+  const commentsCount =
+    getCommentsCount(post);
+
+  if (
+    commentsCount === null
+  ) {
+    return {
+      status: 'skip',
+      reason: 'unknown_comments'
+    };
+  }
+
+  if (
+    commentsCount >= MAX_COMMENTS
+  ) {
+    return {
+      status: 'skip',
+      reason: 'comments_full'
+    };
+  }
+
+  if (
+    hasSuperLike(post)
+  ) {
+    return {
+      status: 'skip',
+      reason: 'has_superlike'
+    };
+  }
+
+  const uid =
+    getUid(post);
+
+  const username =
+    getUsername(post);
+
+  const postLink =
+    getPostLink(post);
+
+  const postText =
+    getPostText(post);
+
+  const postCreatedAt =
+    getPostCreatedAt(post);
+
+  const icons =
+    extractIcons(post);
+
+  const iconSummary =
+    icons.length > 0
+      ? icons.join(' / ')
+      : '无';
+
+  let rawJson = null;
+
+  try {
+    rawJson =
+      JSON.stringify(post);
+
+  } catch {
+    rawJson = null;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_posts(
+      monitor_id,
+      post_id,
+      uid,
+      username,
+      post_link,
+      post_text,
+      comments_count,
+      current_has_superlike,
+      icon_summary,
+      experience_7d,
+      post_created_at,
+      first_seen_at,
+      last_seen_at,
+      raw_json
+    )
+    VALUES(
+      ?,?,?,?,?,?,?,
+      0,
+      ?,
+      NULL,
+      ?,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP,
+      ?
+    )
+  `).run(
+    monitorId,
+    postId,
+    uid || null,
+    username,
+    postLink || null,
+    postText,
+    commentsCount,
+    iconSummary,
+    postCreatedAt,
+    rawJson
+  );
+
+  return {
+    status: 'inserted',
+    postId,
+    uid,
+    username,
+    postLink,
+    commentsCount,
+    iconSummary
+  };
+}
+
+
+/* ============================================================
+ * AJAX helpers
+ * ============================================================ */
+
+function parseChaohuaRequestUrl(
+  requestUrl
+) {
+  try {
+    const url =
+      new URL(requestUrl);
+
+    if (
+      url.hostname !== 'weibo.com'
+      ||
+      url.pathname !==
+        '/ajax_proxy/chaohua/page'
+    ) {
+      return null;
+    }
+
+    return {
+      flowId:
+        url.searchParams.get(
+          'flowId'
+        ),
+
+      page:
+        Number(
+          url.searchParams.get(
+            'page'
+          )
+          || 1
+        ),
+
+      url:
+        requestUrl
+    };
+
+  } catch {
+    return null;
+  }
+}
+
+
+/**
+ * ============================================================
+ * 捕获指定 flowId 的下一条 Response
+ * ============================================================
+ */
+
+function waitForChaohuaResponse(
+  page,
+  targetFlowId,
+  timeoutMs = FEED_WAIT_MS
+) {
+  return new Promise(resolve => {
+    let done = false;
+
+    const timer =
+      setTimeout(
+        () => {
+          if (done) {
+            return;
+          }
+
+          done = true;
+
+          page.off(
+            'response',
+            onResponse
+          );
+
+          resolve(null);
+        },
+
+        timeoutMs
+      );
+
+
+    async function onResponse(
+      response
+    ) {
+      if (done) {
+        return;
+      }
+
+      const info =
+        parseChaohuaRequestUrl(
+          response.url()
         );
+
+      if (
+        !info
+        ||
+        info.flowId !==
+          targetFlowId
+      ) {
+        return;
+      }
+
+      console.log(
+        `[SuperLike][AJAX] status=${response.status()} flowId=${info.flowId} page=${info.page}`
+      );
+
+      let json;
+
+      try {
+        json =
+          await response.json();
+
+      } catch {
+        return;
+      }
 
 
       if (
-        result !== null
+        response.status() < 200
+        ||
+        response.status() >= 300
       ) {
-        return result;
+        return;
       }
+
+
+      done = true;
+
+      clearTimeout(
+        timer
+      );
+
+      page.off(
+        'response',
+        onResponse
+      );
+
+
+      resolve({
+        url:
+          response.url(),
+
+        page:
+          info.page,
+
+        json,
+
+        requestHeaders:
+          response.request().headers()
+      });
+    }
+
+
+    page.on(
+      'response',
+      onResponse
+    );
+  });
+}
+
+
+/**
+ * ============================================================
+ * 点击一级“最新”
+ * ============================================================
+ */
+
+async function clickPrimaryLatest(
+  page
+) {
+  /*
+   * 优先找一级导航：
+   * 热门 / 最新 / 精华...
+   *
+   * 用共同容器排除其它“最新”文字。
+   */
+  const result =
+    await page.evaluate(
+      () => {
+        function isVisible(el) {
+          const rect =
+            el.getBoundingClientRect();
+
+          const style =
+            window.getComputedStyle(
+              el
+            );
+
+          return (
+            rect.width > 0
+            &&
+            rect.height > 0
+            &&
+            style.display !== 'none'
+            &&
+            style.visibility !== 'hidden'
+          );
+        }
+
+
+        const all =
+          Array.from(
+            document.querySelectorAll(
+              'a,button,span,div,li'
+            )
+          )
+          .filter(isVisible);
+
+
+        const latestNodes =
+          all.filter(
+            node =>
+              (
+                node.textContent
+                || ''
+              ).trim()
+              === '最新'
+          );
+
+
+        const hotNodes =
+          all.filter(
+            node =>
+              (
+                node.textContent
+                || ''
+              ).trim()
+              === '热门'
+          );
+
+
+        for (
+          const latest
+          of latestNodes
+        ) {
+          let parent =
+            latest.parentElement;
+
+          let depth = 0;
+
+
+          while (
+            parent
+            &&
+            depth < 8
+          ) {
+            const text =
+              (
+                parent.textContent
+                || ''
+              )
+                .replace(
+                  /\s+/g,
+                  ''
+                );
+
+
+            const containsHot =
+              hotNodes.some(
+                hot =>
+                  parent.contains(hot)
+              );
+
+
+            if (
+              containsHot
+              &&
+              text.includes('热门')
+              &&
+              text.includes('最新')
+              &&
+              text.length <= 100
+            ) {
+              const clickable =
+                latest.closest(
+                  'a,button,[role="tab"],[role="button"],li'
+                )
+                || latest;
+
+
+              clickable.scrollIntoView({
+                block: 'center'
+              });
+
+
+              clickable.click();
+
+
+              return {
+                clicked: true,
+                html:
+                  (
+                    clickable.outerHTML
+                    || ''
+                  ).slice(
+                    0,
+                    300
+                  )
+              };
+            }
+
+
+            parent =
+              parent.parentElement;
+
+            depth++;
+          }
+        }
+
+
+        return {
+          clicked: false
+        };
+      }
+    );
+
+
+  if (
+    result.clicked
+  ) {
+    console.log(
+      `[SuperLike] 已点击一级“最新”：${result.html || ''}`
+    );
+
+    return true;
+  }
+
+
+  return false;
+}
+
+
+/**
+ * ============================================================
+ * 从 _feed Response 找“最新发帖” containerid
+ * ============================================================
+ */
+
+function extractLatestPostFlowId(
+  feedJson
+) {
+  const items =
+    Array.isArray(
+      feedJson?.items
+    )
+      ? feedJson.items
+      : [];
+
+
+  for (
+    const item
+    of items
+  ) {
+    /*
+     * 你给的 Response 中：
+     *
+     * item.category = "card"
+     * item.data.itemid = "page_feed_child_tab"
+     */
+    const itemId =
+      item?.itemid
+      ??
+      item?.data?.itemid;
+
+
+    if (
+      itemId !==
+      'page_feed_child_tab'
+    ) {
+      continue;
+    }
+
+
+    const groups =
+      item?.filter_group
+      ??
+      item?.data?.filter_group;
+
+
+    if (
+      !Array.isArray(groups)
+    ) {
+      continue;
+    }
+
+
+    const target =
+      groups.find(
+        group =>
+          String(
+            group?.name || ''
+          ).trim()
+          === '最新发帖'
+      );
+
+
+    if (
+      target?.containerid
+    ) {
+      return String(
+        target.containerid
+      );
     }
   }
 
@@ -351,793 +1003,1196 @@ function findPostCommentsCount(
 
 /**
  * ============================================================
- * 打开帖子，读取当前评论数
+ * 从 Response 直接拿下一页参数
  *
- * 注意：
+ * 你给的 _feed Response 已确认：
  *
- * 这里不判断超LIKE。
+ * moreInfo: {
+ *   pagingType: "cursor",
+ *   params: {
+ *     page: 2,
+ *     since_id: "{\"max_id\":...}",
+ *     max_id: 0
+ *   }
+ * }
  *
- * 超LIKE统一通过 profile_inpage 判断。
+ * sort_time 也优先按同结构读取。
  * ============================================================
  */
 
-async function getCurrentCommentsCount(
-  page,
-  post
+function extractNextPageParams(
+  json
 ) {
+  const candidates = [
+    json?.moreInfo?.params,
+    json?.data?.moreInfo?.params,
+    json?.data?.more_info?.params,
+    json?.more_info?.params
+  ];
 
-  if (
-    !post.post_link
+
+  for (
+    const params
+    of candidates
   ) {
+    if (
+      params
+      &&
+      typeof params === 'object'
+      &&
+      Number(params.page) >= 2
+    ) {
+      return {
+        page:
+          Number(params.page),
 
-    return {
-      ok: false,
-      commentsCount: null,
-      message:
-        '没有 post_link'
-    };
-  }
+        since_id:
+          params.since_id
+          !== undefined
+          &&
+          params.since_id
+          !== null
+            ? String(
+                params.since_id
+              )
+            : null,
 
-
-  const capturedJson = [];
-
-
-  /**
-   * 监听打开微博过程中产生的 JSON。
-   */
-  async function onResponse(
-    response
-  ) {
-
-    try {
-
-      const url =
-        response.url();
-
-
-      if (
-        !url.includes(
-          'weibo'
-        )
-      ) {
-        return;
-      }
-
-
-      const contentType =
-        response.headers()[
-          'content-type'
-        ]
-        ||
-        '';
-
-
-      if (
-        !contentType.includes(
-          'json'
-        )
-      ) {
-        return;
-      }
-
-
-      const json =
-        await response.json();
-
-
-      capturedJson.push(
-        json
-      );
-
-
-    } catch {
-      /*
-       * 某些 response 不是有效 JSON。
-       *
-       * 直接忽略。
-       */
+        max_id:
+          params.max_id
+          !== undefined
+          &&
+          params.max_id
+          !== null
+            ? String(
+                params.max_id
+              )
+            : '0'
+      };
     }
   }
 
 
-  page.on(
-    'response',
-    onResponse
+  return null;
+}
+
+
+function buildChaohuaUrl(
+  flowId,
+  pageParams = null
+) {
+  const url =
+    new URL(
+      '/ajax_proxy/chaohua/page',
+      'https://weibo.com'
+    );
+
+
+  url.searchParams.set(
+    'flowId',
+    flowId
   );
 
 
-  try {
+  /*
+   * 第一页只有 flowId。
+   */
+  if (!pageParams) {
+    return url.toString();
+  }
 
-    console.log(
-      `[Recheck][帖子] 打开 ${post.post_link}`
+
+  url.searchParams.set(
+    'page',
+    String(
+      pageParams.page
+    )
+  );
+
+
+  if (
+    pageParams.since_id
+  ) {
+    url.searchParams.set(
+      'since_id',
+      pageParams.since_id
     );
+  }
 
 
-    await page.goto(
-      post.post_link,
-      {
-        waitUntil:
-          'domcontentloaded',
-
-        timeout:
-          30000
-      }
-    );
+  url.searchParams.set(
+    'max_id',
+    pageParams.max_id
+    ?? '0'
+  );
 
 
-    await page.waitForTimeout(
-      POST_WAIT_MS
-    );
+  return url.toString();
+}
 
 
-    /**
-     * ========================================================
-     * 第一优先：
-     *
-     * 从微博页面产生的 JSON Response 中找。
-     * ========================================================
-     */
+/**
+ * ============================================================
+ * 页面内 AJAX
+ *
+ * 这次是在：
+ *
+ * 首页打开成功
+ * -> 一级最新点击成功
+ * -> _feed 请求 200 成功
+ *
+ * 之后才请求 sort_time。
+ *
+ * 比之前一进入页面就裸 fetch 多了一层真实前端状态。
+ * ============================================================
+ */
 
-    for (
-      const json
-      of capturedJson
-    ) {
+async function fetchChaohuaInPage(
+  page,
+  url
+) {
+  return await page.evaluate(
+    async requestUrl => {
+      const response =
+        await fetch(
+          requestUrl,
+          {
+            method:
+              'GET',
 
-      const count =
-        findPostCommentsCount(
-          json,
-          post.post_id
+            credentials:
+              'include',
+
+            headers: {
+              Accept:
+                'application/json, text/plain, */*'
+            }
+          }
         );
 
 
-      if (
-        count !== null
-      ) {
+      const text =
+        await response.text();
 
-        return {
-          ok: true,
-          commentsCount:
-            count
-        };
+
+      let json;
+
+      try {
+        json =
+          JSON.parse(
+            text
+          );
+
+      } catch {
+        throw new Error(
+          `非JSON Response: ${text.slice(0, 200)}`
+        );
       }
+
+
+      return {
+        httpStatus:
+          response.status,
+
+        ok:
+          response.ok,
+
+        json
+      };
+    },
+
+    url
+  );
+}
+
+
+
+/**
+ * ============================================================
+ * 等待并点击二级“最新发帖”
+ * ============================================================
+ */
+async function clickLatestPostTab(
+  page
+) {
+  console.log(
+    '[SuperLike] 等待二级“最新发帖”Tab渲染...'
+  );
+
+  const latestPost =
+    page.getByText(
+      '最新发帖',
+      {
+        exact: true
+      }
+    );
+
+  await latestPost.first().waitFor({
+    state: 'visible',
+    timeout: 10000
+  });
+
+  const count =
+    await latestPost.count();
+
+  console.log(
+    `[SuperLike] 找到 ${count} 个“最新发帖”候选`
+  );
+
+  for (
+    let i = 0;
+    i < count;
+    i++
+  ) {
+    const item =
+      latestPost.nth(i);
+
+    if (
+      !(await item.isVisible())
+    ) {
+      continue;
     }
 
+    await item.scrollIntoViewIfNeeded();
 
-    /**
-     * ========================================================
-     * 第二优先：
-     *
-     * DOM fallback。
-     * ========================================================
-     */
+    console.log(
+      '[SuperLike] 点击二级“最新发帖”...'
+    );
 
-    const domCount =
-      await page.evaluate(
-        () => {
+    await item.click({
+      timeout: 5000
+    });
 
-          const texts =
-            Array.from(
-              document.querySelectorAll(
-                'a,button,span,div'
-              )
-            )
-              .map(
-                element =>
-                  (
-                    element.textContent
-                    ||
-                    ''
-                  ).trim()
-              )
-              .filter(Boolean);
+    return true;
+  }
+
+  throw new Error(
+    '“最新发帖”已出现但没有可点击元素'
+  );
+}
 
 
-          const patterns = [
+/**
+ * ============================================================
+ * 滚动页面，让微博前端自己触发下一页 AJAX
+ * ============================================================
+ */
+async function triggerNextPage(
+  page
+) {
+  await page.evaluate(
+    () => {
+      window.scrollTo(
+        0,
+        document.body.scrollHeight
+      );
 
-            /^评论\s*(\d+)$/,
+      const elements =
+        Array.from(
+          document.querySelectorAll('*')
+        );
 
-            /^评论\s*\((\d+)\)$/,
+      let best = null;
+      let bestAmount = 0;
 
-            /^评论\s*·?\s*(\d+)$/
+      for (
+        const el
+        of elements
+      ) {
+        const style =
+          window.getComputedStyle(el);
 
-          ];
+        if (
+          ![
+            'auto',
+            'scroll'
+          ].includes(
+            style.overflowY
+          )
+        ) {
+          continue;
+        }
+
+        const amount =
+          el.scrollHeight
+          - el.clientHeight;
+
+        if (
+          amount >
+          bestAmount
+        ) {
+          bestAmount = amount;
+          best = el;
+        }
+      }
+
+      if (best) {
+        best.scrollTop =
+          best.scrollHeight;
+      }
+    }
+  );
+
+  await page.waitForTimeout(
+    800
+  );
+
+  try {
+    await page.mouse.wheel(
+      0,
+      4000
+    );
+  } catch {
+    // ignore
+  }
+}
 
 
-          for (
-            const text
-            of texts
+
+/**
+ * ============================================================
+ * 构造用户在当前超话的 profile_inpage API URL
+ *
+ * 页面形式：
+ * https://m.weibo.cn/p/index?containerid=231140{hash}_-_profile_inpage
+ *
+ * 实际 JSON API：
+ * https://m.weibo.cn/api/container/getIndex?... 
+ *
+ * extparam 的目标值是：
+ * target_uid#123456
+ *
+ * 在这个接口里需要嵌套编码，所以最终 URL 会看到：
+ * target_uid%2523123456
+ * ============================================================
+ */
+function buildProfileInPageApiUrl(
+  config,
+  uid
+) {
+  const url =
+    new URL(
+      'https://m.weibo.cn/api/container/getIndex'
+    );
+
+  url.searchParams.set(
+    'containerid',
+    config.profileContainerId
+  );
+
+  /*
+   * 先人为保留一次 %23，
+   * URLSearchParams 再编码一次，
+   * 最终得到 target_uid%2523{uid}
+   */
+  url.searchParams.set(
+    'extparam',
+    `target_uid%23${uid}`
+  );
+
+  url.searchParams.set(
+    'luicode',
+    '10000011'
+  );
+
+  url.searchParams.set(
+    'lfid',
+    config.chaoLikeListContainerId
+  );
+
+  url.searchParams.set(
+    'launchid',
+    '10000360-page_H5'
+  );
+
+  return url.toString();
+}
+
+
+/**
+ * ============================================================
+ * profile_inpage Response 是否存在超LIKE
+ *
+ * 优先判断页面实际展示的：
+ * title_sub = "超LIKE"
+ *
+ * 同时兼容 scheme 中：
+ * union_id=chao_like
+ * union_id%3Dchao_like
+ * union_id%253Dchao_like
+ * ============================================================
+ */
+function profileHasSuperLike(
+  value,
+  visited = new Set()
+) {
+  if (
+    value === null
+    ||
+    value === undefined
+  ) {
+    return false;
+  }
+
+  if (
+    typeof value === 'string'
+  ) {
+    const lower =
+      value.toLowerCase();
+
+    return (
+      lower.includes(
+        'union_id=chao_like'
+      )
+      ||
+      lower.includes(
+        'union_id%3dchao_like'
+      )
+      ||
+      lower.includes(
+        'union_id%253dchao_like'
+      )
+    );
+  }
+
+  if (
+    typeof value !== 'object'
+  ) {
+    return false;
+  }
+
+  if (
+    visited.has(value)
+  ) {
+    return false;
+  }
+
+  visited.add(value);
+
+  if (
+    String(
+      value.title_sub
+      ?? ''
+    )
+      .trim()
+      .toLowerCase()
+    ===
+    '超like'
+  ) {
+    return true;
+  }
+
+  const children =
+    Array.isArray(value)
+      ? value
+      : Object.values(value);
+
+  for (
+    const child
+    of children
+  ) {
+    if (
+      profileHasSuperLike(
+        child,
+        visited
+      )
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+
+/**
+ * ============================================================
+ * 请求用户 profile_inpage 并判断当前是否有超LIKE
+ *
+ * 返回：
+ * {
+ *   ok: true,
+ *   hasSuperLike: true/false,
+ *   url
+ * }
+ *
+ * 请求失败时：
+ * {
+ *   ok: false,
+ *   hasSuperLike: null,
+ *   ...
+ * }
+ * ============================================================
+ */
+async function checkUserSuperLikeByProfile(
+  context,
+  config,
+  uid
+) {
+  const url =
+    buildProfileInPageApiUrl(
+      config,
+      uid
+    );
+
+  console.log(
+    `[SuperLike][ProfileURL] ${url}`
+  );
+
+  const MAX_RETRY = 3;
+
+  let profilePage = null;
+
+  try {
+    for (
+      let attempt = 1;
+      attempt <= MAX_RETRY;
+      attempt++
+    ) {
+      try {
+        /*
+         * 每次 retry 前确认 page 还活着。
+         *
+         * 微博 visitor 流程有时会主动关闭当前 tab，
+         * 所以不能长期复用一个固定 profilePage。
+         */
+        if (
+          !profilePage
+          ||
+          profilePage.isClosed()
+        ) {
+          profilePage =
+            await context.newPage();
+        }
+
+        if (
+          attempt > 1
+        ) {
+          await profilePage.waitForTimeout(
+            1000
+          );
+        }
+
+        const response =
+          await profilePage.goto(
+            url,
+            {
+              waitUntil:
+                'domcontentloaded',
+
+              timeout:
+                30000
+            }
+          );
+
+        /*
+         * goto 偶尔在 visitor 跳转期间拿不到 Response。
+         * 不立即失败，下一次 retry 重新建 page 再试。
+         */
+        if (!response) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} attempt=${attempt}/${MAX_RETRY} | goto没有Response`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
           ) {
-
-            for (
-              const pattern
-              of patterns
-            ) {
-
-              const match =
-                text.match(
-                  pattern
-                );
-
-
-              if (
-                match
-              ) {
-
-                return Number(
-                  match[1]
-                );
-              }
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
             }
           }
 
+          profilePage = null;
 
-          return null;
+          continue;
         }
-      );
 
+        const status =
+          response.status();
 
-    if (
-      domCount !== null
-    ) {
+        const finalUrl =
+          response.url();
 
-      return {
-        ok: true,
-        commentsCount:
-          domCount
-      };
+        console.log(
+          `[SuperLike][ProfileResponse] UID=${uid} attempt=${attempt}/${MAX_RETRY} status=${status} url=${finalUrl}`
+        );
+
+        /*
+         * 第一次访问 m.weibo.cn 时，
+         * 可能进入 visitor.passport.weibo.cn。
+         *
+         * visitor 页面可能设置 cookie、跳转，
+         * 也可能直接把当前 tab 关闭。
+         *
+         * 所以这里等待一下后丢弃当前 tab，
+         * 下一次 retry 新建一个 page。
+         */
+        if (
+          finalUrl.includes(
+            'visitor.passport.weibo.cn'
+          )
+        ) {
+          console.log(
+            `[SuperLike][Visitor] UID=${uid} 进入 visitor 初始化，下一次使用新页面重试`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.waitForTimeout(
+                2000
+              );
+            } catch {
+              // visitor 可能已经把 tab 关闭，忽略
+            }
+          }
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        /*
+         * 必须确认最终仍然是 JSON API。
+         */
+        if (
+          !finalUrl.includes(
+            '/api/container/getIndex'
+          )
+        ) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} 最终URL不是 getIndex API`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        if (
+          status < 200
+          ||
+          status >= 300
+        ) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} HTTP=${status}`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        let bodyText;
+
+        try {
+          bodyText =
+            await response.text();
+        } catch (error) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} Response读取失败：${error.message}`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        console.log(
+          `[SuperLike][Profile前100] ${bodyText.slice(
+            0,
+            100
+          )}`
+        );
+
+        /*
+         * visitor / 风控偶尔会返回 HTML。
+         */
+        if (
+          bodyText
+            .trimStart()
+            .startsWith(
+              '<'
+            )
+        ) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} 返回HTML`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        let json;
+
+        try {
+          json =
+            JSON.parse(
+              bodyText
+            );
+        } catch (error) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} JSON解析失败：${error.message}`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        if (
+          Number(
+            json?.ok
+            ?? 0
+          )
+          !== 1
+        ) {
+          console.log(
+            `[SuperLike][Profile重试] UID=${uid} API ok=${json?.ok}`
+          );
+
+          if (
+            profilePage
+            &&
+            !profilePage.isClosed()
+          ) {
+            try {
+              await profilePage.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          profilePage = null;
+
+          continue;
+        }
+
+        const hasSuperLike =
+          profileHasSuperLike(
+            json
+          );
+
+        console.log(
+          `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
+        );
+
+        return {
+          ok: true,
+          hasSuperLike,
+          status,
+          url:
+            finalUrl
+        };
+
+      } catch (error) {
+        console.log(
+          `[SuperLike][Profile异常] UID=${uid} attempt=${attempt}/${MAX_RETRY} | ${error.message}`
+        );
+
+        /*
+         * 当前 tab 无论是否已经关闭，都丢弃。
+         * 下一次 retry 使用新的 page。
+         */
+        if (
+          profilePage
+          &&
+          !profilePage.isClosed()
+        ) {
+          try {
+            await profilePage.close();
+          } catch {
+            // ignore
+          }
+        }
+
+        profilePage = null;
+
+        if (
+          attempt === MAX_RETRY
+        ) {
+          return {
+            ok: false,
+            hasSuperLike: null,
+            status: null,
+            url,
+            message:
+              error.message
+          };
+        }
+      }
     }
 
-
     return {
       ok: false,
-      commentsCount: null,
-
+      hasSuperLike: null,
+      status: null,
+      url,
       message:
-        '没有从帖子页面读取到 comments_count'
+        `连续 ${MAX_RETRY} 次未取得有效 Profile JSON`
     };
-
-
-  } catch (error) {
-
-    return {
-      ok: false,
-      commentsCount: null,
-
-      message:
-        error.message
-    };
-
 
   } finally {
-
-    page.off(
-      'response',
-      onResponse
-    );
+    /*
+     * 每个 UID 检查结束后关闭临时 page。
+     *
+     * BrowserContext 本身仍然保留，
+     * 所以 visitor/cookie 可以继续共享给下一个 UID。
+     */
+    if (
+      profilePage
+      &&
+      !profilePage.isClosed()
+    ) {
+      try {
+        await profilePage.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
 
 /**
  * ============================================================
- * 检查一个 Monitor
+ * Process Post Page
  * ============================================================
  */
 
-async function recheckOneMonitor(
+async function processPagePosts(
+  monitorId,
+  json,
+  seenThisRun,
   context,
-  monitor
+  config,
+  profileCache
 ) {
-
-  const config =
-    parseTopicHomepage(
-      monitor.url
-    );
-
-
-  const users =
-    getDistinctUsers(
-      monitor.id
-    );
-
-
-  console.log('');
-  console.log(
-    '=============================================='
-  );
-
-  console.log(
-    `SuperLike Recheck：${monitor.name}`
-  );
-
-  console.log(
-    `候选用户：${users.length}`
-  );
-
-  console.log(
-    `Profile Container：${config.profileContainerId}`
-  );
-
-  console.log(
-    `评论删除阈值：>= ${MAX_COMMENTS}`
-  );
-
-  console.log(
-    '=============================================='
-  );
-
-
-  /**
-   * ==========================================================
-   * 注意：
-   *
-   * 不再创建固定 profilePage。
-   *
-   * checkUserSuperLikeByProfile(context,...)
-   * 内部自己：
-   *
-   * context.newPage()
-   * ↓
-   * Profile检查
-   * ↓
-   * close()
-   *
-   * visitor 即使关闭当前 tab，
-   * 也不会污染下一个 UID。
-   * ==========================================================
-   */
-
-
-  /**
-   * postPage 仍然长期复用。
-   *
-   * 它只负责打开帖子检查评论数。
-   */
-  const postPage =
-    await context.newPage();
-
-
   const stats = {
-
-    users:
-      users.length,
-
-    profileChecked:
-      0,
-
-    superLikeUsers:
-      0,
-
-    profileFailed:
-      0,
-
-    deletedBySuperLike:
-      0,
-
-    postsChecked:
-      0,
-
-    postFailed:
-      0,
-
-    deletedByComments:
-      0,
-
-    kept:
-      0
+    found: 0,
+    duplicateInRun: 0,
+    existingInDb: 0,
+    unknownComments: 0,
+    commentsFull: 0,
+    hasSuperLike: 0,
+    profileChecked: 0,
+    profileHasSuperLike: 0,
+    profileCheckFailed: 0,
+    target: 0,
+    inserted: 0
   };
 
 
-  try {
+  const posts =
+    findPosts(
+      json
+    );
 
-    for (
-      let i = 0;
-      i < users.length;
-      i++
+
+  for (
+    const post
+    of posts
+  ) {
+    const postId =
+      getPostId(
+        post
+      );
+
+
+    if (!postId) {
+      continue;
+    }
+
+
+    if (
+      seenThisRun.has(
+        postId
+      )
     ) {
-
-      const user =
-        users[i];
-
-
-      const uid =
-        String(
-          user.uid
-        );
+      stats.duplicateInRun++;
+      continue;
+    }
 
 
-      console.log('');
-      console.log(
-        `========== UID ${i + 1}/${users.length} ==========`
-      );
+    seenThisRun.add(
+      postId
+    );
 
-      console.log(
-        `UID=${uid}`
-      );
-
-      console.log(
-        `用户名=${user.username || '-'}`
-      );
-
-      console.log(
-        `候选帖子=${user.post_count}`
-      );
+    stats.found++;
 
 
-      /**
-       * ======================================================
-       * STEP 1
-       *
-       * Profile检查
-       * ======================================================
-       */
+    if (
+      postIdExists(
+        postId
+      )
+    ) {
+      stats.existingInDb++;
+      continue;
+    }
 
-      stats.profileChecked++;
 
-
-      console.log(
-        `[Recheck][Profile] UID=${uid}`
+    const commentsCount =
+      getCommentsCount(
+        post
       );
 
 
-      /*
-       * 这里非常重要：
-       *
-       * 现在传的是 BrowserContext，
-       * 不再是 profilePage。
-       */
-      const profileResult =
+    if (
+      commentsCount === null
+    ) {
+      stats.unknownComments++;
+      continue;
+    }
+
+
+    if (
+      commentsCount >=
+      MAX_COMMENTS
+    ) {
+      stats.commentsFull++;
+      continue;
+    }
+
+
+    /*
+     * 第一层：
+     * 当前“最新发帖”Response 本身已经有 chao_like，
+     * 直接排除，不需要再请求 profile。
+     */
+    if (
+      hasSuperLike(
+        post
+      )
+    ) {
+      stats.hasSuperLike++;
+      continue;
+    }
+
+
+    /*
+     * 第二层：
+     * 帖子 Response 没有 chao_like 时，
+     * 再按 UID 请求 profile_inpage 做最终确认。
+     */
+    const uid =
+      getUid(
+        post
+      );
+
+
+    if (!uid) {
+      stats.profileCheckFailed++;
+
+      console.log(
+        `[SuperLike][Profile跳过] Post=${postId} 没有UID，不入库`
+      );
+
+      continue;
+    }
+
+
+    let profileResult =
+      profileCache.get(
+        uid
+      );
+
+
+    if (!profileResult) {
+      console.log(
+        `[SuperLike][Profile检查] UID=${uid}`
+      );
+
+      profileResult =
         await checkUserSuperLikeByProfile(
           context,
           config,
           uid
         );
 
-
-      /**
-       * ======================================================
-       * Profile无法确认
-       * ======================================================
-       */
-
-      if (
-        !profileResult.ok
-      ) {
-
-        stats.profileFailed++;
-
-
-        console.log(
-          `[Recheck][Profile失败] UID=${uid} | ${
-            profileResult.message
-            ||
-            'unknown'
-          }`
-        );
-
-
-        /*
-         * 无法确认：
-         *
-         * 不删除用户
-         * 不删除帖子
-         *
-         * 防止误删。
-         */
-        continue;
-      }
-
-
-      /**
-       * ======================================================
-       * STEP 2
-       *
-       * 已经获得超LIKE
-       *
-       * 删除该用户全部候选帖子
-       * ======================================================
-       */
-
-      if (
-        profileResult.hasSuperLike
-      ) {
-
-        stats.superLikeUsers++;
-
-
-        const deleted =
-          deleteAllPostsByUid(
-            monitor.id,
-            uid
-          );
-
-
-        stats.deletedBySuperLike +=
-          deleted;
-
-
-        console.log(
-          `[Recheck][超LIKE删除] UID=${uid} | 删除 ${deleted} 条`
-        );
-
-
-        /*
-         * 不需要检查这个人的帖子评论数了。
-         */
-        await postPage.waitForTimeout(
-          PROFILE_DELAY_MS
-        );
-
-
-        continue;
-      }
-
-
-      console.log(
-        `[Recheck][Profile] UID=${uid} 当前没有超LIKE`
+      profileCache.set(
+        uid,
+        profileResult
       );
 
-
-      /**
-       * ======================================================
-       * STEP 3
-       *
-       * 当前没有超LIKE
-       *
-       * 检查该用户每一条候选帖子。
-       * ======================================================
-       */
-
-      const posts =
-        getPostsByUid(
-          monitor.id,
-          uid
-        );
-
-
-      for (
-        let p = 0;
-        p < posts.length;
-        p++
-      ) {
-
-        const post =
-          posts[p];
-
-
-        stats.postsChecked++;
-
-
-        console.log(
-          `[Recheck][帖子 ${p + 1}/${posts.length}] Post=${post.post_id}`
-        );
-
-
-        const result =
-          await getCurrentCommentsCount(
-            postPage,
-            post
-          );
-
-
-        /**
-         * ====================================================
-         * 帖子读取失败
-         * ====================================================
-         */
-
-        if (
-          !result.ok
-        ) {
-
-          stats.postFailed++;
-
-
-          console.log(
-            `[Recheck][帖子失败] Post=${post.post_id} | ${
-              result.message
-              ||
-              'unknown'
-            }`
-          );
-
-
-          /*
-           * 读取失败：
-           *
-           * 不删除。
-           */
-          continue;
-        }
-
-
-        const commentsCount =
-          Number(
-            result.commentsCount
-          );
-
-
-        console.log(
-          `[Recheck][评论] Post=${post.post_id} | DB=${post.comments_count} | 当前=${commentsCount}`
-        );
-
-
-        /**
-         * ====================================================
-         * 评论 >= 20
-         *
-         * 删除当前帖子。
-         * ====================================================
-         */
-
-        if (
-          commentsCount >=
-          MAX_COMMENTS
-        ) {
-
-          const deleted =
-            deleteOnePost(
-              monitor.id,
-              post.post_id
-            );
-
-
-          stats.deletedByComments +=
-            deleted;
-
-
-          console.log(
-            `[Recheck][评论删除] Post=${post.post_id} | 评论=${commentsCount}`
-          );
-
-
-        } else {
-
-          /**
-           * 评论仍然 < 20：
-           *
-           * 更新数据库。
-           */
-          updateCommentCount(
-            monitor.id,
-            post.post_id,
-            commentsCount
-          );
-
-
-          stats.kept++;
-
-
-          console.log(
-            `[Recheck][保留] Post=${post.post_id} | 评论=${commentsCount}`
-          );
-        }
-
-
-        await postPage.waitForTimeout(
-          POST_DELAY_MS
-        );
-      }
-
-
-      await postPage.waitForTimeout(
-        PROFILE_DELAY_MS
-      );
+      stats.profileChecked++;
     }
 
 
-  } finally {
-
-    /*
-     * 这里只需要关 postPage。
-     *
-     * Profile page 已经由
-     * checkUserSuperLikeByProfile()
-     * 自己负责关闭。
-     */
     if (
-      postPage
-      &&
-      !postPage.isClosed()
+      !profileResult.ok
     ) {
+      stats.profileCheckFailed++;
 
-      try {
+      console.log(
+        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'}`
+      );
 
-        await postPage.close();
+      /*
+       * Profile 无法确认时不入库，
+       * 避免把已经有超LIKE的用户误当成候选。
+       */
+      continue;
+    }
 
-      } catch {
-        // ignore
+
+    if (
+      profileResult.hasSuperLike
+    ) {
+      stats.profileHasSuperLike++;
+      stats.hasSuperLike++;
+
+      console.log(
+        `[SuperLike][Profile排除] UID=${uid} 已有超LIKE`
+      );
+
+      continue;
+    }
+
+
+    stats.target++;
+
+
+    try {
+      const saved =
+        saveTargetPost(
+          monitorId,
+          post
+        );
+
+
+      if (
+        saved.status ===
+        'inserted'
+      ) {
+        stats.inserted++;
+
+        console.log(
+          [
+            '[SuperLike][新增]',
+            `UID=${saved.uid || '-'}`,
+            `用户=${saved.username || '-'}`,
+            `评论=${saved.commentsCount}`,
+            `Icon=${saved.iconSummary || '无'}`,
+            saved.postLink || '-'
+          ].join(' | ')
+        );
       }
+
+    } catch (error) {
+      if (
+        String(
+          error.message
+        )
+          .toLowerCase()
+          .includes(
+            'unique'
+          )
+      ) {
+        stats.existingInDb++;
+        continue;
+      }
+
+      throw error;
     }
   }
 
 
-  /**
-   * ==========================================================
-   * 最终统计
-   * ==========================================================
-   */
-
-  console.log('');
-  console.log(
-    `========== ${monitor.name} Recheck结果 ==========`
-  );
-
-  console.log(
-    `候选用户：${stats.users}`
-  );
-
-  console.log(
-    `Profile检查：${stats.profileChecked}`
-  );
-
-  console.log(
-    `Profile失败：${stats.profileFailed}`
-  );
-
-  console.log(
-    `发现已有超LIKE用户：${stats.superLikeUsers}`
-  );
-
-  console.log(
-    `因超LIKE删除帖子：${stats.deletedBySuperLike}`
-  );
-
-  console.log(
-    `帖子评论复检：${stats.postsChecked}`
-  );
-
-  console.log(
-    `帖子复检失败：${stats.postFailed}`
-  );
-
-  console.log(
-    `因评论>=${MAX_COMMENTS}删除：${stats.deletedByComments}`
-  );
-
-  console.log(
-    `最终保留：${stats.kept}`
-  );
-
-  console.log(
-    '=============================================='
-  );
+  return stats;
 }
 
 
-/**
- * ============================================================
- * MAIN
- * ============================================================
- */
+/* ============================================================
+ * Scan one monitor
+ * ============================================================ */
 
-async function main() {
-
-  initDatabase();
-
-
-  const monitors =
-    getSuperLikeMonitors();
-
-
-  if (
-    monitors.length === 0
-  ) {
-
-    console.log(
-      '[Recheck] 没有启用的 SuperLike Monitor。'
+async function scanOneSuperLikeMonitor(
+  monitor
+) {
+  const config =
+    parseTopicHomepage(
+      monitor.url
     );
 
 
-    return;
-  }
-
-
-  /**
-   * 和 scan-superlike 使用同一个 Persistent Profile。
-   *
-   * visitor cookie / 微博 session 可以保留下来。
-   */
   const profileDir =
     path.join(
       __dirname,
@@ -1147,62 +2202,541 @@ async function main() {
     );
 
 
-  let context = null;
+  let browser = null;
+
+
+  const startedAt =
+    Date.now();
+
+
+  const seenThisRun =
+    new Set();
+
+
+  /*
+   * 同一个 UID 在一轮里只请求一次 profile_inpage。
+   */
+  const profileCache =
+    new Map();
+
+
+  const total = {
+    found: 0,
+    duplicateInRun: 0,
+    existingInDb: 0,
+    unknownComments: 0,
+    commentsFull: 0,
+    hasSuperLike: 0,
+    profileChecked: 0,
+    profileHasSuperLike: 0,
+    profileCheckFailed: 0,
+    target: 0,
+    inserted: 0
+  };
+
+
+  let totalExisting =
+    0;
+
+  let pagesScanned =
+    0;
+
+  let stopReason =
+    `达到最大 ${MAX_PAGES} 页`;
 
 
   try {
+    console.log('');
+    console.log(
+      '=============================================='
+    );
 
-    context =
-      await chromium.launchPersistentContext(
-        profileDir,
-        {
+    console.log(
+      `SuperLike Monitor：${monitor.name}`
+    );
 
-          /*
-           * 现在先保持浏览器窗口。
-           *
-           * 后面稳定以后再改 headless。
-           */
-          headless:
-            false,
+    console.log(
+      `真实超话首页：${config.homepage}`
+    );
 
-          viewport: {
-            width:
-              1280,
+    console.log(
+      `最新评论 flowId：${config.feedFlowId}`
+    );
 
-            height:
-              900
+    console.log(
+      `最多：${MAX_PAGES}页`
+    );
+
+    console.log(
+      `DB旧Post > ${EXISTING_STOP_THRESHOLD} 后停止`
+    );
+
+    console.log(
+      '=============================================='
+    );
+
+
+    browser =
+      await chromium
+        .launchPersistentContext(
+          profileDir,
+          {
+            headless:
+              process.env
+                .SUPERLIKE_HEADLESS
+              === '1',
+
+            viewport: {
+              width: 1280,
+              height: 900
+            }
           }
-        }
+        );
+
+
+    const page =
+      browser.pages()[0]
+      ||
+      await browser.newPage();
+
+
+    console.log(
+      '[SuperLike] 打开真实超话首页...'
+    );
+
+
+    await page.goto(
+      config.homepage,
+      {
+        waitUntil:
+          'domcontentloaded',
+
+        timeout:
+          60 * 1000
+      }
+    );
+
+
+    await page.waitForTimeout(
+      INITIAL_WAIT_MS
+    );
+
+
+    /*
+     * 先监听 _feed，再点击一级“最新”
+     */
+    const feedWaiter =
+      waitForChaohuaResponse(
+        page,
+        config.feedFlowId,
+        FEED_WAIT_MS
+      );
+
+
+    console.log(
+      '[SuperLike] 点击一级“最新”...'
+    );
+
+
+    const clicked =
+      await clickPrimaryLatest(
+        page
+      );
+
+
+    if (!clicked) {
+      stopReason =
+        '未找到一级“最新”Tab';
+
+      console.error(
+        `[SuperLike] ${stopReason}`
+      );
+
+      return;
+    }
+
+
+    const feedResult =
+      await feedWaiter;
+
+
+    if (!feedResult) {
+      stopReason =
+        '点击一级“最新”后未捕获到 _feed Response';
+
+      console.error(
+        `[SuperLike] ${stopReason}`
+      );
+
+      return;
+    }
+
+
+    console.log(
+      `[SuperLike] _feed 第一页成功：${feedResult.url}`
+    );
+
+
+    /*
+     * 从 _feed Response 获取“最新发帖” flowId
+     */
+    const sortTimeFlowId =
+      extractLatestPostFlowId(
+        feedResult.json
+      );
+
+
+    if (!sortTimeFlowId) {
+      stopReason =
+        '_feed Response 中没有找到“最新发帖”containerid';
+
+      console.error(
+        `[SuperLike] ${stopReason}`
+      );
+
+      return;
+    }
+
+
+    console.log(
+      `[SuperLike] 从 _feed Response 找到“最新发帖” flowId：${sortTimeFlowId}`
+    );
+
+
+    /*
+     * 关键：
+     * 监听器必须先挂，再点击 DOM。
+     */
+    const firstSortTimeWaiter =
+      waitForChaohuaResponse(
+        page,
+        sortTimeFlowId,
+        FEED_WAIT_MS
+      );
+
+
+    await clickLatestPostTab(
+      page
+    );
+
+
+    const firstSortTimeResult =
+      await firstSortTimeWaiter;
+
+
+    if (!firstSortTimeResult) {
+      stopReason =
+        '点击“最新发帖”后未捕获到 sort_time 第一页';
+
+      console.error(
+        `[SuperLike] ${stopReason}`
+      );
+
+      return;
+    }
+
+
+    console.log(
+      `[SuperLike] sort_time 第一页成功：${firstSortTimeResult.url}`
+    );
+
+
+    let current =
+      firstSortTimeResult;
+
+
+    for (
+      let pageNumber = 1;
+      pageNumber <= MAX_PAGES;
+      pageNumber++
+    ) {
+      pagesScanned++;
+
+
+      const pageStats =
+        await processPagePosts(
+          monitor.id,
+          current.json,
+          seenThisRun,
+          browser,
+          config,
+          profileCache
+        );
+
+
+      for (
+        const key
+        of Object.keys(total)
+      ) {
+        total[key] +=
+          pageStats[key]
+          || 0;
+      }
+
+
+      totalExisting +=
+        pageStats.existingInDb;
+
+
+      console.log(
+        [
+          `[第${pageNumber}页]`,
+          `Post=${pageStats.found}`,
+          `DB已有=${pageStats.existingInDb}`,
+          `累计DB已有=${totalExisting}`,
+          `评论>=20=${pageStats.commentsFull}`,
+          `SuperLike=${pageStats.hasSuperLike}`,
+          `Profile检查=${pageStats.profileChecked}`,
+          `Profile已超Like=${pageStats.profileHasSuperLike}`,
+          `Profile失败=${pageStats.profileCheckFailed}`,
+          `新增=${pageStats.inserted}`
+        ].join(' | ')
+      );
+
+
+      if (
+        totalExisting >
+        EXISTING_STOP_THRESHOLD
+      ) {
+        stopReason =
+          `累计发现 ${totalExisting} 条 DB 已存在 post_id`;
+
+        console.log(
+          `[SuperLike] DB旧Post已超过 ${EXISTING_STOP_THRESHOLD}，结束本轮。`
+        );
+
+        break;
+      }
+
+
+      if (
+        pageNumber >=
+        MAX_PAGES
+      ) {
+        stopReason =
+          `达到最大 ${MAX_PAGES} 页`;
+
+        break;
+      }
+
+
+      /*
+       * 下一页：
+       * 先监听 sort_time，再滚动触发微博前端真实 AJAX。
+       */
+      const nextWaiter =
+        waitForChaohuaResponse(
+          page,
+          sortTimeFlowId,
+          FEED_WAIT_MS
+        );
+
+
+      console.log(
+        '[SuperLike] 滚动页面，等待下一页 sort_time AJAX...'
+      );
+
+
+      await triggerNextPage(
+        page
+      );
+
+
+      let next =
+        await nextWaiter;
+
+
+      /*
+       * 第一次没触发时，再滚一次。
+       */
+      if (!next) {
+        const retryWaiter =
+          waitForChaohuaResponse(
+            page,
+            sortTimeFlowId,
+            FEED_WAIT_MS
+          );
+
+        await triggerNextPage(
+          page
+        );
+
+        next =
+          await retryWaiter;
+      }
+
+
+      if (!next) {
+        stopReason =
+          `第${pageNumber}页后未触发下一页 sort_time AJAX`;
+
+        console.log(
+          `[SuperLike] ${stopReason}`
+        );
+
+        break;
+      }
+
+
+      current =
+        next;
+    }
+
+
+  } catch (error) {
+    stopReason =
+      `异常：${error.message}`;
+
+    throw error;
+
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+
+      } catch {
+        // ignore
+      }
+    }
+
+
+    const seconds =
+      Math.round(
+        (
+          Date.now()
+          -
+          startedAt
+        )
+        /
+        1000
       );
 
 
     console.log('');
     console.log(
-      '########################################'
+      `========== ${monitor.name} 本轮结果 ==========`
     );
 
     console.log(
-      '# SuperLike Recheck Batch'
+      '扫描页数：',
+      pagesScanned
     );
 
     console.log(
-      '# 手动执行一次'
+      'Post：',
+      total.found
     );
 
     console.log(
-      '# 有超LIKE → 删除该UID全部帖子'
+      'Response内重复：',
+      total.duplicateInRun
     );
 
     console.log(
-      `# 评论>=${MAX_COMMENTS} → 删除当前帖子`
+      'DB已有：',
+      total.existingInDb
     );
 
     console.log(
-      '# Profile/帖子检查失败 → 不删除'
+      '评论数未知：',
+      total.unknownComments
     );
 
     console.log(
-      '########################################'
+      '评论>=20：',
+      total.commentsFull
+    );
+
+    console.log(
+      '已有SuperLike：',
+      total.hasSuperLike
+    );
+
+    console.log(
+      'Profile实际请求UID数：',
+      total.profileChecked
+    );
+
+    console.log(
+      'Profile确认已有SuperLike：',
+      total.profileHasSuperLike
+    );
+
+    console.log(
+      'Profile检查失败：',
+      total.profileCheckFailed
+    );
+
+    console.log(
+      '符合候选：',
+      total.target
+    );
+
+    console.log(
+      '新增：',
+      total.inserted
+    );
+
+    console.log(
+      '停止原因：',
+      stopReason
+    );
+
+    console.log(
+      '耗时：',
+      `${seconds}秒`
+    );
+
+    console.log(
+      '=============================================='
+    );
+  }
+}
+
+
+/* ============================================================
+ * One round
+ * ============================================================ */
+
+async function scanSuperLikePosts() {
+  if (running) {
+    console.log(
+      '[SuperLike] 上一轮尚未结束，本轮跳过。'
+    );
+
+    return;
+  }
+
+
+  running = true;
+
+
+  try {
+    initDatabase();
+
+
+    const monitors =
+      getSuperLikeMonitors();
+
+
+    if (
+      monitors.length === 0
+    ) {
+      console.log('');
+      console.log(
+        '[SuperLike] 没有启用的 SuperLike Monitor。'
+      );
+
+      console.log(
+        "需要 monitor_type='superlike' AND enabled=1"
+      );
+
+      return;
+    }
+
+
+    console.log(
+      `[SuperLike] 本轮 ${monitors.length} 个 Monitor`
     );
 
 
@@ -1210,54 +2744,158 @@ async function main() {
       const monitor
       of monitors
     ) {
-
-      await recheckOneMonitor(
-        context,
-        monitor
-      );
-    }
-
-
-  } finally {
-
-    if (
-      context
-    ) {
-
       try {
+        await scanOneSuperLikeMonitor(
+          monitor
+        );
 
-        await context.close();
-
-      } catch {
-        // ignore
+      } catch (error) {
+        console.error(
+          `[SuperLike] ${monitor.name} 扫描失败：`,
+          error
+        );
       }
     }
+
+  } finally {
+    running = false;
   }
+}
+
+
+/* ============================================================
+ * Batch
+ * ============================================================ */
+
+async function startSuperLikeBatch() {
+  initDatabase();
 
 
   console.log('');
   console.log(
-    '[Recheck] 全部完成。'
+    '################################################'
+  );
+
+  console.log(
+    '# SuperLike Batch'
+  );
+
+  console.log(
+    `# 每 ${SCAN_INTERVAL_MS / 60000} 分钟重新开始`
+  );
+
+  console.log(
+    '# 一级最新 -> 捕获 _feed -> 解析最新发帖 containerid'
+  );
+
+  console.log(
+    '# sort_time 分页使用 Response.moreInfo.params'
+  );
+
+  console.log(
+    `# 最多 ${MAX_PAGES} 页`
+  );
+
+  console.log(
+    `# DB已有 post_id > ${EXISTING_STOP_THRESHOLD} 时结束`
+  );
+
+  console.log(
+    '# 评论<20 + 无SuperLike -> 入库'
+  );
+
+  console.log(
+    '# Ctrl+C 停止'
+  );
+
+  console.log(
+    '################################################'
+  );
+
+
+  await scanSuperLikePosts();
+
+
+  setInterval(
+    async () => {
+      console.log('');
+      console.log(
+        '[SuperLike] 15分钟到，重新开始。'
+      );
+
+
+      try {
+        await scanSuperLikePosts();
+
+      } catch (error) {
+        console.error(
+          '[SuperLike] 定时扫描失败：',
+          error
+        );
+      }
+    },
+
+    SCAN_INTERVAL_MS
   );
 }
 
 
-/**
- * ============================================================
- * START
- * ============================================================
- */
+process.on(
+  'SIGINT',
+  () => {
+    console.log('');
+    console.log(
+      '[SuperLike] Batch停止。'
+    );
 
-main()
-  .catch(
-    error => {
-
-      console.error(
-        '[Recheck] 执行失败：',
-        error
-      );
+    process.exit(0);
+  }
+);
 
 
-      process.exit(1);
-    }
-  );
+module.exports = {
+  initSuperLikeTable,
+  getSuperLikeMonitors,
+  scanSuperLikePosts,
+  scanOneSuperLikeMonitor,
+  startSuperLikeBatch,
+  hasSuperLike,
+  extractIcons,
+  findPosts,
+  getPostId,
+  getUid,
+  getUsername,
+  getPostText,
+  getPostLink,
+  getCommentsCount,
+  postIdExists,
+  parseTopicHomepage,
+  parseChaohuaRequestUrl,
+  clickPrimaryLatest,
+  extractLatestPostFlowId,
+  extractNextPageParams,
+  buildChaohuaUrl,
+  fetchChaohuaInPage,
+  clickLatestPostTab,
+  triggerNextPage,
+  buildProfileInPageApiUrl,
+  profileHasSuperLike,
+  checkUserSuperLikeByProfile
+};
+
+
+if (
+  require.main === module
+) {
+  startSuperLikeBatch()
+    .catch(
+      error => {
+        console.error(
+          '[SuperLike] Batch启动失败：',
+          error
+        );
+
+        process.exit(1);
+      }
+    );
+}

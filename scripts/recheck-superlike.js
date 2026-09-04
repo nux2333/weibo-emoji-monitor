@@ -15,6 +15,15 @@ const {
 } = require('../src/superlike-scanner');
 
 
+/**
+ * ============================================================
+ * 配置
+ * ============================================================
+ */
+
+/*
+ * 打开帖子后等待多久。
+ */
 const POST_WAIT_MS =
   Number(
     process.env.SUPERLIKE_RECHECK_POST_WAIT_MS
@@ -22,18 +31,33 @@ const POST_WAIT_MS =
   || 2500;
 
 
+/*
+ * 两个用户 Profile 检查之间稍微停一下。
+ */
 const PROFILE_DELAY_MS =
   Number(
     process.env.SUPERLIKE_RECHECK_PROFILE_DELAY_MS
   )
-  || 300;
+  || 500;
 
 
+/*
+ * 两个帖子检查之间稍微停一下。
+ */
 const POST_DELAY_MS =
   Number(
     process.env.SUPERLIKE_RECHECK_POST_DELAY_MS
   )
   || 300;
+
+
+/*
+ * 与 scan-superlike 保持一致：
+ *
+ * 评论 >= 20
+ * → 删除
+ */
+const MAX_COMMENTS = 20;
 
 
 /**
@@ -57,6 +81,11 @@ function getSuperLikeMonitors() {
 }
 
 
+/**
+ * 一个用户可能有很多帖子。
+ *
+ * Profile 只需要检查一次。
+ */
 function getDistinctUsers(
   monitorId
 ) {
@@ -78,6 +107,9 @@ function getDistinctUsers(
 }
 
 
+/**
+ * 获取某个用户当前数据库里的全部候选帖子。
+ */
 function getPostsByUid(
   monitorId,
   uid
@@ -101,6 +133,11 @@ function getPostsByUid(
 }
 
 
+/**
+ * 用户已经获得超LIKE：
+ *
+ * 删除这个 UID 在当前 Monitor 下的所有帖子。
+ */
 function deleteAllPostsByUid(
   monitorId,
   uid
@@ -121,6 +158,11 @@ function deleteAllPostsByUid(
 }
 
 
+/**
+ * 评论数已经达到阈值：
+ *
+ * 只删除当前帖子。
+ */
 function deleteOnePost(
   monitorId,
   postId
@@ -141,6 +183,11 @@ function deleteOnePost(
 }
 
 
+/**
+ * 评论数仍然 < 20：
+ *
+ * 更新最新 comments_count。
+ */
 function updateCommentCount(
   monitorId,
   postId,
@@ -164,11 +211,7 @@ function updateCommentCount(
 
 /**
  * ============================================================
- * 递归找 comments_count
- *
- * 打开帖子页面以后，微博前端通常会再请求 JSON。
- * 我们监听这些 response，只要里面找到当前 post_id，
- * 就拿它的 comments_count。
+ * 从 JSON 中递归寻找当前 Post 的 comments_count
  * ============================================================
  */
 
@@ -197,6 +240,13 @@ function findPostCommentsCount(
   visited.add(value);
 
 
+  /*
+   * 微博不同接口可能：
+   *
+   * id
+   * idstr
+   * mid
+   */
   const id =
     value.idstr
     ??
@@ -210,7 +260,8 @@ function findPostCommentsCount(
     &&
     id !== null
     &&
-    String(id) ===
+    String(id)
+      ===
       String(targetPostId)
   ) {
 
@@ -300,16 +351,13 @@ function findPostCommentsCount(
 
 /**
  * ============================================================
- * 打开帖子，读取最新评论数
+ * 打开帖子，读取当前评论数
  *
- * 不用这里判断超LIKE。
+ * 注意：
  *
- * 因为我们已经知道：
- * 单条帖子详情 response 的 user 没有完整 icons。
+ * 这里不判断超LIKE。
  *
- * 这里只负责：
- *
- * comments_count
+ * 超LIKE统一通过 profile_inpage 判断。
  * ============================================================
  */
 
@@ -325,7 +373,8 @@ async function getCurrentCommentsCount(
     return {
       ok: false,
       commentsCount: null,
-      message: '没有 post_link'
+      message:
+        '没有 post_link'
     };
   }
 
@@ -333,39 +382,44 @@ async function getCurrentCommentsCount(
   const capturedJson = [];
 
 
+  /**
+   * 监听打开微博过程中产生的 JSON。
+   */
   async function onResponse(
     response
   ) {
 
-    const url =
-      response.url();
-
-
-    if (
-      !url.includes('weibo')
-    ) {
-      return;
-    }
-
-
-    const contentType =
-      response.headers()[
-        'content-type'
-      ]
-      ||
-      '';
-
-
-    if (
-      !contentType.includes(
-        'json'
-      )
-    ) {
-      return;
-    }
-
-
     try {
+
+      const url =
+        response.url();
+
+
+      if (
+        !url.includes(
+          'weibo'
+        )
+      ) {
+        return;
+      }
+
+
+      const contentType =
+        response.headers()[
+          'content-type'
+        ]
+        ||
+        '';
+
+
+      if (
+        !contentType.includes(
+          'json'
+        )
+      ) {
+        return;
+      }
+
 
       const json =
         await response.json();
@@ -375,8 +429,13 @@ async function getCurrentCommentsCount(
         json
       );
 
+
     } catch {
-      // ignore
+      /*
+       * 某些 response 不是有效 JSON。
+       *
+       * 直接忽略。
+       */
     }
   }
 
@@ -411,9 +470,14 @@ async function getCurrentCommentsCount(
     );
 
 
-    /*
-     * 优先从页面产生的 JSON response 找。
+    /**
+     * ========================================================
+     * 第一优先：
+     *
+     * 从微博页面产生的 JSON Response 中找。
+     * ========================================================
      */
+
     for (
       const json
       of capturedJson
@@ -439,17 +503,14 @@ async function getCurrentCommentsCount(
     }
 
 
-    /*
+    /**
+     * ========================================================
+     * 第二优先：
+     *
      * DOM fallback。
-     *
-     * 微博页面可能直接显示：
-     *
-     * 评论
-     * 评论 15
-     * 评论(15)
-     *
-     * 这里只作为第二选择。
+     * ========================================================
      */
+
     const domCount =
       await page.evaluate(
         () => {
@@ -460,21 +521,25 @@ async function getCurrentCommentsCount(
                 'a,button,span,div'
               )
             )
-            .map(
-              el =>
-                (
-                  el.textContent
-                  ||
-                  ''
-                ).trim()
-            )
-            .filter(Boolean);
+              .map(
+                element =>
+                  (
+                    element.textContent
+                    ||
+                    ''
+                  ).trim()
+              )
+              .filter(Boolean);
 
 
           const patterns = [
+
             /^评论\s*(\d+)$/,
+
             /^评论\s*\((\d+)\)$/,
+
             /^评论\s*·?\s*(\d+)$/
+
           ];
 
 
@@ -526,6 +591,7 @@ async function getCurrentCommentsCount(
     return {
       ok: false,
       commentsCount: null,
+
       message:
         '没有从帖子页面读取到 comments_count'
     };
@@ -536,6 +602,7 @@ async function getCurrentCommentsCount(
     return {
       ok: false,
       commentsCount: null,
+
       message:
         error.message
     };
@@ -553,7 +620,7 @@ async function getCurrentCommentsCount(
 
 /**
  * ============================================================
- * 一个 Monitor
+ * 检查一个 Monitor
  * ============================================================
  */
 
@@ -588,7 +655,11 @@ async function recheckOneMonitor(
   );
 
   console.log(
-    `Profile：${config.profileContainerId}`
+    `Profile Container：${config.profileContainerId}`
+  );
+
+  console.log(
+    `评论删除阈值：>= ${MAX_COMMENTS}`
   );
 
   console.log(
@@ -596,10 +667,32 @@ async function recheckOneMonitor(
   );
 
 
-  const profilePage =
-    await context.newPage();
+  /**
+   * ==========================================================
+   * 注意：
+   *
+   * 不再创建固定 profilePage。
+   *
+   * checkUserSuperLikeByProfile(context,...)
+   * 内部自己：
+   *
+   * context.newPage()
+   * ↓
+   * Profile检查
+   * ↓
+   * close()
+   *
+   * visitor 即使关闭当前 tab，
+   * 也不会污染下一个 UID。
+   * ==========================================================
+   */
 
 
+  /**
+   * postPage 仍然长期复用。
+   *
+   * 它只负责打开帖子检查评论数。
+   */
   const postPage =
     await context.newPage();
 
@@ -609,21 +702,29 @@ async function recheckOneMonitor(
     users:
       users.length,
 
-    profileChecked: 0,
+    profileChecked:
+      0,
 
-    superLikeUsers: 0,
+    superLikeUsers:
+      0,
 
-    profileFailed: 0,
+    profileFailed:
+      0,
 
-    deletedBySuperLike: 0,
+    deletedBySuperLike:
+      0,
 
-    postsChecked: 0,
+    postsChecked:
+      0,
 
-    postFailed: 0,
+    postFailed:
+      0,
 
-    deletedByComments: 0,
+    deletedByComments:
+      0,
 
-    kept: 0
+    kept:
+      0
   };
 
 
@@ -664,9 +765,11 @@ async function recheckOneMonitor(
 
 
       /**
-       * ==========================================
-       * 1. 用户 Profile
-       * ==========================================
+       * ======================================================
+       * STEP 1
+       *
+       * Profile检查
+       * ======================================================
        */
 
       stats.profileChecked++;
@@ -677,13 +780,25 @@ async function recheckOneMonitor(
       );
 
 
+      /*
+       * 这里非常重要：
+       *
+       * 现在传的是 BrowserContext，
+       * 不再是 profilePage。
+       */
       const profileResult =
         await checkUserSuperLikeByProfile(
-          profilePage,
+          context,
           config,
           uid
         );
 
+
+      /**
+       * ======================================================
+       * Profile无法确认
+       * ======================================================
+       */
 
       if (
         !profileResult.ok
@@ -702,22 +817,25 @@ async function recheckOneMonitor(
 
 
         /*
-         * Profile 都确认不了时，
-         * 不删除这个用户。
+         * 无法确认：
          *
-         * 也暂时不继续删除帖子，
-         * 避免错误处理。
+         * 不删除用户
+         * 不删除帖子
+         *
+         * 防止误删。
          */
         continue;
       }
 
 
       /**
-       * ==========================================
-       * 2. 已经有超LIKE
+       * ======================================================
+       * STEP 2
        *
-       * 删除这个 UID 全部候选
-       * ==========================================
+       * 已经获得超LIKE
+       *
+       * 删除该用户全部候选帖子
+       * ======================================================
        */
 
       if (
@@ -743,7 +861,10 @@ async function recheckOneMonitor(
         );
 
 
-        await profilePage.waitForTimeout(
+        /*
+         * 不需要检查这个人的帖子评论数了。
+         */
+        await postPage.waitForTimeout(
           PROFILE_DELAY_MS
         );
 
@@ -758,11 +879,13 @@ async function recheckOneMonitor(
 
 
       /**
-       * ==========================================
-       * 3. 没有超LIKE
+       * ======================================================
+       * STEP 3
        *
-       * 检查这个用户的每条帖子
-       * ==========================================
+       * 当前没有超LIKE
+       *
+       * 检查该用户每一条候选帖子。
+       * ======================================================
        */
 
       const posts =
@@ -785,12 +908,23 @@ async function recheckOneMonitor(
         stats.postsChecked++;
 
 
+        console.log(
+          `[Recheck][帖子 ${p + 1}/${posts.length}] Post=${post.post_id}`
+        );
+
+
         const result =
           await getCurrentCommentsCount(
             postPage,
             post
           );
 
+
+        /**
+         * ====================================================
+         * 帖子读取失败
+         * ====================================================
+         */
 
         if (
           !result.ok
@@ -808,42 +942,37 @@ async function recheckOneMonitor(
           );
 
 
+          /*
+           * 读取失败：
+           *
+           * 不删除。
+           */
           continue;
         }
 
 
         const commentsCount =
-          result.commentsCount;
+          Number(
+            result.commentsCount
+          );
 
 
         console.log(
-          `[Recheck][评论] Post=${post.post_id} | 当前=${commentsCount}`
+          `[Recheck][评论] Post=${post.post_id} | DB=${post.comments_count} | 当前=${commentsCount}`
         );
 
 
         /**
-         * 更新数据库里的最新评论数
+         * ====================================================
+         * 评论 >= 20
+         *
+         * 删除当前帖子。
+         * ====================================================
          */
-        updateCommentCount(
-          monitor.id,
-          post.post_id,
-          commentsCount
-        );
 
-
-        /**
-         * 用户说的是：
-         *
-         * 大于二十条评论删除当前那条
-         *
-         * 这里按：
-         *
-         * > 20
-         *
-         * 如果你希望“20也删”，改成 >= 20。
-         */
         if (
-          commentsCount > 20
+          commentsCount >=
+          MAX_COMMENTS
         ) {
 
           const deleted =
@@ -861,7 +990,20 @@ async function recheckOneMonitor(
             `[Recheck][评论删除] Post=${post.post_id} | 评论=${commentsCount}`
           );
 
+
         } else {
+
+          /**
+           * 评论仍然 < 20：
+           *
+           * 更新数据库。
+           */
+          updateCommentCount(
+            monitor.id,
+            post.post_id,
+            commentsCount
+          );
+
 
           stats.kept++;
 
@@ -878,7 +1020,7 @@ async function recheckOneMonitor(
       }
 
 
-      await profilePage.waitForTimeout(
+      await postPage.waitForTimeout(
         PROFILE_DELAY_MS
       );
     }
@@ -886,20 +1028,35 @@ async function recheckOneMonitor(
 
   } finally {
 
-    try {
-      await profilePage.close();
-    } catch {
-      // ignore
-    }
+    /*
+     * 这里只需要关 postPage。
+     *
+     * Profile page 已经由
+     * checkUserSuperLikeByProfile()
+     * 自己负责关闭。
+     */
+    if (
+      postPage
+      &&
+      !postPage.isClosed()
+    ) {
 
+      try {
 
-    try {
-      await postPage.close();
-    } catch {
-      // ignore
+        await postPage.close();
+
+      } catch {
+        // ignore
+      }
     }
   }
 
+
+  /**
+   * ==========================================================
+   * 最终统计
+   * ==========================================================
+   */
 
   console.log('');
   console.log(
@@ -907,7 +1064,7 @@ async function recheckOneMonitor(
   );
 
   console.log(
-    `用户数：${stats.users}`
+    `候选用户：${stats.users}`
   );
 
   console.log(
@@ -935,7 +1092,7 @@ async function recheckOneMonitor(
   );
 
   console.log(
-    `因评论>20删除：${stats.deletedByComments}`
+    `因评论>=${MAX_COMMENTS}删除：${stats.deletedByComments}`
   );
 
   console.log(
@@ -950,7 +1107,7 @@ async function recheckOneMonitor(
 
 /**
  * ============================================================
- * Main
+ * MAIN
  * ============================================================
  */
 
@@ -976,6 +1133,11 @@ async function main() {
   }
 
 
+  /**
+   * 和 scan-superlike 使用同一个 Persistent Profile。
+   *
+   * visitor cookie / 微博 session 可以保留下来。
+   */
   const profileDir =
     path.join(
       __dirname,
@@ -985,7 +1147,7 @@ async function main() {
     );
 
 
-  let context;
+  let context = null;
 
 
   try {
@@ -995,17 +1157,53 @@ async function main() {
         profileDir,
         {
 
+          /*
+           * 现在先保持浏览器窗口。
+           *
+           * 后面稳定以后再改 headless。
+           */
           headless:
-            process.env
-              .SUPERLIKE_HEADLESS
-            === '1',
+            false,
 
           viewport: {
-            width: 1280,
-            height: 900
+            width:
+              1280,
+
+            height:
+              900
           }
         }
       );
+
+
+    console.log('');
+    console.log(
+      '########################################'
+    );
+
+    console.log(
+      '# SuperLike Recheck Batch'
+    );
+
+    console.log(
+      '# 手动执行一次'
+    );
+
+    console.log(
+      '# 有超LIKE → 删除该UID全部帖子'
+    );
+
+    console.log(
+      `# 评论>=${MAX_COMMENTS} → 删除当前帖子`
+    );
+
+    console.log(
+      '# Profile/帖子检查失败 → 不删除'
+    );
+
+    console.log(
+      '########################################'
+    );
 
 
     for (
@@ -1043,6 +1241,12 @@ async function main() {
   );
 }
 
+
+/**
+ * ============================================================
+ * START
+ * ============================================================
+ */
 
 main()
   .catch(
