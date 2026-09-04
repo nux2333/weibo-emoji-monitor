@@ -1,9 +1,7 @@
 <!DOCTYPE html>
-
 <html lang="zh-CN">
 
 <head>
-
   <meta charset="UTF-8">
 
   <meta
@@ -21,7 +19,6 @@
   >
 
   <style>
-
     body {
       background: #f5f6f8;
       margin: 0;
@@ -76,6 +73,10 @@
       padding: 16px;
       border-radius: 10px;
       margin-bottom: 16px;
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
     }
 
     .toolbar input {
@@ -86,10 +87,17 @@
       border-radius: 6px;
     }
 
-    .toolbar button {
-      padding: 9px 18px;
-      margin-left: 8px;
+    .toolbar button,
+    .toolbar select {
+      padding: 9px 14px;
       cursor: pointer;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: white;
+    }
+
+    .toolbar select {
+      width: auto;
     }
 
     .table-wrap {
@@ -105,6 +113,7 @@
       width: 100%;
       border-collapse: collapse;
       min-width: 1200px;
+      table-layout: fixed;
     }
 
     th,
@@ -114,6 +123,10 @@
         1px solid #eee;
       text-align: left;
       vertical-align: top;
+      white-space: normal;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      line-height: 1.5;
     }
 
     th {
@@ -121,17 +134,58 @@
       position: sticky;
       top: 0;
       white-space: nowrap;
+      z-index: 1;
+    }
+
+    th:nth-child(1),
+    td:nth-child(1) {
+      width: 100px;
+    }
+
+    th:nth-child(2),
+    td:nth-child(2) {
+      width: 150px;
+    }
+
+    th:nth-child(3),
+    td:nth-child(3) {
+      width: 34%;
+    }
+
+    th:nth-child(4),
+    td:nth-child(4) {
+      width: 65px;
+    }
+
+    th:nth-child(5),
+    td:nth-child(5) {
+      width: 220px;
+    }
+
+    th:nth-child(6),
+    td:nth-child(6) {
+      width: 100px;
+    }
+
+    th:nth-child(7),
+    td:nth-child(7),
+    th:nth-child(8),
+    td:nth-child(8) {
+      width: 130px;
+    }
+
+    th:nth-child(9),
+    td:nth-child(9) {
+      width: 90px;
     }
 
     .post-text {
-      width: 400px;
-      max-width: 400px;
       line-height: 1.5;
     }
 
     .uid {
       font-family: monospace;
-      white-space: nowrap;
+      word-break: break-all;
     }
 
     .comment-low {
@@ -144,6 +198,8 @@
       background: #f0f0f0;
       border-radius: 12px;
       font-size: 12px;
+      white-space: normal;
+      word-break: break-word;
     }
 
     .no-icon {
@@ -165,11 +221,120 @@
     }
 
     .time {
-      white-space: nowrap;
       font-size: 12px;
       color: #777;
     }
 
+    .pagination {
+      background: white;
+      margin-top: 12px;
+      padding: 14px 16px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+      box-shadow:
+        0 1px 4px
+        rgba(0,0,0,.08);
+    }
+
+    .pagination-info {
+      color: #666;
+      font-size: 13px;
+    }
+
+    .pagination-buttons {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .pagination button {
+      padding: 7px 11px;
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      background: white;
+      cursor: pointer;
+    }
+
+    .pagination button:disabled {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+
+    .pagination .page-current {
+      background: #222;
+      color: white;
+      border-color: #222;
+    }
+
+    .csv-panel {
+      display: none;
+      background: white;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 14px;
+      margin-bottom: 16px;
+    }
+
+    .csv-panel.open {
+      display: block;
+    }
+
+    .csv-title {
+      font-weight: 700;
+      margin-bottom: 10px;
+    }
+
+    .csv-columns {
+      display: flex;
+      gap: 10px 18px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+
+    .csv-columns label {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .csv-columns input[type="checkbox"] {
+      width: auto;
+      max-width: none;
+    }
+
+    .csv-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .csv-note {
+      font-size: 12px;
+      color: #777;
+      margin-top: 8px;
+    }
+
+    @media(max-width:700px) {
+      .superlike-container {
+        padding: 14px 8px;
+      }
+
+      .toolbar input {
+        width: 100%;
+        max-width: none;
+      }
+
+      .toolbar {
+        align-items: stretch;
+      }
+    }
   </style>
 
 </head>
@@ -187,7 +352,6 @@
   <div class="stats">
 
     <div class="stat-card">
-
       <div
         class="stat-value"
         id="totalCount"
@@ -198,7 +362,6 @@
       <div class="stat-label">
         候选帖子
       </div>
-
     </div>
 
 
@@ -214,7 +377,6 @@
       <div class="stat-label">
         不同用户
       </div>
-
     </div>
 
 
@@ -230,7 +392,6 @@
       <div class="stat-label">
         已有7天经验值
       </div>
-
     </div>
 
   </div>
@@ -244,7 +405,7 @@
     >
 
     <button
-      onclick="loadData()"
+      onclick="searchData()"
     >
       搜索
     </button>
@@ -255,12 +416,93 @@
       清空
     </button>
 
+    <select
+      id="pageSize"
+      onchange="changePageSize()"
+      title="每页条数"
+    >
+      <option value="20">
+        每页20条
+      </option>
+
+      <option
+        value="50"
+        selected
+      >
+        每页50条
+      </option>
+
+      <option value="100">
+        每页100条
+      </option>
+
+      <option value="200">
+        每页200条
+      </option>
+    </select>
+
+    <button
+      onclick="toggleCsvPanel()"
+    >
+      下载 CSV
+    </button>
+
+  </div>
+
+
+  <div
+    class="csv-panel"
+    id="csvPanel"
+  >
+
+    <div class="csv-title">
+      选择需要导出的 Column
+    </div>
+
+    <div
+      class="csv-columns"
+      id="csvColumns"
+    >
+    </div>
+
+    <div class="csv-actions">
+
+      <button
+        onclick="selectAllCsvColumns()"
+      >
+        全选
+      </button>
+
+      <button
+        onclick="clearAllCsvColumns()"
+      >
+        全不选
+      </button>
+
+      <button
+        onclick="downloadCsv()"
+      >
+        下载当前搜索结果
+      </button>
+
+      <button
+        onclick="toggleCsvPanel(false)"
+      >
+        取消
+      </button>
+
+    </div>
+
+    <div class="csv-note">
+      CSV 导出的是当前搜索条件下的全部数据，不只导出当前分页。
+    </div>
+
   </div>
 
 
   <div class="table-wrap">
 
-    <table id="superlike-table">
+    <table>
 
       <thead>
 
@@ -283,7 +525,7 @@
           </th>
 
           <th>
-            当前标志
+            当前Icon
           </th>
 
           <th>
@@ -316,6 +558,27 @@
 
   </div>
 
+
+  <div
+    class="pagination"
+    id="pagination"
+  >
+
+    <div
+      class="pagination-info"
+      id="paginationInfo"
+    >
+      -
+    </div>
+
+    <div
+      class="pagination-buttons"
+      id="paginationButtons"
+    >
+    </div>
+
+  </div>
+
 </div>
 
 
@@ -324,5 +587,4 @@
 ></script>
 
 </body>
-
 </html>

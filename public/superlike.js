@@ -1,3 +1,78 @@
+let allRows = [];
+let currentPage = 1;
+let pageSize = 50;
+let currentKeyword = '';
+
+
+const CSV_COLUMNS = [
+  {
+    key: 'uid',
+    label: '用户ID',
+    defaultChecked: true
+  },
+  {
+    key: 'username',
+    label: '用户名',
+    defaultChecked: true
+  },
+  {
+    key: 'post_text',
+    label: '帖子内容',
+    defaultChecked: true
+  },
+  {
+    key: 'comments_count',
+    label: '评论',
+    defaultChecked: true
+  },
+  {
+    key: 'icon_summary',
+    label: '当前Icon',
+    defaultChecked: true
+  },
+  {
+    key: 'experience_7d',
+    label: '近7天经验值',
+    defaultChecked: true
+  },
+  {
+    key: 'post_created_at',
+    label: '发帖时间',
+    defaultChecked: false
+  },
+  {
+    key: 'first_seen_at',
+    label: '首次发现',
+    defaultChecked: true
+  },
+  {
+    key: 'last_seen_at',
+    label: '最后确认',
+    defaultChecked: true
+  },
+  {
+    key: 'post_link',
+    label: 'Link',
+    defaultChecked: true
+  },
+  {
+    key: 'post_id',
+    label: 'Post ID',
+    defaultChecked: false
+  },
+  {
+    key: 'monitor_id',
+    label: 'Monitor ID',
+    defaultChecked: false
+  },
+  {
+    key: 'monitor_name',
+    label: 'Monitor名称',
+    defaultChecked: false
+  }
+];
+
+
 function escapeHtml(
   value
 ) {
@@ -37,13 +112,6 @@ function formatTime(
   }
 
 
-  /*
-   * SQLite CURRENT_TIMESTAMP
-   * 是UTC。
-   *
-   * 补Z让浏览器按UTC解析，
-   * 然后显示本地时间。
-   */
   const normalized =
     value.includes('T')
       ? value
@@ -75,26 +143,38 @@ function formatTime(
 }
 
 
-async function loadData() {
+function getKeyword() {
+  return document
+    .getElementById(
+      'keyword'
+    )
+    .value
+    .trim();
+}
 
-  const keyword =
-    document
-      .getElementById(
-        'keyword'
-      )
-      .value
-      .trim();
+
+async function loadData(
+  resetPage = false
+) {
+
+  if (resetPage) {
+    currentPage = 1;
+  }
+
+
+  currentKeyword =
+    getKeyword();
 
 
   const params =
     new URLSearchParams();
 
 
-  if (keyword) {
+  if (currentKeyword) {
 
     params.set(
       'keyword',
-      keyword
+      currentKeyword
     );
   }
 
@@ -149,6 +229,41 @@ async function loadData() {
       stats.experience_known ?? 0;
 
 
+  allRows =
+    Array.isArray(
+      json.data
+    )
+      ? json.data
+      : [];
+
+
+  const totalPages =
+    Math.max(
+      1,
+      Math.ceil(
+        allRows.length
+        /
+        pageSize
+      )
+    );
+
+
+  if (
+    currentPage >
+    totalPages
+  ) {
+    currentPage =
+      totalPages;
+  }
+
+
+  renderTable();
+  renderPagination();
+}
+
+
+function renderTable() {
+
   const tbody =
     document
       .getElementById(
@@ -159,9 +274,51 @@ async function loadData() {
   tbody.innerHTML = '';
 
 
+  if (
+    allRows.length === 0
+  ) {
+
+    tbody.innerHTML = `
+      <tr>
+        <td
+          colspan="9"
+          style="text-align:center;color:#999;padding:30px"
+        >
+          没有符合条件的数据
+        </td>
+      </tr>
+    `;
+
+    return;
+  }
+
+
+  const start =
+    (
+      currentPage
+      -
+      1
+    )
+    *
+    pageSize;
+
+
+  const end =
+    start
+    +
+    pageSize;
+
+
+  const pageRows =
+    allRows.slice(
+      start,
+      end
+    );
+
+
   for (
     const row
-    of json.data || []
+    of pageRows
   ) {
 
     const tr =
@@ -294,6 +451,287 @@ async function loadData() {
 }
 
 
+function renderPagination() {
+
+  const total =
+    allRows.length;
+
+
+  const totalPages =
+    Math.max(
+      1,
+      Math.ceil(
+        total
+        /
+        pageSize
+      )
+    );
+
+
+  const start =
+    total === 0
+      ? 0
+      : (
+          (
+            currentPage
+            -
+            1
+          )
+          *
+          pageSize
+        )
+        +
+        1;
+
+
+  const end =
+    Math.min(
+      currentPage
+      *
+      pageSize,
+      total
+    );
+
+
+  document
+    .getElementById(
+      'paginationInfo'
+    )
+    .textContent =
+      `共 ${total} 条，第 ${currentPage}/${totalPages} 页，当前显示 ${start}-${end}`;
+
+
+  const buttons =
+    document
+      .getElementById(
+        'paginationButtons'
+      );
+
+
+  buttons.innerHTML = '';
+
+
+  buttons.appendChild(
+    createPageButton(
+      '首页',
+      1,
+      currentPage <= 1
+    )
+  );
+
+
+  buttons.appendChild(
+    createPageButton(
+      '上一页',
+      currentPage - 1,
+      currentPage <= 1
+    )
+  );
+
+
+  const pageNumbers =
+    buildPageNumbers(
+      currentPage,
+      totalPages
+    );
+
+
+  for (
+    const page
+    of pageNumbers
+  ) {
+
+    if (
+      page === '...'
+    ) {
+
+      const span =
+        document.createElement(
+          'span'
+        );
+
+      span.textContent =
+        '...';
+
+      buttons.appendChild(
+        span
+      );
+
+      continue;
+    }
+
+
+    const button =
+      createPageButton(
+        String(page),
+        page,
+        false
+      );
+
+
+    if (
+      page === currentPage
+    ) {
+      button.classList.add(
+        'page-current'
+      );
+    }
+
+
+    buttons.appendChild(
+      button
+    );
+  }
+
+
+  buttons.appendChild(
+    createPageButton(
+      '下一页',
+      currentPage + 1,
+      currentPage >= totalPages
+    )
+  );
+
+
+  buttons.appendChild(
+    createPageButton(
+      '末页',
+      totalPages,
+      currentPage >= totalPages
+    )
+  );
+}
+
+
+function createPageButton(
+  text,
+  targetPage,
+  disabled
+) {
+
+  const button =
+    document.createElement(
+      'button'
+    );
+
+
+  button.textContent =
+    text;
+
+
+  button.disabled =
+    disabled;
+
+
+  button.onclick =
+    () => {
+      currentPage =
+        targetPage;
+
+      renderTable();
+      renderPagination();
+
+      window.scrollTo({
+        top: 0,
+        behavior: 'smooth'
+      });
+    };
+
+
+  return button;
+}
+
+
+function buildPageNumbers(
+  current,
+  total
+) {
+
+  if (
+    total <= 7
+  ) {
+
+    return Array.from(
+      {
+        length: total
+      },
+      (
+        _,
+        index
+      ) =>
+        index + 1
+    );
+  }
+
+
+  const result =
+    [1];
+
+
+  if (
+    current > 4
+  ) {
+    result.push(
+      '...'
+    );
+  }
+
+
+  const start =
+    Math.max(
+      2,
+      current - 2
+    );
+
+
+  const end =
+    Math.min(
+      total - 1,
+      current + 2
+    );
+
+
+  for (
+    let page = start;
+    page <= end;
+    page++
+  ) {
+
+    result.push(
+      page
+    );
+  }
+
+
+  if (
+    current <
+    total - 3
+  ) {
+    result.push(
+      '...'
+    );
+  }
+
+
+  result.push(
+    total
+  );
+
+
+  return result;
+}
+
+
+function searchData() {
+
+  currentPage = 1;
+
+  loadData(
+    true
+  );
+}
+
+
 function clearSearch() {
 
   document
@@ -303,9 +741,384 @@ function clearSearch() {
     .value = '';
 
 
-  loadData();
+  currentPage = 1;
+
+
+  loadData(
+    true
+  );
 }
 
+
+function changePageSize() {
+
+  pageSize =
+    Number(
+      document
+        .getElementById(
+          'pageSize'
+        )
+        .value
+    )
+    ||
+    50;
+
+
+  currentPage = 1;
+
+
+  renderTable();
+  renderPagination();
+}
+
+
+/* ============================================================
+ * CSV
+ * ============================================================ */
+
+function initCsvColumns() {
+
+  const container =
+    document
+      .getElementById(
+        'csvColumns'
+      );
+
+
+  container.innerHTML = '';
+
+
+  for (
+    const column
+    of CSV_COLUMNS
+  ) {
+
+    const label =
+      document.createElement(
+        'label'
+      );
+
+
+    label.innerHTML = `
+      <input
+        type="checkbox"
+        class="csv-column-checkbox"
+        value="${escapeHtml(
+          column.key
+        )}"
+        ${
+          column.defaultChecked
+            ? 'checked'
+            : ''
+        }
+      >
+      ${escapeHtml(
+        column.label
+      )}
+    `;
+
+
+    container.appendChild(
+      label
+    );
+  }
+}
+
+
+function toggleCsvPanel(
+  force
+) {
+
+  const panel =
+    document
+      .getElementById(
+        'csvPanel'
+      );
+
+
+  if (
+    force === false
+  ) {
+
+    panel.classList.remove(
+      'open'
+    );
+
+    return;
+  }
+
+
+  panel.classList.toggle(
+    'open'
+  );
+}
+
+
+function selectAllCsvColumns() {
+
+  document
+    .querySelectorAll(
+      '.csv-column-checkbox'
+    )
+    .forEach(
+      checkbox => {
+        checkbox.checked =
+          true;
+      }
+    );
+}
+
+
+function clearAllCsvColumns() {
+
+  document
+    .querySelectorAll(
+      '.csv-column-checkbox'
+    )
+    .forEach(
+      checkbox => {
+        checkbox.checked =
+          false;
+      }
+    );
+}
+
+
+function getSelectedCsvColumns() {
+
+  const selectedKeys =
+    Array.from(
+      document.querySelectorAll(
+        '.csv-column-checkbox:checked'
+      )
+    )
+    .map(
+      checkbox =>
+        checkbox.value
+    );
+
+
+  return CSV_COLUMNS
+    .filter(
+      column =>
+        selectedKeys.includes(
+          column.key
+        )
+    );
+}
+
+
+function csvValue(
+  row,
+  key
+) {
+
+  if (
+    key === 'first_seen_at'
+    ||
+    key === 'last_seen_at'
+  ) {
+
+    return formatTime(
+      row[key]
+    );
+  }
+
+
+  const value =
+    row[key];
+
+
+  if (
+    value === null
+    ||
+    value === undefined
+  ) {
+
+    return '';
+  }
+
+
+  return String(
+    value
+  );
+}
+
+
+function escapeCsv(
+  value
+) {
+
+  const text =
+    String(
+      value ?? ''
+    );
+
+
+  if (
+    text.includes('"')
+    ||
+    text.includes(',')
+    ||
+    text.includes('\n')
+    ||
+    text.includes('\r')
+  ) {
+
+    return (
+      '"'
+      +
+      text.replaceAll(
+        '"',
+        '""'
+      )
+      +
+      '"'
+    );
+  }
+
+
+  return text;
+}
+
+
+function downloadCsv() {
+
+  const columns =
+    getSelectedCsvColumns();
+
+
+  if (
+    columns.length === 0
+  ) {
+
+    alert(
+      '请至少选择一个 Column'
+    );
+
+    return;
+  }
+
+
+  if (
+    allRows.length === 0
+  ) {
+
+    alert(
+      '当前没有可导出的数据'
+    );
+
+    return;
+  }
+
+
+  const lines = [];
+
+
+  lines.push(
+    columns
+      .map(
+        column =>
+          escapeCsv(
+            column.label
+          )
+      )
+      .join(',')
+  );
+
+
+  for (
+    const row
+    of allRows
+  ) {
+
+    lines.push(
+      columns
+        .map(
+          column =>
+            escapeCsv(
+              csvValue(
+                row,
+                column.key
+              )
+            )
+        )
+        .join(',')
+    );
+  }
+
+
+  /*
+   * UTF-8 BOM：
+   * Excel 打开中文 CSV 不容易乱码。
+   */
+  const csv =
+    '\uFEFF'
+    +
+    lines.join(
+      '\r\n'
+    );
+
+
+  const blob =
+    new Blob(
+      [csv],
+      {
+        type:
+          'text/csv;charset=utf-8;'
+      }
+    );
+
+
+  const url =
+    URL.createObjectURL(
+      blob
+    );
+
+
+  const link =
+    document.createElement(
+      'a'
+    );
+
+
+  const timestamp =
+    new Date()
+      .toISOString()
+      .replace(
+        /[:.]/g,
+        '-'
+      );
+
+
+  link.href =
+    url;
+
+
+  link.download =
+    `superlike-posts-${timestamp}.csv`;
+
+
+  document.body.appendChild(
+    link
+  );
+
+
+  link.click();
+
+
+  link.remove();
+
+
+  URL.revokeObjectURL(
+    url
+  );
+}
+
+
+/* ============================================================
+ * Events
+ * ============================================================ */
 
 document
   .getElementById(
@@ -319,19 +1132,25 @@ document
         event.key === 'Enter'
       ) {
 
-        loadData();
+        searchData();
       }
     }
   );
 
 
-loadData();
+initCsvColumns();
+
+loadData(
+  true
+);
 
 
 /*
- * 页面每30秒自动刷新一次
+ * 页面每30秒自动刷新一次。
+ *
+ * 保留当前页，不强制跳回第1页。
  */
 setInterval(
-  loadData,
+  () => loadData(false),
   30000
 );
