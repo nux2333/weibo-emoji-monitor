@@ -57,6 +57,10 @@ function migrateSuperlikePostsIfNeeded() {
       post_created_at TEXT,
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      comment_last_checked_at TEXT,
+      comment_next_check_at TEXT,
+      profile_last_checked_at TEXT,
+      profile_status TEXT NOT NULL DEFAULT 'UNKNOWN',
       raw_json TEXT,
       UNIQUE(monitor_id, post_id),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
@@ -218,6 +222,13 @@ function initDatabase() {
   ensureColumn('superlike_list_state', 'scan_date', 'TEXT');
   ensureColumn('superlike_list_state', 'last_total', 'INTEGER');
 
+  // SuperLike 高效复检队列字段。
+  // 旧数据库会在启动时自动补列，不需要手工 migration。
+  ensureColumn('superlike_posts', 'comment_last_checked_at', 'TEXT');
+  ensureColumn('superlike_posts', 'comment_next_check_at', 'TEXT');
+  ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
+  ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
+
   ensureColumn('superlike_users', 'scan_date', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
@@ -269,6 +280,10 @@ function initDatabase() {
       ON superlike_posts(current_has_superlike);
     CREATE INDEX IF NOT EXISTS idx_superlike_posts_last_seen
       ON superlike_posts(last_seen_at);
+    CREATE INDEX IF NOT EXISTS idx_superlike_posts_comment_due
+      ON superlike_posts(comment_next_check_at, comments_count);
+    CREATE INDEX IF NOT EXISTS idx_superlike_posts_profile_due
+      ON superlike_posts(profile_last_checked_at, first_seen_at, uid);
 
 
     CREATE INDEX IF NOT EXISTS idx_superlike_users_scan_date

@@ -58,10 +58,10 @@ const POST_DELAY_MS =
 /*
  * 与 scan-superlike 保持一致：
  *
- * 评论 >= 20
+ * 评论 >= 21
  * → 删除
  */
-const MAX_COMMENTS = 20;
+const MAX_COMMENTS = 21;
 
 /*
  * 轻量评论复检模式：
@@ -85,7 +85,32 @@ const LIGHT_ROUND_INTERVAL_MS =
   Number(
     process.env.SUPERLIKE_LIGHT_ROUND_INTERVAL_MS
   )
-  || 3 * 60 * 1000;
+  || 60 * 1000;
+
+/*
+ * Mode2 Hot Queue：
+ * 每轮只取已经到检查时间、且优先级最高的帖子。
+ * 不再全库轮询。
+ */
+const COMMENT_HOT_BATCH_SIZE =
+  Number(process.env.SUPERLIKE_COMMENT_HOT_BATCH_SIZE)
+  || 80;
+
+/*
+ * Mode3 Profile 只是兜底：
+ * 晚高峰暂停，白天每轮只检查少量“长期未被 Mode4 清掉”的 UID。
+ */
+const PROFILE_VERIFY_BATCH_SIZE =
+  Number(process.env.SUPERLIKE_PROFILE_VERIFY_BATCH_SIZE)
+  || 20;
+
+const PROFILE_VERIFY_MIN_AGE_MINUTES =
+  Number(process.env.SUPERLIKE_PROFILE_VERIFY_MIN_AGE_MINUTES)
+  || 45;
+
+const PROFILE_VERIFY_INTERVAL_MINUTES =
+  Number(process.env.SUPERLIKE_PROFILE_VERIFY_INTERVAL_MINUTES)
+  || 60;
 
 
 const LIST_FIRST_RUN_MAX_PAGES =
@@ -547,13 +572,16 @@ function calculateListMaxPages(
         - Number(previousTotal)
     );
 
-  return Math.max(
-    LIST_DELTA_SAFETY_PAGES,
-    Math.ceil(
-      delta / 20
-    )
-      + LIST_DELTA_SAFETY_PAGES
-  );
+  /*
+   * 白天人数不变时不要再白扫 30 页。
+   * 增量越小，保险页越小；真正爆量时再恢复 delta/20 + 30。
+   */
+  if (delta === 0) return 5;
+  if (delta <= 100) return Math.ceil(delta / 20) + 10;
+  if (delta <= 500) return Math.ceil(delta / 20) + 20;
+
+  return Math.ceil(delta / 20)
+    + LIST_DELTA_SAFETY_PAGES;
 }
 
 
@@ -1696,7 +1724,17 @@ async function recheckOneMonitor(
  * 轻量评论复检（不启动 Playwright / Chrome）
  * ============================================================
  */
-function getAllCandidatePosts() {
+function getCommentCheckIntervalMinutes(commentsCount) {
+  const count = Number(commentsCount) || 0;
+
+  if (count >= 18) return 1;
+  if (count >= 15) return 3;
+  if (count >= 10) return 5;
+  if (count >= 5) return 15;
+  return 45;
+}
+
+function getHotCandidatePosts(limit = COMMENT_HOT_BATCH_SIZE) {
   return db.prepare(`
     SELECT
       id,
@@ -1705,12 +1743,67 @@ function getAllCandidatePosts() {
       uid,
       username,
       post_link,
-      comments_count
+      comments_count,
+      comment_last_checked_at,
+      comment_next_check_at
     FROM superlike_posts
     WHERE post_id IS NOT NULL
       AND post_id <> ''
-    ORDER BY id DESC
-  `).all();
+      AND comments_count <= ?
+      AND (
+        comment_next_check_at IS NULL
+        OR datetime(comment_next_check_at) <= datetime('now')
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM superlike_users su
+        WHERE su.uid = superlike_posts.uid
+      )
+    ORDER BY
+      CASE
+        WHEN comments_count >= 18 THEN 0
+        WHEN comments_count >= 15 THEN 1
+        WHEN comments_count >= 10 THEN 2
+        WHEN comments_count >= 5 THEN 3
+        ELSE 4
+      END,
+      comments_count DESC,
+      COALESCE(comment_next_check_at, first_seen_at) ASC,
+      id DESC
+    LIMIT ?
+  `).all(
+    LIGHT_COMMENT_DELETE_THRESHOLD,
+    Number(limit)
+  );
+}
+
+function scheduleNextCommentCheck(
+  monitorId,
+  postId,
+  commentsCount
+) {
+  const minutes =
+    getCommentCheckIntervalMinutes(
+      commentsCount
+    );
+
+  db.prepare(`
+    UPDATE superlike_posts
+    SET
+      comment_last_checked_at = CURRENT_TIMESTAMP,
+      comment_next_check_at = datetime(
+        'now',
+        '+' || ? || ' minutes'
+      )
+    WHERE monitor_id = ?
+      AND post_id = ?
+  `).run(
+    minutes,
+    monitorId,
+    postId
+  );
+
+  return minutes;
 }
 
 function isAbortError(error) {
@@ -1984,20 +2077,65 @@ async function getCommentsCountByHttp(post, signal = null) {
 function getDistinctUsersForLightProfile(
   monitorId
 ) {
+  /*
+   * Profile 只做低频兜底：
+   * - 新 UID 先给 Mode4 45 分钟处理窗口
+   * - 已经在 superlike_users 的不查
+   * - 同一 UID 默认 60 分钟最多查一次
+   * - 每轮限制数量
+   */
   return db.prepare(`
     SELECT
-      uid,
-      MAX(username) AS username,
+      p.uid,
+      MAX(p.username) AS username,
       COUNT(*) AS post_count,
-      MAX(id) AS latest_id
-    FROM superlike_posts
-    WHERE monitor_id = ?
-      AND uid IS NOT NULL
-      AND uid <> ''
-    GROUP BY uid
-    ORDER BY latest_id DESC
+      MAX(p.id) AS latest_id,
+      MIN(p.first_seen_at) AS first_seen_at,
+      MAX(p.profile_last_checked_at) AS profile_last_checked_at
+    FROM superlike_posts p
+    WHERE p.monitor_id = ?
+      AND p.uid IS NOT NULL
+      AND p.uid <> ''
+      AND datetime(p.first_seen_at)
+          <= datetime('now', '-' || ? || ' minutes')
+      AND NOT EXISTS (
+        SELECT 1
+        FROM superlike_users su
+        WHERE su.uid = p.uid
+      )
+    GROUP BY p.uid
+    HAVING
+      MAX(p.profile_last_checked_at) IS NULL
+      OR datetime(MAX(p.profile_last_checked_at))
+         <= datetime('now', '-' || ? || ' minutes')
+    ORDER BY
+      MIN(p.first_seen_at) ASC,
+      MAX(p.id) DESC
+    LIMIT ?
   `).all(
-    monitorId
+    monitorId,
+    PROFILE_VERIFY_MIN_AGE_MINUTES,
+    PROFILE_VERIFY_INTERVAL_MINUTES,
+    PROFILE_VERIFY_BATCH_SIZE
+  );
+}
+
+function markProfileChecked(
+  monitorId,
+  uid,
+  status
+) {
+  db.prepare(`
+    UPDATE superlike_posts
+    SET
+      profile_last_checked_at = CURRENT_TIMESTAMP,
+      profile_status = ?
+    WHERE monitor_id = ?
+      AND uid = ?
+  `).run(
+    status,
+    monitorId,
+    uid
   );
 }
 
@@ -2405,6 +2543,14 @@ async function runLightSuperLikeRecheck(signal = null) {
 
         stats.checked++;
 
+        markProfileChecked(
+          monitor.id,
+          uid,
+          result.hasSuperLike
+            ? 'SUPERLIKE'
+            : 'NO_SUPERLIKE'
+        );
+
         if (
           result.hasSuperLike
         ) {
@@ -2797,7 +2943,7 @@ async function getCommentsCountFromDomOnly(
 
 async function runLightCommentRecheck(signal = null) {
   const posts =
-    getAllCandidatePosts();
+    getHotCandidatePosts();
 
   const stats = {
     total: posts.length,
@@ -2812,10 +2958,12 @@ async function runLightCommentRecheck(signal = null) {
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式2 浏览器AJAX评论复检');
   console.log('# 单个 headless Chromium + 单个 Page + 页面内 buildComments fetch');
-  console.log(`# 评论 > ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
+  console.log(`# 评论 >= ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
   console.log('# 其余 → 只更新 comments_count');
-  console.log('# 数据库顺序：id DESC');
-  console.log(`读取帖子数：${posts.length}`);
+  console.log('# Hot Queue：只检查到期帖子，不再全库轮询');
+  console.log('# 优先级：18-20 > 15-17 > 10-14 > 5-9 > 0-4');
+  console.log('# 动态间隔：1 / 3 / 5 / 15 / 45 分钟');
+  console.log(`本轮最多=${COMMENT_HOT_BATCH_SIZE} | 实际到期=${posts.length}`);
   console.log('########################################');
 
   let context = null;
@@ -2917,7 +3065,7 @@ async function runLightCommentRecheck(signal = null) {
         Number(result.commentsCount);
 
       if (
-        commentsCount >
+        commentsCount >=
         LIGHT_COMMENT_DELETE_THRESHOLD
       ) {
         const deleted =
@@ -2940,11 +3088,19 @@ async function runLightCommentRecheck(signal = null) {
           commentsCount
         );
 
+        const nextMinutes =
+          scheduleNextCommentCheck(
+            post.monitor_id,
+            post.post_id,
+            commentsCount
+          );
+
         stats.updated++;
 
         console.log(
           `[轻量浏览器 ${i + 1}/${posts.length}] ` +
-          `ID=${post.id} | Post=${post.post_id} | 评论=${commentsCount} | 更新保留`
+          `ID=${post.id} | Post=${post.post_id} | 评论=${commentsCount} | ` +
+          `更新保留 | 下次≈${nextMinutes}分钟后`
         );
       }
 
@@ -4012,7 +4168,7 @@ async function runLightModeForever(mode) {
 
   console.log('');
   console.log(
-    `[Recheck] 模式${mode} 已进入常驻轮询：每 ${LIGHT_ROUND_INTERVAL_MS / 60000} 分钟强制开启新一轮。`
+    `[Recheck] 模式${mode} 已进入高效队列轮询：每 ${LIGHT_ROUND_INTERVAL_MS / 60000} 分钟检查一次到期任务。`
   );
 
   while (true) {
@@ -4029,11 +4185,30 @@ async function runLightModeForever(mode) {
     const startedAt =
       Date.now();
 
+    const chinaHour =
+      getChinaHour();
+
+    /*
+     * 19:00-23:59 的晚高峰：
+     * Profile 请求收益低、418 风险高，Mode3 直接让路给 Scan/Mode4/评论 Hot Queue。
+     */
+    const skipNightProfile =
+      mode === '3'
+      && chinaHour >= LIST_NIGHT_START_HOUR
+      && chinaHour <= 23;
+
     const roundPromise =
       (
-        mode === '2'
-          ? runLightCommentRecheck(controller.signal)
-          : runLightSuperLikeRecheck(controller.signal)
+        skipNightProfile
+          ? (
+              console.log(
+                '[Recheck] 晚高峰暂停 Mode3 Profile；优先保障 Mode4 和评论 Hot Queue。'
+              ),
+              Promise.resolve()
+            )
+          : mode === '2'
+            ? runLightCommentRecheck(controller.signal)
+            : runLightSuperLikeRecheck(controller.signal)
       )
         .then(() => ({ type: 'done' }))
         .catch(error => ({ type: 'error', error }));
@@ -4138,8 +4313,8 @@ function askRecheckMode() {
     console.log('');
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
-    console.log('2 = 轻量评论逻辑（每3分钟一轮，DB id从大到小，评论 > 21 删除）');
-    console.log('3 = SuperLike复检逻辑（每3分钟一轮，按最新DB id从大到小，复用scanner的Profile检查，有SuperLike立即删除）');
+    console.log('2 = 评论 Hot Queue（每1分钟，仅检查到期/高评论帖子，评论 >= 21 删除）');
+    console.log('3 = Profile低频兜底（每轮最多少量UID；晚19点后暂停，Mode4优先）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
