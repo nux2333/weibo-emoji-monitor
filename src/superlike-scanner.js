@@ -43,7 +43,7 @@ const { db, initDatabase } = require('./db');
 
 const SCAN_INTERVAL_MS =
   Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
-  || 15 * 60 * 1000;
+  || 5 * 60 * 1000;
 
 const RATE_LIMIT_BACKOFF_1_MS =
   Number(process.env.SUPERLIKE_418_BACKOFF_1_MS)

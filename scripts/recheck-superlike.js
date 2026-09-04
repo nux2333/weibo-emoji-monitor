@@ -12,10 +12,6 @@ const path = require('path');
 const readline = require('readline');
 
 const {
-  chromium
-} = require('playwright');
-
-const {
   db,
   initDatabase
 } = require('../src/db');
@@ -87,6 +83,12 @@ const LIGHT_REQUEST_TIMEOUT_MS =
     process.env.SUPERLIKE_LIGHT_REQUEST_TIMEOUT_MS
   )
   || 10000;
+
+const LIGHT_ROUND_INTERVAL_MS =
+  Number(
+    process.env.SUPERLIKE_LIGHT_ROUND_INTERVAL_MS
+  )
+  || 3 * 60 * 1000;
 
 
 /**
@@ -827,7 +829,8 @@ async function recheckOneMonitor(
         await checkUserSuperLikeByProfile(
           context,
           config,
-          uid
+          uid,
+          signal
         );
 
 
@@ -1160,48 +1163,124 @@ function getAllCandidatePosts() {
     FROM superlike_posts
     WHERE post_id IS NOT NULL
       AND post_id <> ''
-    ORDER BY id ASC
+    ORDER BY id DESC
   `).all();
 }
 
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function isAbortError(error) {
+  return !!error && (
+    error.name === 'AbortError'
+    || String(error.message || '').toLowerCase().includes('aborted')
+  );
 }
 
-async function fetchTextWithTimeout(url) {
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    const error = new Error('本轮已被新一轮取消');
+    error.name = 'AbortError';
+    throw error;
+  }
+}
+
+function sleep(ms, signal = null) {
+  if (!signal) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  if (signal.aborted) {
+    return Promise.reject(
+      Object.assign(new Error('本轮已被新一轮取消'), { name: 'AbortError' })
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+
+    function onAbort() {
+      clearTimeout(timer);
+      reject(
+        Object.assign(new Error('本轮已被新一轮取消'), { name: 'AbortError' })
+      );
+    }
+
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+async function fetchTextWithTimeout(url, parentSignal = null) {
   const controller = new AbortController();
+
+  const onParentAbort = () => controller.abort();
+  if (parentSignal) {
+    if (parentSignal.aborted) {
+      controller.abort();
+    } else {
+      parentSignal.addEventListener('abort', onParentAbort, { once: true });
+    }
+  }
+
   const timer = setTimeout(
     () => controller.abort(),
     LIGHT_REQUEST_TIMEOUT_MS
   );
 
   try {
+    const headers = {
+      'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+      'Accept': 'application/json, text/plain, */*',
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Referer': 'https://weibo.com/'
+    };
+
+    const weiboCookie =
+      String(
+        process.env.WEIBO_COOKIE
+        || ''
+      ).trim();
+
+    if (weiboCookie) {
+      headers.Cookie =
+        weiboCookie;
+    }
+
     const response = await fetch(url, {
       method: 'GET',
       redirect: 'follow',
       signal: controller.signal,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36',
-        'Accept': 'application/json,text/plain,text/html,*/*',
-        'Referer': 'https://m.weibo.cn/'
-      }
+      headers
     });
 
     const text = await response.text();
 
+    const lowerText =
+      String(text || '').toLowerCase();
+
+    const forbidden =
+      response.status === 403
+      || lowerText.includes('\"error\":\"forbidden\"')
+      || lowerText.includes('forbidden');
+
     return {
-      ok: response.ok,
+      ok: response.ok && !forbidden,
       status: response.status,
+      blocked: response.status === 418,
+      forbidden,
       finalUrl: response.url,
       text
     };
   } finally {
     clearTimeout(timer);
+    if (parentSignal) {
+      parentSignal.removeEventListener('abort', onParentAbort);
+    }
   }
 }
 
-function extractCommentsCountFromText(text, postId) {
+function extractTotalNumberFromText(text) {
   if (!text) {
     return null;
   }
@@ -1209,45 +1288,32 @@ function extractCommentsCountFromText(text, postId) {
   try {
     const json = JSON.parse(text);
 
-    const direct =
-      json?.comments_count
-      ?? json?.data?.comments_count
-      ?? json?.status?.comments_count;
+    const value =
+      json?.total_number
+      ?? json?.data?.total_number;
 
-    if (Number.isFinite(Number(direct))) {
-      return Number(direct);
-    }
-
-    const nested = findPostCommentsCount(
-      json,
-      postId
-    );
-
-    if (nested !== null) {
-      return nested;
+    if (Number.isFinite(Number(value))) {
+      return Number(value);
     }
   } catch {
-    // 不是 JSON 时继续用文本正则兜底。
+    // 非 JSON 时继续使用正则兜底。
   }
 
-  const patterns = [
-    /"comments_count"\s*:\s*(\d+)/i,
-    /"comment_count"\s*:\s*(\d+)/i
-  ];
+  const match =
+    text.match(/"total_number"\s*:\s*(\d+)/i);
 
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-
-    if (match) {
-      return Number(match[1]);
-    }
-  }
-
-  return null;
+  return match
+    ? Number(match[1])
+    : null;
 }
 
-async function getCommentsCountByHttp(post) {
-  const postId = String(post.post_id || '').trim();
+
+async function getCommentsCountByHttp(post, signal = null) {
+  const postId =
+    String(post.post_id || '').trim();
+
+  const uid =
+    String(post.uid || '').trim();
 
   if (!postId) {
     return {
@@ -1257,77 +1323,915 @@ async function getCommentsCountByHttp(post) {
     };
   }
 
+  if (!uid) {
+    return {
+      ok: false,
+      commentsCount: null,
+      message: '没有 uid'
+    };
+  }
+
   /*
-   * 优先直接请求移动端微博状态 JSON。
-   * 不需要打开 Chrome。
+   * 轻量模式直接请求 PC 评论接口。
+   * total_number 就是当前总评论数。
    */
   const apiUrl =
-    `https://m.weibo.cn/statuses/show?id=${encodeURIComponent(postId)}`;
+    new URL(
+      'https://weibo.com/ajax/statuses/buildComments'
+    );
+
+  apiUrl.searchParams.set('is_reload', '1');
+  apiUrl.searchParams.set('id', postId);
+  apiUrl.searchParams.set('is_show_bulletin', '3');
+  apiUrl.searchParams.set('is_mix', '0');
+  apiUrl.searchParams.set('count', '10');
+  apiUrl.searchParams.set('uid', uid);
+  apiUrl.searchParams.set('fetch_level', '0');
+  apiUrl.searchParams.set('locale', 'zh-CN');
 
   try {
     const apiResult =
-      await fetchTextWithTimeout(apiUrl);
+      await fetchTextWithTimeout(
+        apiUrl.toString(),
+        signal
+      );
 
-    if (apiResult.ok) {
-      const count =
-        extractCommentsCountFromText(
-          apiResult.text,
-          postId
-        );
-
-      if (count !== null) {
-        return {
-          ok: true,
-          commentsCount: count,
-          source: apiUrl
-        };
-      }
+    if (apiResult.blocked) {
+      return {
+        ok: false,
+        blocked: true,
+        commentsCount: null,
+        status: apiResult.status,
+        message: 'HTTP 418'
+      };
     }
 
-    /*
-     * API 没读到时，再直接 GET 数据库里的帖子链接兜底。
-     */
-    if (post.post_link) {
-      const pageResult =
-        await fetchTextWithTimeout(
-          post.post_link
-        );
+    if (apiResult.forbidden) {
+      return {
+        ok: false,
+        forbidden: true,
+        commentsCount: null,
+        status: apiResult.status,
+        message:
+          'buildComments Forbidden：请检查 WEIBO_COOKIE 是否有效'
+      };
+    }
 
-      if (pageResult.ok) {
-        const count =
-          extractCommentsCountFromText(
-            pageResult.text,
-            postId
-          );
+    if (!apiResult.ok) {
+      return {
+        ok: false,
+        commentsCount: null,
+        status: apiResult.status,
+        message:
+          `buildComments HTTP ${apiResult.status}`
+      };
+    }
 
-        if (count !== null) {
-          return {
-            ok: true,
-            commentsCount: count,
-            source: post.post_link
-          };
-        }
-      }
+    const count =
+      extractTotalNumberFromText(
+        apiResult.text
+      );
+
+    if (count === null) {
+      return {
+        ok: false,
+        commentsCount: null,
+        status: apiResult.status,
+        message:
+          'buildComments Response 没有 total_number'
+      };
     }
 
     return {
-      ok: false,
-      commentsCount: null,
-      message:
-        `HTTP/API 未读取到 comments_count (status=${apiResult.status})`
+      ok: true,
+      commentsCount: count,
+      source: apiUrl.toString()
     };
+
   } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+
     return {
       ok: false,
       commentsCount: null,
-      message: error.name === 'AbortError'
+      message: isAbortError(error)
         ? '请求超时'
         : error.message
     };
   }
 }
 
-async function runLightCommentRecheck() {
+
+/**
+ * ============================================================
+ * 模式3：轻量 SuperLike Profile 复检
+ * 不启动 Playwright / Chrome。
+ *
+ * 按 Monitor + UID 轮询 profile_inpage：
+ * - 命中 SuperLike -> 立即删除该 UID 在当前 Monitor 的全部数据
+ * - 未命中 -> 保留
+ * - HTTP 418 -> 立即停止本轮，避免继续请求
+ * ============================================================
+ */
+function getDistinctUsersForLightProfile(
+  monitorId
+) {
+  return db.prepare(`
+    SELECT
+      uid,
+      MAX(username) AS username,
+      COUNT(*) AS post_count,
+      MAX(id) AS latest_id
+    FROM superlike_posts
+    WHERE monitor_id = ?
+      AND uid IS NOT NULL
+      AND uid <> ''
+    GROUP BY uid
+    ORDER BY latest_id DESC
+  `).all(
+    monitorId
+  );
+}
+
+function buildLightProfileApiUrl(
+  config,
+  uid
+) {
+  const url =
+    new URL(
+      'https://m.weibo.cn/api/container/getIndex'
+    );
+
+  url.searchParams.set(
+    'containerid',
+    config.profileContainerId
+  );
+
+  // URLSearchParams 会再次编码 %，最终得到 target_uid%2523{uid}
+  url.searchParams.set(
+    'extparam',
+    `target_uid%23${uid}`
+  );
+
+  url.searchParams.set(
+    'luicode',
+    '10000011'
+  );
+
+  url.searchParams.set(
+    'lfid',
+    config.chaoLikeListContainerId
+  );
+
+  url.searchParams.set(
+    'launchid',
+    '10000360-page_H5'
+  );
+
+  return url.toString();
+}
+
+function profileTextHasSuperLike(
+  text
+) {
+  if (!text) {
+    return false;
+  }
+
+  const lower =
+    String(text).toLowerCase();
+
+  return (
+    lower.includes('fans_title_superlike.png')
+    || lower.includes('fans_title_superlike_on.png')
+    || lower.includes('chao_like')
+    || String(text).includes('超LIKE')
+  );
+}
+
+async function checkSuperLikeByBrowser(
+  context,
+  config,
+  uid,
+  signal = null
+) {
+  throwIfAborted(signal);
+
+  const apiUrl =
+    buildLightProfileApiUrl(
+      config,
+      uid
+    );
+
+  try {
+    /*
+     * 使用 BrowserContext 关联的 APIRequestContext。
+     *
+     * 好处：
+     * 1. 与当前 BrowserContext 共用 Cookie storage。
+     * 2. 不受页面 window.fetch() 的 CORS 限制。
+     * 3. 不需要为每个 UID 打开新页面。
+     */
+    const response =
+      await context.request.get(
+        apiUrl,
+        {
+          headers: {
+            'Accept':
+              'application/json, text/plain, */*',
+
+            'Referer':
+              'https://m.weibo.cn/'
+          },
+
+          timeout:
+            LIGHT_REQUEST_TIMEOUT_MS
+        }
+      );
+
+    throwIfAborted(signal);
+
+    const status =
+      response.status();
+
+    const body =
+      await response.text();
+
+    if (
+      status === 418
+    ) {
+      return {
+        ok: false,
+        blocked: true,
+        hasSuperLike: null,
+        status,
+        url: apiUrl,
+        message:
+          'profile_inpage HTTP 418'
+      };
+    }
+
+    if (
+      status < 200
+      ||
+      status >= 300
+    ) {
+      return {
+        ok: false,
+        blocked: false,
+        hasSuperLike: null,
+        status,
+        url: apiUrl,
+        message:
+          `profile_inpage HTTP ${status} | ${body.slice(0, 500)}`
+      };
+    }
+
+    let json =
+      null;
+
+    try {
+      json =
+        JSON.parse(
+          body
+        );
+    } catch {
+      return {
+        ok: false,
+        blocked: false,
+        hasSuperLike: null,
+        status,
+        url: apiUrl,
+        message:
+          `profile_inpage 返回的不是 JSON | ${body.slice(0, 500)}`
+      };
+    }
+
+    if (
+      Number(
+        json?.ok
+        ??
+        0
+      ) !== 1
+    ) {
+      return {
+        ok: false,
+        blocked: false,
+        hasSuperLike: null,
+        status,
+        url: apiUrl,
+        message:
+          `profile_inpage API ok=${json?.ok} | ${body.slice(0, 500)}`
+      };
+    }
+
+    return {
+      ok: true,
+      blocked: false,
+      hasSuperLike:
+        profileTextHasSuperLike(
+          body
+        ),
+      status,
+      url: apiUrl
+    };
+
+  } catch (error) {
+    if (
+      signal?.aborted
+      ||
+      isAbortError(error)
+    ) {
+      const abortError =
+        new Error(
+          '本轮已被新一轮取消'
+        );
+
+      abortError.name =
+        'AbortError';
+
+      throw abortError;
+    }
+
+    return {
+      ok: false,
+      blocked: false,
+      hasSuperLike: null,
+      status: null,
+      url: apiUrl,
+      message:
+        error.message
+    };
+  }
+}
+
+async function runLightSuperLikeRecheck(signal = null) {
+  const monitors =
+    getSuperLikeMonitors();
+
+  const stats = {
+    monitors: monitors.length,
+    users: 0,
+    checked: 0,
+    hasSuperLike: 0,
+    deletedRows: 0,
+    failed: 0
+  };
+
+  console.log('');
+  console.log('########################################');
+  console.log('# SuperLike Recheck - 模式3 BrowserContext Profile 模式');
+  console.log('# 复用 superlike-scanner 的 checkUserSuperLikeByProfile');
+  console.log('# headless，不显示 Chrome 窗口');
+  console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
+  console.log('# 数据库顺序：按 UID 的 MAX(id) DESC');
+  console.log('########################################');
+
+  let context = null;
+
+  const onAbort = () => {
+    if (context) {
+      context.close().catch(() => {});
+    }
+  };
+
+  if (signal) {
+    signal.addEventListener(
+      'abort',
+      onAbort,
+      { once: true }
+    );
+  }
+
+  try {
+    throwIfAborted(signal);
+
+    const { chromium } =
+      require('playwright');
+
+    /*
+     * 使用和 SuperLike 扫描一致的持久化 Profile。
+     * 这样可以复用已经建立好的微博 visitor/session。
+     */
+    const profileDir =
+      path.join(
+        __dirname,
+        '..',
+        'data',
+        'superlike-browser-profile-scan'
+      );
+
+    context =
+      await chromium.launchPersistentContext(
+        profileDir,
+        {
+          headless: true,
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        }
+      );
+
+    outer:
+    for (
+      const monitor
+      of monitors
+    ) {
+      throwIfAborted(signal);
+
+      const config =
+        parseTopicHomepage(
+          monitor.url
+        );
+
+      const users =
+        getDistinctUsersForLightProfile(
+          monitor.id
+        );
+
+      stats.users +=
+        users.length;
+
+      console.log('');
+      console.log(
+        `[轻量Profile] Monitor=${monitor.name} | UID=${users.length}`
+      );
+
+      for (
+        let i = 0;
+        i < users.length;
+        i++
+      ) {
+        throwIfAborted(signal);
+
+        const user =
+          users[i];
+
+        const uid =
+          String(
+            user.uid
+            ||
+            ''
+          ).trim();
+
+        let result;
+
+        try {
+          result =
+            await checkUserSuperLikeByProfile(
+              context,
+              config,
+              uid
+            );
+
+        } catch (error) {
+          if (
+            signal?.aborted
+            ||
+            isAbortError(error)
+            ||
+            /Target page, context or browser has been closed/i.test(
+              String(error.message || '')
+            )
+          ) {
+            const abortError =
+              new Error('本轮已被新一轮取消');
+
+            abortError.name =
+              'AbortError';
+
+            throw abortError;
+          }
+
+          result = {
+            ok: false,
+            hasSuperLike: null,
+            message: error.message
+          };
+        }
+
+        throwIfAborted(signal);
+
+        if (
+          !result
+          ||
+          !result.ok
+        ) {
+          stats.failed++;
+
+          console.log(
+            `[轻量Profile ${i + 1}/${users.length}] ` +
+            `UID=${uid} | 失败 | ${
+              result?.message
+              ||
+              'unknown'
+            }`
+          );
+
+          await sleep(
+            LIGHT_REQUEST_DELAY_MS,
+            signal
+          );
+
+          continue;
+        }
+
+        stats.checked++;
+
+        if (
+          result.hasSuperLike
+        ) {
+          stats.hasSuperLike++;
+
+          const deleted =
+            deleteAllPostsByUid(
+              monitor.id,
+              uid
+            );
+
+          stats.deletedRows +=
+            deleted;
+
+          console.log(
+            `[轻量Profile ${i + 1}/${users.length}] ` +
+            `UID=${uid} | SuperLike=是 | 立即删除 ${deleted} 条`
+          );
+
+        } else {
+          console.log(
+            `[轻量Profile ${i + 1}/${users.length}] ` +
+            `UID=${uid} | SuperLike=否 | 保留`
+          );
+        }
+
+        await sleep(
+          LIGHT_REQUEST_DELAY_MS,
+          signal
+        );
+      }
+    }
+
+  } finally {
+    if (
+      signal
+    ) {
+      signal.removeEventListener(
+        'abort',
+        onAbort
+      );
+    }
+
+    if (
+      context
+    ) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    console.log('');
+    console.log('========== 模式3 Profile 复检完成 ==========');
+    console.log(`Monitor：${stats.monitors}`);
+    console.log(`数据库UID：${stats.users}`);
+    console.log(`成功检查：${stats.checked}`);
+    console.log(`发现SuperLike：${stats.hasSuperLike}`);
+    console.log(`删除记录：${stats.deletedRows}`);
+    console.log(`失败：${stats.failed}`);
+    console.log('===========================================');
+  }
+}
+
+async function getCommentsCountFromDomOnly(
+  page,
+  post,
+  signal = null
+) {
+  throwIfAborted(signal);
+
+  if (!post.post_link) {
+    return {
+      ok: false,
+      commentsCount: null,
+      message: '没有 post_link'
+    };
+  }
+
+  const postId =
+    String(
+      post.post_id
+      ||
+      ''
+    ).trim();
+
+  const uid =
+    String(
+      post.uid
+      ||
+      ''
+    ).trim();
+
+  if (!postId || !uid) {
+    return {
+      ok: false,
+      commentsCount: null,
+      message:
+        '缺少 post_id 或 uid'
+    };
+  }
+
+  try {
+    console.log(
+      `[轻量浏览器] 打开 ${post.post_link}`
+    );
+
+    const response =
+      await page.goto(
+        post.post_link,
+        {
+          waitUntil:
+            'domcontentloaded',
+          timeout:
+            30000
+        }
+      );
+
+    throwIfAborted(signal);
+
+    if (
+      response
+      &&
+      response.status() === 418
+    ) {
+      return {
+        ok: false,
+        blocked: true,
+        commentsCount: null,
+        message: '帖子页面 HTTP 418'
+      };
+    }
+
+    /*
+     * 给微博页面一点时间建立前端会话环境。
+     */
+    await page.waitForTimeout(
+      800
+    );
+
+    throwIfAborted(signal);
+
+    /*
+     * 关键：
+     *
+     * 不再从 Node.js 裸 fetch buildComments。
+     *
+     * 而是在已经打开的 weibo.com 帖子页面上下文里，
+     * 直接执行 window.fetch()。
+     *
+     * credentials:'include'
+     * 会自动携带当前浏览器上下文 Cookie。
+     */
+    const apiResult =
+      await page.evaluate(
+        async ({
+          postId,
+          uid
+        }) => {
+
+          const url =
+            new URL(
+              '/ajax/statuses/buildComments',
+              window.location.origin
+            );
+
+          url.searchParams.set(
+            'is_reload',
+            '1'
+          );
+
+          url.searchParams.set(
+            'id',
+            postId
+          );
+
+          url.searchParams.set(
+            'is_show_bulletin',
+            '3'
+          );
+
+          url.searchParams.set(
+            'is_mix',
+            '0'
+          );
+
+          url.searchParams.set(
+            'count',
+            '10'
+          );
+
+          url.searchParams.set(
+            'uid',
+            uid
+          );
+
+          url.searchParams.set(
+            'fetch_level',
+            '0'
+          );
+
+          url.searchParams.set(
+            'locale',
+            'zh-CN'
+          );
+
+          try {
+            const response =
+              await fetch(
+                url.toString(),
+                {
+                  method:
+                    'GET',
+
+                  credentials:
+                    'include',
+
+                  headers: {
+                    'Accept':
+                      'application/json, text/plain, */*'
+                  }
+                }
+              );
+
+            const text =
+              await response.text();
+
+            let json =
+              null;
+
+            try {
+              json =
+                JSON.parse(
+                  text
+                );
+            } catch {
+              // 非 JSON，保留 text 供日志诊断。
+            }
+
+            return {
+              ok:
+                response.ok,
+
+              status:
+                response.status,
+
+              url:
+                response.url,
+
+              text:
+                text.slice(
+                  0,
+                  1000
+                ),
+
+              json
+            };
+
+          } catch (error) {
+            return {
+              ok: false,
+              status: 0,
+              url:
+                url.toString(),
+              text: '',
+              json: null,
+              error:
+                error.message
+            };
+          }
+        },
+        {
+          postId,
+          uid
+        }
+      );
+
+    throwIfAborted(signal);
+
+    if (
+      apiResult.status === 418
+    ) {
+      return {
+        ok: false,
+        blocked: true,
+        commentsCount: null,
+        message:
+          'buildComments HTTP 418'
+      };
+    }
+
+    if (
+      apiResult.status === 403
+      ||
+      /Forbidden/i.test(
+        String(
+          apiResult.text
+          ||
+          ''
+        )
+      )
+    ) {
+      return {
+        ok: false,
+        commentsCount: null,
+        message:
+          `buildComments Forbidden (status=${apiResult.status}) | ${apiResult.text}`
+      };
+    }
+
+    if (
+      !apiResult.ok
+    ) {
+      return {
+        ok: false,
+        commentsCount: null,
+        message:
+          `buildComments HTTP ${apiResult.status} | ${apiResult.text || apiResult.error || ''}`
+      };
+    }
+
+    const totalNumber =
+      apiResult.json?.total_number
+      ??
+      apiResult.json?.data?.total_number
+      ??
+      null;
+
+    if (
+      Number.isFinite(
+        Number(
+          totalNumber
+        )
+      )
+    ) {
+      return {
+        ok: true,
+        commentsCount:
+          Number(
+            totalNumber
+          )
+      };
+    }
+
+    console.log(
+      `[轻量浏览器][buildComments响应] Post=${postId} | status=${apiResult.status} | body=${apiResult.text}`
+    );
+
+    return {
+      ok: false,
+      commentsCount: null,
+      message:
+        'buildComments Response 没有 total_number'
+    };
+
+  } catch (error) {
+    if (
+      signal?.aborted
+      ||
+      isAbortError(error)
+      ||
+      /Target page, context or browser has been closed/i.test(
+        String(
+          error.message
+          ||
+          ''
+        )
+      )
+    ) {
+      const abortError =
+        new Error(
+          '本轮已被新一轮取消'
+        );
+
+      abortError.name =
+        'AbortError';
+
+      throw abortError;
+    }
+
+    return {
+      ok: false,
+      commentsCount: null,
+      message:
+        error.message
+    };
+  }
+}
+
+async function runLightCommentRecheck(signal = null) {
   const posts =
     getAllCandidatePosts();
 
@@ -1336,93 +2240,309 @@ async function runLightCommentRecheck() {
     checked: 0,
     updated: 0,
     deleted: 0,
-    failed: 0
+    failed: 0,
+    blocked418: false
   };
 
   console.log('');
   console.log('########################################');
-  console.log('# SuperLike Recheck - 轻量评论模式');
-  console.log('# 不启动 Playwright / Chrome');
+  console.log('# SuperLike Recheck - 模式2 浏览器AJAX评论复检');
+  console.log('# 单个 headless Chromium + 单个 Page + 页面内 buildComments fetch');
   console.log(`# 评论 > ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
   console.log('# 其余 → 只更新 comments_count');
+  console.log('# 数据库顺序：id DESC');
   console.log(`读取帖子数：${posts.length}`);
   console.log('########################################');
 
-  for (
-    let i = 0;
-    i < posts.length;
-    i++
-  ) {
-    const post = posts[i];
+  let context = null;
+  let page = null;
 
-    const result =
-      await getCommentsCountByHttp(post);
+  const onAbort = () => {
+    if (context) {
+      context.close().catch(() => {});
+    }
+  };
 
-    if (!result.ok) {
-      stats.failed++;
+  if (signal) {
+    signal.addEventListener(
+      'abort',
+      onAbort,
+      { once: true }
+    );
+  }
 
-      console.log(
-        `[轻量复检 ${i + 1}/${posts.length}] ` +
-        `Post=${post.post_id} | 失败 | ${result.message || 'unknown'}`
+  try {
+    throwIfAborted(signal);
+
+    const { chromium } =
+      require('playwright');
+
+    const profileDir =
+      path.join(
+        __dirname,
+        '..',
+        'data',
+        'superlike-browser-profile-recheck-light'
       );
 
-      await sleep(LIGHT_REQUEST_DELAY_MS);
-      continue;
-    }
+    context =
+      await chromium.launchPersistentContext(
+        profileDir,
+        {
+          headless: true,
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        }
+      );
 
-    stats.checked++;
+    throwIfAborted(signal);
 
-    const commentsCount =
-      result.commentsCount;
+    page =
+      context.pages()[0]
+      || await context.newPage();
 
-    if (
-      commentsCount >
-      LIGHT_COMMENT_DELETE_THRESHOLD
+    for (
+      let i = 0;
+      i < posts.length;
+      i++
     ) {
-      const deleted =
-        deleteOnePost(
-          post.monitor_id,
-          post.post_id
+      throwIfAborted(signal);
+
+      const post = posts[i];
+
+      const result =
+        await getCommentsCountFromDomOnly(
+          page,
+          post,
+          signal
         );
 
-      stats.deleted += deleted;
+      if (!result.ok) {
+        stats.failed++;
 
-      console.log(
-        `[轻量复检 ${i + 1}/${posts.length}] ` +
-        `Post=${post.post_id} | 评论=${commentsCount} | 删除`
-      );
-    } else {
-      updateCommentCount(
-        post.monitor_id,
-        post.post_id,
-        commentsCount
-      );
+        if (result.blocked) {
+          stats.blocked418 = true;
 
-      stats.updated++;
+          console.log(
+            `[轻量浏览器 ${i + 1}/${posts.length}] ` +
+            `ID=${post.id} | Post=${post.post_id} | HTTP 418，本轮停止`
+          );
 
-      console.log(
-        `[轻量复检 ${i + 1}/${posts.length}] ` +
-        `Post=${post.post_id} | 评论=${commentsCount} | 更新保留`
+          break;
+        }
+
+        console.log(
+          `[轻量浏览器 ${i + 1}/${posts.length}] ` +
+          `ID=${post.id} | Post=${post.post_id} | 失败 | ${result.message || 'unknown'}`
+        );
+
+        await sleep(
+          LIGHT_REQUEST_DELAY_MS,
+          signal
+        );
+        continue;
+      }
+
+      stats.checked++;
+
+      throwIfAborted(signal);
+
+      const commentsCount =
+        Number(result.commentsCount);
+
+      if (
+        commentsCount >
+        LIGHT_COMMENT_DELETE_THRESHOLD
+      ) {
+        const deleted =
+          deleteOnePost(
+            post.monitor_id,
+            post.post_id
+          );
+
+        stats.deleted += deleted;
+
+        console.log(
+          `[轻量浏览器 ${i + 1}/${posts.length}] ` +
+          `ID=${post.id} | Post=${post.post_id} | 评论=${commentsCount} | 删除`
+        );
+
+      } else {
+        updateCommentCount(
+          post.monitor_id,
+          post.post_id,
+          commentsCount
+        );
+
+        stats.updated++;
+
+        console.log(
+          `[轻量浏览器 ${i + 1}/${posts.length}] ` +
+          `ID=${post.id} | Post=${post.post_id} | 评论=${commentsCount} | 更新保留`
+        );
+      }
+
+      await sleep(
+        LIGHT_REQUEST_DELAY_MS,
+        signal
       );
     }
 
-    await sleep(LIGHT_REQUEST_DELAY_MS);
+  } finally {
+    if (signal) {
+      signal.removeEventListener(
+        'abort',
+        onAbort
+      );
+    }
+
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 
   console.log('');
-  console.log('========== 轻量评论复检完成 ==========');
+  console.log('========== 模式2 DOM评论复检完成 ==========');
   console.log(`总帖子：${stats.total}`);
   console.log(`成功读取：${stats.checked}`);
   console.log(`更新：${stats.updated}`);
   console.log(`删除：${stats.deleted}`);
   console.log(`失败：${stats.failed}`);
-  console.log('======================================');
+  console.log(`HTTP 418中止：${stats.blocked418 ? '是' : '否'}`);
+  console.log('==========================================');
+}
+
+
+/**
+ * ============================================================
+ * 模式2/3常驻轮询
+ *
+ * - 每3分钟从“本轮开始时间”计时
+ * - 到点时如果上一轮还没结束：先 abort 上一轮，再开启新一轮
+ * - 如果上一轮提前结束：等待到3分钟边界再开始下一轮
+ * ============================================================
+ */
+async function runLightModeForever(mode) {
+  let round = 0;
+
+  console.log('');
+  console.log(
+    `[Recheck] 模式${mode} 已进入常驻轮询：每 ${LIGHT_ROUND_INTERVAL_MS / 60000} 分钟强制开启新一轮。`
+  );
+
+  while (true) {
+    round++;
+
+    console.log('');
+    console.log(
+      `[Recheck] ===== 模式${mode} 第${round}轮开始 =====`
+    );
+
+    const controller =
+      new AbortController();
+
+    const startedAt =
+      Date.now();
+
+    const roundPromise =
+      (
+        mode === '2'
+          ? runLightCommentRecheck(controller.signal)
+          : runLightSuperLikeRecheck(controller.signal)
+      )
+        .then(() => ({ type: 'done' }))
+        .catch(error => ({ type: 'error', error }));
+
+    const timerPromise =
+      new Promise(resolve => {
+        const remain =
+          Math.max(
+            0,
+            LIGHT_ROUND_INTERVAL_MS
+              - (Date.now() - startedAt)
+          );
+
+        setTimeout(
+          () => resolve({ type: 'timer' }),
+          remain
+        );
+      });
+
+    const first =
+      await Promise.race([
+        roundPromise,
+        timerPromise
+      ]);
+
+    if (first.type === 'timer') {
+      console.log(
+        `[Recheck] ${LIGHT_ROUND_INTERVAL_MS / 60000}分钟到：取消模式${mode}第${round}轮，立即开启下一轮。`
+      );
+
+      controller.abort();
+
+      const ended =
+        await roundPromise;
+
+      if (
+        ended.type === 'error'
+        &&
+        !isAbortError(ended.error)
+      ) {
+        console.error(
+          `[Recheck] 模式${mode} 第${round}轮异常：`,
+          ended.error
+        );
+      } else {
+        console.log(
+          `[Recheck] 模式${mode} 第${round}轮已被下一轮取消。`
+        );
+      }
+
+      continue;
+    }
+
+    if (
+      first.type === 'error'
+      &&
+      !isAbortError(first.error)
+    ) {
+      console.error(
+        `[Recheck] 模式${mode} 第${round}轮异常：`,
+        first.error
+      );
+    }
+
+    const elapsed =
+      Date.now() - startedAt;
+
+    const waitMs =
+      Math.max(
+        0,
+        LIGHT_ROUND_INTERVAL_MS - elapsed
+      );
+
+    if (waitMs > 0) {
+      console.log(
+        `[Recheck] 模式${mode} 第${round}轮已结束，等待下一次3分钟边界。`
+      );
+
+      await sleep(waitMs);
+    }
+  }
 }
 
 function askRecheckMode() {
   if (
     process.env.SUPERLIKE_RECHECK_MODE === '1'
     || process.env.SUPERLIKE_RECHECK_MODE === '2'
+    || process.env.SUPERLIKE_RECHECK_MODE === '3'
   ) {
     return Promise.resolve(
       process.env.SUPERLIKE_RECHECK_MODE
@@ -1438,14 +2558,18 @@ function askRecheckMode() {
     console.log('');
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
-    console.log('2 = 轻量逻辑（只 GET 帖子、更新评论数、评论 > 21 删除）');
+    console.log('2 = 轻量评论逻辑（每3分钟一轮，DB id从大到小，评论 > 21 删除）');
+    console.log('3 = SuperLike复检逻辑（每3分钟一轮，按最新DB id从大到小，复用scanner的Profile检查，有SuperLike立即删除）');
 
-    rl.question('请输入 1 或 2：', answer => {
+    rl.question('请输入 1、2 或 3：', answer => {
       rl.close();
 
+      const mode =
+        String(answer || '').trim();
+
       resolve(
-        String(answer || '').trim() === '2'
-          ? '2'
+        mode === '2' || mode === '3'
+          ? mode
           : '1'
       );
     });
@@ -1467,13 +2591,14 @@ async function main() {
     await askRecheckMode();
 
 
-  if (mode === '2') {
-    await runLightCommentRecheck();
-
-    console.log('');
-    console.log('[Recheck] 轻量评论复检全部完成。');
+  if (mode === '2' || mode === '3') {
+    await runLightModeForever(mode);
     return;
   }
+
+
+  // 模式2/3都已在上面 return；只有模式1才加载 Playwright。
+  const { chromium } = require('playwright');
 
 
   const monitors =
