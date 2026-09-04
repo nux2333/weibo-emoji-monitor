@@ -9,6 +9,7 @@ const batchLogger =
   );
   
 const path = require('path');
+const readline = require('readline');
 
 const {
   chromium
@@ -69,6 +70,24 @@ const POST_DELAY_MS =
  */
 const MAX_COMMENTS = 20;
 
+/*
+ * 轻量评论复检模式：
+ * 评论数 > 21 时删除。
+ */
+const LIGHT_COMMENT_DELETE_THRESHOLD = 21;
+
+const LIGHT_REQUEST_DELAY_MS =
+  Number(
+    process.env.SUPERLIKE_LIGHT_REQUEST_DELAY_MS
+  )
+  || 250;
+
+const LIGHT_REQUEST_TIMEOUT_MS =
+  Number(
+    process.env.SUPERLIKE_LIGHT_REQUEST_TIMEOUT_MS
+  )
+  || 10000;
+
 
 /**
  * ============================================================
@@ -115,7 +134,7 @@ function getDistinctUsers(
       AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     GROUP BY uid
-    ORDER BY first_id DESC
+    ORDER BY first_id ASC
   `).all(
     monitorId
   );
@@ -1125,6 +1144,316 @@ async function recheckOneMonitor(
 
 /**
  * ============================================================
+ * 轻量评论复检（不启动 Playwright / Chrome）
+ * ============================================================
+ */
+function getAllCandidatePosts() {
+  return db.prepare(`
+    SELECT
+      id,
+      monitor_id,
+      post_id,
+      uid,
+      username,
+      post_link,
+      comments_count
+    FROM superlike_posts
+    WHERE post_id IS NOT NULL
+      AND post_id <> ''
+    ORDER BY id ASC
+  `).all();
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchTextWithTimeout(url) {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    LIGHT_REQUEST_TIMEOUT_MS
+  );
+
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152 Safari/537.36',
+        'Accept': 'application/json,text/plain,text/html,*/*',
+        'Referer': 'https://m.weibo.cn/'
+      }
+    });
+
+    const text = await response.text();
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      finalUrl: response.url,
+      text
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function extractCommentsCountFromText(text, postId) {
+  if (!text) {
+    return null;
+  }
+
+  try {
+    const json = JSON.parse(text);
+
+    const direct =
+      json?.comments_count
+      ?? json?.data?.comments_count
+      ?? json?.status?.comments_count;
+
+    if (Number.isFinite(Number(direct))) {
+      return Number(direct);
+    }
+
+    const nested = findPostCommentsCount(
+      json,
+      postId
+    );
+
+    if (nested !== null) {
+      return nested;
+    }
+  } catch {
+    // 不是 JSON 时继续用文本正则兜底。
+  }
+
+  const patterns = [
+    /"comments_count"\s*:\s*(\d+)/i,
+    /"comment_count"\s*:\s*(\d+)/i
+  ];
+
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+
+    if (match) {
+      return Number(match[1]);
+    }
+  }
+
+  return null;
+}
+
+async function getCommentsCountByHttp(post) {
+  const postId = String(post.post_id || '').trim();
+
+  if (!postId) {
+    return {
+      ok: false,
+      commentsCount: null,
+      message: '没有 post_id'
+    };
+  }
+
+  /*
+   * 优先直接请求移动端微博状态 JSON。
+   * 不需要打开 Chrome。
+   */
+  const apiUrl =
+    `https://m.weibo.cn/statuses/show?id=${encodeURIComponent(postId)}`;
+
+  try {
+    const apiResult =
+      await fetchTextWithTimeout(apiUrl);
+
+    if (apiResult.ok) {
+      const count =
+        extractCommentsCountFromText(
+          apiResult.text,
+          postId
+        );
+
+      if (count !== null) {
+        return {
+          ok: true,
+          commentsCount: count,
+          source: apiUrl
+        };
+      }
+    }
+
+    /*
+     * API 没读到时，再直接 GET 数据库里的帖子链接兜底。
+     */
+    if (post.post_link) {
+      const pageResult =
+        await fetchTextWithTimeout(
+          post.post_link
+        );
+
+      if (pageResult.ok) {
+        const count =
+          extractCommentsCountFromText(
+            pageResult.text,
+            postId
+          );
+
+        if (count !== null) {
+          return {
+            ok: true,
+            commentsCount: count,
+            source: post.post_link
+          };
+        }
+      }
+    }
+
+    return {
+      ok: false,
+      commentsCount: null,
+      message:
+        `HTTP/API 未读取到 comments_count (status=${apiResult.status})`
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      commentsCount: null,
+      message: error.name === 'AbortError'
+        ? '请求超时'
+        : error.message
+    };
+  }
+}
+
+async function runLightCommentRecheck() {
+  const posts =
+    getAllCandidatePosts();
+
+  const stats = {
+    total: posts.length,
+    checked: 0,
+    updated: 0,
+    deleted: 0,
+    failed: 0
+  };
+
+  console.log('');
+  console.log('########################################');
+  console.log('# SuperLike Recheck - 轻量评论模式');
+  console.log('# 不启动 Playwright / Chrome');
+  console.log(`# 评论 > ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
+  console.log('# 其余 → 只更新 comments_count');
+  console.log(`读取帖子数：${posts.length}`);
+  console.log('########################################');
+
+  for (
+    let i = 0;
+    i < posts.length;
+    i++
+  ) {
+    const post = posts[i];
+
+    const result =
+      await getCommentsCountByHttp(post);
+
+    if (!result.ok) {
+      stats.failed++;
+
+      console.log(
+        `[轻量复检 ${i + 1}/${posts.length}] ` +
+        `Post=${post.post_id} | 失败 | ${result.message || 'unknown'}`
+      );
+
+      await sleep(LIGHT_REQUEST_DELAY_MS);
+      continue;
+    }
+
+    stats.checked++;
+
+    const commentsCount =
+      result.commentsCount;
+
+    if (
+      commentsCount >
+      LIGHT_COMMENT_DELETE_THRESHOLD
+    ) {
+      const deleted =
+        deleteOnePost(
+          post.monitor_id,
+          post.post_id
+        );
+
+      stats.deleted += deleted;
+
+      console.log(
+        `[轻量复检 ${i + 1}/${posts.length}] ` +
+        `Post=${post.post_id} | 评论=${commentsCount} | 删除`
+      );
+    } else {
+      updateCommentCount(
+        post.monitor_id,
+        post.post_id,
+        commentsCount
+      );
+
+      stats.updated++;
+
+      console.log(
+        `[轻量复检 ${i + 1}/${posts.length}] ` +
+        `Post=${post.post_id} | 评论=${commentsCount} | 更新保留`
+      );
+    }
+
+    await sleep(LIGHT_REQUEST_DELAY_MS);
+  }
+
+  console.log('');
+  console.log('========== 轻量评论复检完成 ==========');
+  console.log(`总帖子：${stats.total}`);
+  console.log(`成功读取：${stats.checked}`);
+  console.log(`更新：${stats.updated}`);
+  console.log(`删除：${stats.deleted}`);
+  console.log(`失败：${stats.failed}`);
+  console.log('======================================');
+}
+
+function askRecheckMode() {
+  if (
+    process.env.SUPERLIKE_RECHECK_MODE === '1'
+    || process.env.SUPERLIKE_RECHECK_MODE === '2'
+  ) {
+    return Promise.resolve(
+      process.env.SUPERLIKE_RECHECK_MODE
+    );
+  }
+
+  return new Promise(resolve => {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      output: process.stdout
+    });
+
+    console.log('');
+    console.log('请选择 Recheck 模式：');
+    console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
+    console.log('2 = 轻量逻辑（只 GET 帖子、更新评论数、评论 > 21 删除）');
+
+    rl.question('请输入 1 或 2：', answer => {
+      rl.close();
+
+      resolve(
+        String(answer || '').trim() === '2'
+          ? '2'
+          : '1'
+      );
+    });
+  });
+}
+
+/**
+ * ============================================================
  * MAIN
  * ============================================================
  */
@@ -1132,6 +1461,19 @@ async function recheckOneMonitor(
 async function main() {
 
   initDatabase();
+
+
+  const mode =
+    await askRecheckMode();
+
+
+  if (mode === '2') {
+    await runLightCommentRecheck();
+
+    console.log('');
+    console.log('[Recheck] 轻量评论复检全部完成。');
+    return;
+  }
 
 
   const monitors =
