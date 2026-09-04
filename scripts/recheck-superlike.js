@@ -115,7 +115,7 @@ function getDistinctUsers(
       AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     GROUP BY uid
-    ORDER BY first_id ASC
+    ORDER BY first_id DESC
   `).all(
     monitorId
   );
