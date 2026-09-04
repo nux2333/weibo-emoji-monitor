@@ -236,42 +236,7 @@ function deleteAllPostsByUid(
 
 
 function initSuperLikeListStateTable() {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS superlike_list_state (
-      monitor_id INTEGER PRIMARY KEY,
-      last_uid TEXT,
-      scan_date TEXT,
-      last_total INTEGER,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  const columns =
-    db.prepare(`
-      PRAGMA table_info(superlike_list_state)
-    `).all();
-
-  const names =
-    new Set(
-      columns.map(
-        column =>
-          String(column.name)
-      )
-    );
-
-  if (!names.has('scan_date')) {
-    db.exec(`
-      ALTER TABLE superlike_list_state
-      ADD COLUMN scan_date TEXT
-    `);
-  }
-
-  if (!names.has('last_total')) {
-    db.exec(`
-      ALTER TABLE superlike_list_state
-      ADD COLUMN last_total INTEGER
-    `);
-  }
+  initDatabase();
 }
 
 function getSuperLikeListState(
@@ -389,6 +354,46 @@ function getWeiboScanDate() {
 
   return `${map.year}-${map.month}-${map.day}`;
 }
+
+function getChinaDateTime() {
+  const parts =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone:
+          'Asia/Shanghai',
+        year:
+          'numeric',
+        month:
+          '2-digit',
+        day:
+          '2-digit',
+        hour:
+          '2-digit',
+        minute:
+          '2-digit',
+        second:
+          '2-digit',
+        hour12:
+          false
+      }
+    ).formatToParts(
+      new Date()
+    );
+
+  const map = {};
+
+  for (
+    const part
+    of parts
+  ) {
+    map[part.type] =
+      part.value;
+  }
+
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
+}
+
 
 function parseSuperLikeTotalText(
   value
@@ -554,6 +559,123 @@ function calculateListMaxPages(
   );
 }
 
+
+
+
+
+function initSuperLikeUsersTable() {
+  initDatabase();
+}
+
+function cleanupSuperLikeUsersForToday(
+  monitorId,
+  scanDate
+) {
+  initSuperLikeUsersTable();
+
+  const result =
+    db.prepare(`
+      DELETE FROM superlike_users
+      WHERE monitor_id = ?
+        AND scan_date <> ?
+    `).run(
+      monitorId,
+      scanDate
+    );
+
+  return result.changes
+    || 0;
+}
+
+function upsertSuperLikeUsers(
+  monitorId,
+  uidList,
+  scanDate,
+  rankStart
+) {
+  initSuperLikeUsersTable();
+
+  if (
+    !Array.isArray(uidList)
+    ||
+    uidList.length === 0
+  ) {
+    return 0;
+  }
+
+  const chinaNow =
+    getChinaDateTime();
+
+  const stmt =
+    db.prepare(`
+      INSERT INTO superlike_users(
+        monitor_id,
+        uid,
+        scan_date,
+        first_seen_at,
+        last_seen_at,
+        first_seen_rank,
+        last_seen_rank
+      )
+      VALUES(?,?,?,?,?,?,?)
+      ON CONFLICT(monitor_id, uid) DO UPDATE SET
+        scan_date = excluded.scan_date,
+        last_seen_at = excluded.last_seen_at,
+        last_seen_rank = excluded.last_seen_rank
+    `);
+
+  let saved = 0;
+
+  db.exec('BEGIN');
+
+  try {
+    for (
+      let i = 0;
+      i < uidList.length;
+      i++
+    ) {
+      const uid =
+        String(
+          uidList[i]
+          || ''
+        ).trim();
+
+      if (!uid) {
+        continue;
+      }
+
+      const rank =
+        Number(rankStart)
+        + i;
+
+      stmt.run(
+        monitorId,
+        uid,
+        scanDate,
+        chinaNow,
+        chinaNow,
+        rank,
+        rank
+      );
+
+      saved++;
+    }
+
+    db.exec('COMMIT');
+
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore
+    }
+
+    throw error;
+  }
+
+  return saved;
+}
+
 function deletePostsByUidSet(
   monitorId,
   uidSet
@@ -649,7 +771,7 @@ function deleteOnePost(
 
 
 /**
- * 评论数仍然 < 20：
+ * 评论数仍然 < 22：
  *
  * 更新最新 comments_count。
  */
@@ -1460,7 +1582,7 @@ async function recheckOneMonitor(
         } else {
 
           /**
-           * 评论仍然 < 20：
+           * 评论仍然 < 22：
            *
            * 更新数据库。
            */
@@ -3288,6 +3410,9 @@ async function runSuperLikeListRecheck(
       let currentTotal =
         null;
 
+      let cleanupDone =
+        false;
+
       let maxPages =
         LIST_FIRST_RUN_MAX_PAGES;
 
@@ -3476,6 +3601,21 @@ async function runSuperLikeListRecheck(
               result.json
             );
 
+          if (!cleanupDone) {
+            const cleaned =
+              cleanupSuperLikeUsersForToday(
+                monitor.id,
+                today
+              );
+
+            cleanupDone =
+              true;
+
+            console.log(
+              `[模式4] 清理非当天超LIKE用户数据：${cleaned} 条`
+            );
+          }
+
           if (
             uids.length > 0
           ) {
@@ -3550,6 +3690,25 @@ async function runSuperLikeListRecheck(
           `请求since_id=${sinceId || '-'} | ` +
           `返回since_id=${nextSinceId || '-'} | ` +
           `url=${result.finalUrl || result.url || '-'}`
+        );
+
+
+        const rankStart =
+          (
+            pageNumber - 1
+          ) * 20
+          + 1;
+
+        const savedUsers =
+          upsertSuperLikeUsers(
+            monitor.id,
+            uids,
+            today,
+            rankStart
+          );
+
+        console.log(
+          `[模式4] 第${pageNumber}页保存当天超LIKE UID=${savedUsers} | 排名约=${rankStart}-${rankStart + Math.max(0, uids.length - 1)}`
         );
 
         for (
@@ -3662,14 +3821,46 @@ async function runSuperLikeListRecheck(
   }
 }
 
+function getChinaHour() {
+  return Number(
+    new Intl.DateTimeFormat(
+      'en-US',
+      {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        hour12: false
+      }
+    ).format(
+      new Date()
+    )
+  );
+}
+
 function getMode4IntervalMs() {
   const hour =
-    new Date().getHours();
+    Number(
+      new Intl.DateTimeFormat(
+        'en-US',
+        {
+          timeZone:
+            'Asia/Shanghai',
+          hour:
+            '2-digit',
+          hour12:
+            false
+        }
+      ).format(
+        new Date()
+      )
+    );
 
-  return hour >=
-    LIST_NIGHT_START_HOUR
-      ? LIST_NIGHT_INTERVAL_MS
-      : LIST_DAY_INTERVAL_MS;
+  return (
+    hour >= 19
+    &&
+    hour <= 23
+  )
+    ? LIST_NIGHT_INTERVAL_MS
+    : LIST_DAY_INTERVAL_MS;
 }
 
 async function runMode4Forever() {
@@ -3899,6 +4090,7 @@ async function main() {
 
   initDatabase();
   initSuperLikeListStateTable();
+  initSuperLikeUsersTable();
 
 
   const mode =

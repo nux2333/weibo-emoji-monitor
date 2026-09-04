@@ -167,6 +167,29 @@ function initDatabase() {
       UNIQUE(monitor_id, post_id),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
+
+
+    CREATE TABLE IF NOT EXISTS superlike_list_state (
+      monitor_id INTEGER PRIMARY KEY,
+      last_uid TEXT,
+      scan_date TEXT,
+      last_total INTEGER,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
+
+    CREATE TABLE IF NOT EXISTS superlike_users (
+      monitor_id INTEGER NOT NULL,
+      uid TEXT NOT NULL,
+      scan_date TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      first_seen_rank INTEGER,
+      last_seen_rank INTEGER,
+      PRIMARY KEY (monitor_id, uid),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
   `);
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
@@ -182,6 +205,15 @@ function initDatabase() {
   ensureColumn('monitors', 'history_last_status', 'TEXT');
 
   ensureColumn('api_responses', 'crawl_type', "TEXT NOT NULL DEFAULT 'legacy'");
+
+  ensureColumn('superlike_list_state', 'scan_date', 'TEXT');
+  ensureColumn('superlike_list_state', 'last_total', 'INTEGER');
+
+  ensureColumn('superlike_users', 'scan_date', 'TEXT');
+  ensureColumn('superlike_users', 'first_seen_at', 'TEXT');
+  ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
+  ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
+  ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
 
   migrateSuperlikePostsIfNeeded();
   
@@ -214,6 +246,12 @@ function initDatabase() {
       ON superlike_posts(current_has_superlike);
     CREATE INDEX IF NOT EXISTS idx_superlike_posts_last_seen
       ON superlike_posts(last_seen_at);
+
+
+    CREATE INDEX IF NOT EXISTS idx_superlike_users_scan_date
+      ON superlike_users(scan_date);
+    CREATE INDEX IF NOT EXISTS idx_superlike_users_uid
+      ON superlike_users(uid);
   `);
 }
 

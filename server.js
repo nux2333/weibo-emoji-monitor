@@ -206,7 +206,7 @@ app.get('/api/superlike-posts', (req, res) => {
 
     const where = [
       'sp.current_has_superlike = 0',
-      'sp.comments_count < 20'
+      'sp.comments_count < 22'
     ];
     const params = [];
 
@@ -261,7 +261,7 @@ app.get('/api/superlike-posts', (req, res) => {
           AS experience_known
       FROM superlike_posts
       WHERE current_has_superlike=0
-        AND comments_count<20
+        AND comments_count<22
     `).get();
 
     const monitors = db.prepare(`

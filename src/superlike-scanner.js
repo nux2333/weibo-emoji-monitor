@@ -30,19 +30,23 @@ const { db, initDatabase } = require('./db');
  *        -> name = 最新发帖
  *        -> containerid = ..._-_sort_time
  * 5. 在当前页面上下文中请求 sort_time 第一页
- * 6. 从 sort_time Response 的 moreInfo.params 读取下一页：
+ * 6. 从 sort_time Response 的 moreInfo.params 读取下一页，并直接 AJAX 请求：
  *      page
  *      since_id
  *      max_id
  * 7. 最多 50 页
  * 8. DB 已有 post_id > 10 后结束
- * 9. 评论 < 20 且无 chao_like 才入库
+ * 9. 评论 < 20 且当前 feed Response 无 chao_like 才入库
  * 10. 15 分钟后重新开始
  * ============================================================
  */
 
-const SCAN_INTERVAL_MS =
-  Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
+const DAY_SCAN_INTERVAL_MS =
+  Number(process.env.SUPERLIKE_DAY_SCAN_INTERVAL_MS)
+  || 20 * 60 * 1000;
+
+const NIGHT_SCAN_INTERVAL_MS =
+  Number(process.env.SUPERLIKE_NIGHT_SCAN_INTERVAL_MS)
   || 5 * 60 * 1000;
 
 const RATE_LIMIT_BACKOFF_1_MS =
@@ -86,6 +90,7 @@ let running = false;
 
 function initSuperLikeTable() {
   initDatabase();
+  initSuperLikeCheckpointTable();
 }
 
 function getSuperLikeMonitors() {
@@ -170,6 +175,189 @@ function deleteSuperLikeUsersByUid(uidSet) {
   }
 
   return deleted;
+}
+
+
+
+function initSuperLikeCheckpointTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS superlike_scan_checkpoint (
+      monitor_id INTEGER PRIMARY KEY,
+      latest_post_id TEXT,
+      latest_created_at TEXT,
+      latest_created_at_ms INTEGER,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+
+function getScanCheckpoint(monitorId) {
+  initSuperLikeCheckpointTable();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms
+    FROM superlike_scan_checkpoint
+    WHERE monitor_id = ?
+  `).get(monitorId) || null;
+}
+
+
+function saveScanCheckpoint(
+  monitorId,
+  latestPostId,
+  latestCreatedAt,
+  latestCreatedAtMs
+) {
+  if (
+    !latestPostId
+    ||
+    !Number.isFinite(
+      Number(latestCreatedAtMs)
+    )
+  ) {
+    return;
+  }
+
+  initSuperLikeCheckpointTable();
+
+  db.prepare(`
+    INSERT INTO superlike_scan_checkpoint(
+      monitor_id,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms,
+      updated_at
+    )
+    VALUES(
+      ?,?,?,?,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT(monitor_id)
+    DO UPDATE SET
+      latest_post_id = excluded.latest_post_id,
+      latest_created_at = excluded.latest_created_at,
+      latest_created_at_ms = excluded.latest_created_at_ms,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    monitorId,
+    String(latestPostId),
+    latestCreatedAt || null,
+    Number(latestCreatedAtMs)
+  );
+}
+
+
+function parsePostCreatedAtMs(post) {
+  const raw =
+    getPostCreatedAt(post);
+
+  if (!raw) {
+    return null;
+  }
+
+  const ms =
+    Date.parse(raw);
+
+  return Number.isFinite(ms)
+    ? ms
+    : null;
+}
+
+
+function getNewestPostInfo(posts) {
+  let best = null;
+
+  for (
+    const post
+    of posts
+  ) {
+    const postId =
+      getPostId(post);
+
+    const createdAt =
+      getPostCreatedAt(post);
+
+    const createdAtMs =
+      parsePostCreatedAtMs(post);
+
+    if (
+      !postId
+      ||
+      !Number.isFinite(
+        Number(createdAtMs)
+      )
+    ) {
+      continue;
+    }
+
+    if (
+      !best
+      ||
+      createdAtMs >
+        best.createdAtMs
+    ) {
+      best = {
+        postId,
+        createdAt,
+        createdAtMs
+      };
+    }
+  }
+
+  return best;
+}
+
+
+function shouldStopAtCheckpoint(
+  post,
+  checkpoint
+) {
+  if (!checkpoint) {
+    return false;
+  }
+
+  const postId =
+    getPostId(post);
+
+  const createdAtMs =
+    parsePostCreatedAtMs(post);
+
+  const checkpointMs =
+    Number(
+      checkpoint.latest_created_at_ms
+    );
+
+  if (
+    !Number.isFinite(createdAtMs)
+    ||
+    !Number.isFinite(checkpointMs)
+  ) {
+    return false;
+  }
+
+  if (
+    createdAtMs < checkpointMs
+  ) {
+    return true;
+  }
+
+  if (
+    createdAtMs === checkpointMs
+    &&
+    String(postId) ===
+      String(
+        checkpoint.latest_post_id
+      )
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 
@@ -616,6 +804,13 @@ function saveTargetPost(
   const uid =
     getUid(post);
 
+  if (!uid) {
+    return {
+      status: 'skip',
+      reason: 'no_uid'
+    };
+  }
+
   const username =
     getUsername(post);
 
@@ -627,6 +822,9 @@ function saveTargetPost(
 
   const postCreatedAt =
     getPostCreatedAt(post);
+
+  const postCreatedAtMs =
+    parsePostCreatedAtMs(post);
 
   const icons =
     extractIcons(post);
@@ -644,6 +842,96 @@ function saveTargetPost(
 
   } catch {
     rawJson = null;
+  }
+
+  /*
+   * 每个 monitor + UID 只保留一条。
+   * 如果数据库里已经有这个 UID：
+   * - 评论数更多 -> 替换旧记录
+   * - 评论数相同 -> 保留发帖时间更新的帖子
+   * - 评论数更少 -> 保留现有记录
+   */
+  const existing =
+    db.prepare(`
+      SELECT
+        id,
+        post_id,
+        comments_count,
+        post_created_at
+      FROM superlike_posts
+      WHERE monitor_id = ?
+        AND uid = ?
+      ORDER BY id DESC
+      LIMIT 1
+    `).get(
+      monitorId,
+      uid
+    );
+
+  if (existing) {
+    const existingComments =
+      Number(
+        existing.comments_count
+      );
+
+    const newComments =
+      Number(
+        commentsCount
+      );
+
+    const existingMs =
+      existing.post_created_at
+        ? Date.parse(
+            existing.post_created_at
+          )
+        : null;
+
+    const shouldReplace =
+      (
+        Number.isFinite(newComments)
+        &&
+        (
+          !Number.isFinite(existingComments)
+          ||
+          newComments > existingComments
+        )
+      )
+      ||
+      (
+        Number.isFinite(newComments)
+        &&
+        Number.isFinite(existingComments)
+        &&
+        newComments === existingComments
+        &&
+        Number.isFinite(postCreatedAtMs)
+        &&
+        (
+          !Number.isFinite(existingMs)
+          ||
+          postCreatedAtMs > existingMs
+        )
+      );
+
+    if (!shouldReplace) {
+      return {
+        status: 'kept_existing',
+        postId:
+          String(
+            existing.post_id
+          ),
+        uid
+      };
+    }
+
+    db.prepare(`
+      DELETE FROM superlike_posts
+      WHERE monitor_id = ?
+        AND uid = ?
+    `).run(
+      monitorId,
+      uid
+    );
   }
 
   db.prepare(`
@@ -676,7 +964,7 @@ function saveTargetPost(
   `).run(
     monitorId,
     postId,
-    uid || null,
+    uid,
     username,
     postLink || null,
     postText,
@@ -687,7 +975,10 @@ function saveTargetPost(
   );
 
   return {
-    status: 'inserted',
+    status:
+      existing
+        ? 'replaced'
+        : 'inserted',
     postId,
     uid,
     username,
@@ -1163,13 +1454,22 @@ function extractNextPageParams(
 
 function buildChaohuaUrl(
   flowId,
-  pageParams = null
+  pageParams = null,
+  templateUrl = null
 ) {
+  /*
+   * 后续分页优先复制微博前端真实发出的 sort_time URL，
+   * 保留它原本的所有 query 参数。
+   *
+   * 只替换分页相关参数，避免自己从零拼 URL 导致 403。
+   */
   const url =
-    new URL(
-      '/ajax_proxy/chaohua/page',
-      'https://weibo.com'
-    );
+    templateUrl
+      ? new URL(templateUrl)
+      : new URL(
+          '/ajax_proxy/chaohua/page',
+          'https://weibo.com'
+        );
 
 
   url.searchParams.set(
@@ -1178,9 +1478,6 @@ function buildChaohuaUrl(
   );
 
 
-  /*
-   * 第一页只有 flowId。
-   */
   if (!pageParams) {
     return url.toString();
   }
@@ -1200,6 +1497,10 @@ function buildChaohuaUrl(
     url.searchParams.set(
       'since_id',
       pageParams.since_id
+    );
+  } else {
+    url.searchParams.delete(
+      'since_id'
     );
   }
 
@@ -1233,10 +1534,69 @@ function buildChaohuaUrl(
 
 async function fetchChaohuaInPage(
   page,
-  url
+  url,
+  requestHeaders = null
 ) {
+  /*
+   * 浏览器 fetch 不能手工设置 Cookie / Referer / User-Agent 等受限头。
+   * 这些由当前 weibo.com 页面上下文自动携带。
+   *
+   * 这里只复用第一页真实请求里的安全自定义 header，
+   * 特别是微博可能依赖的 x-* / client-* 等字段。
+   */
+  const safeHeaders = {
+    Accept:
+      'application/json, text/plain, */*'
+  };
+
+
+  if (
+    requestHeaders
+    &&
+    typeof requestHeaders === 'object'
+  ) {
+    for (
+      const [
+        rawName,
+        rawValue
+      ]
+      of Object.entries(
+        requestHeaders
+      )
+    ) {
+      const name =
+        String(
+          rawName
+          ||
+          ''
+        ).toLowerCase();
+
+      if (
+        !rawValue
+      ) {
+        continue;
+      }
+
+      if (
+        name.startsWith('x-')
+        ||
+        name.startsWith('client-')
+      ) {
+        safeHeaders[
+          rawName
+        ] = String(
+          rawValue
+        );
+      }
+    }
+  }
+
+
   return await page.evaluate(
-    async requestUrl => {
+    async ({
+      requestUrl,
+      headers
+    }) => {
       const response =
         await fetch(
           requestUrl,
@@ -1247,10 +1607,7 @@ async function fetchChaohuaInPage(
             credentials:
               'include',
 
-            headers: {
-              Accept:
-                'application/json, text/plain, */*'
-            }
+            headers
           }
         );
 
@@ -1259,7 +1616,7 @@ async function fetchChaohuaInPage(
         await response.text();
 
 
-      let json;
+      let json = null;
 
       try {
         json =
@@ -1268,9 +1625,7 @@ async function fetchChaohuaInPage(
           );
 
       } catch {
-        throw new Error(
-          `非JSON Response: ${text.slice(0, 200)}`
-        );
+        // 非 JSON 时保留原始文本，交给调用方打印诊断。
       }
 
 
@@ -1281,11 +1636,26 @@ async function fetchChaohuaInPage(
         ok:
           response.ok,
 
+        finalUrl:
+          response.url,
+
+        text:
+          text.slice(
+            0,
+            500
+          ),
+
         json
       };
     },
 
-    url
+    {
+      requestUrl:
+        url,
+
+      headers:
+        safeHeaders
+    }
   );
 }
 
@@ -1805,31 +2175,36 @@ async function processPagePosts(
   monitorId,
   json,
   seenThisRun,
-  context,
-  config,
-  profileCache,
+  seenUidThisRun,
   deleteUidSet,
-  existingUidSet
+  checkpoint
 ) {
   const stats = {
     found: 0,
     duplicateInRun: 0,
+    duplicateUidInRun: 0,
     existingInDb: 0,
     unknownComments: 0,
     commentsFull: 0,
     hasSuperLike: 0,
-    profileChecked: 0,
-    profileHasSuperLike: 0,
-    profileCheckFailed: 0,
     deleteQueued: 0,
     target: 0,
-    inserted: 0
+    inserted: 0,
+    replaced: 0,
+    checkpointReached: false,
+    newestSeen: null
   };
 
 
   const posts =
     findPosts(
       json
+    );
+
+
+  stats.newestSeen =
+    getNewestPostInfo(
+      posts
     );
 
 
@@ -1865,20 +2240,31 @@ async function processPagePosts(
     stats.found++;
 
 
+    /*
+     * 命中上一轮 checkpoint 后立即停止继续处理更旧帖子。
+     */
+    if (
+      shouldStopAtCheckpoint(
+        post,
+        checkpoint
+      )
+    ) {
+      stats.checkpointReached = true;
+
+      console.log(
+        `[SuperLike][Checkpoint] 命中上一轮最新位置：Post=${postId} time=${getPostCreatedAt(post) || '-'}`
+      );
+
+      break;
+    }
+
+
     const uid =
       getUid(
         post
       );
 
 
-    /*
-     * 只要当前帖子 Response 已明确显示 SuperLike，
-     * 就把该 UID 放进待删除集合。
-     * 不立刻 DELETE，等本轮所有 Monitor 扫描结束后统一批量删除。
-     *
-     * 注意：这一步必须放在 postIdExists() 前面，
-     * 否则 DB 已存在的帖子会直接 continue，无法清理“后来拿到 SuperLike”的用户。
-     */
     if (
       hasSuperLike(
         post
@@ -1892,10 +2278,9 @@ async function processPagePosts(
         }
 
         deleteUidSet.add(uid);
-        existingUidSet.delete(uid);
 
         console.log(
-          `[SuperLike][待删除] UID=${uid} Response确认已有SuperLike`
+          `[SuperLike][待删除] UID=${uid} feed Response发现 chao_like`
         );
       }
 
@@ -1903,122 +2288,31 @@ async function processPagePosts(
     }
 
 
-    const existsInDb =
-      postIdExists(
-        postId
-      );
+    /*
+     * 每个用户只处理这一轮里遇到的第一条帖子。
+     * sort_time 是从新到旧，所以第一条就是该用户本轮最新帖。
+     */
+    if (
+      uid
+      &&
+      seenUidThisRun.has(
+        uid
+      )
+    ) {
+      stats.duplicateUidInRun++;
+      continue;
+    }
+
+
+    if (uid) {
+      seenUidThisRun.add(uid);
+    }
 
 
     const commentsCount =
       getCommentsCount(
         post
       );
-
-
-    /*
-     * 为了性能，不对所有帖子都额外请求 profile：
-     * 1. 这个 UID 本来就在候选库里 -> 必须检查，便于清理旧数据；
-     * 2. 新帖子评论<20，准备作为候选 -> 按原逻辑检查。
-     */
-    const needsCandidateCheck =
-      !existsInDb
-      && commentsCount !== null
-      && commentsCount < MAX_COMMENTS;
-
-    const needsExistingUserCheck =
-      !!uid
-      && existingUidSet.has(uid);
-
-    const needsProfileCheck =
-      !!uid
-      && (
-        needsCandidateCheck
-        || needsExistingUserCheck
-      );
-
-
-    let profileResult = null;
-
-    if (needsProfileCheck) {
-      profileResult =
-        profileCache.get(
-          uid
-        );
-
-
-      if (!profileResult) {
-        console.log(
-          `[SuperLike][Profile检查] UID=${uid}`
-        );
-
-        profileResult =
-          await checkUserSuperLikeByProfile(
-            context,
-            config,
-            uid
-          );
-
-        profileCache.set(
-          uid,
-          profileResult
-        );
-
-        stats.profileChecked++;
-      }
-
-
-      if (
-        !profileResult.ok
-      ) {
-        stats.profileCheckFailed++;
-
-        console.log(
-          `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'}`
-        );
-
-        /*
-         * 如果这是 DB 里已有的帖子，Profile 检查失败也保留原记录，
-         * 只是本轮无法确认是否应该删除。
-         */
-        if (existsInDb) {
-          stats.existingInDb++;
-          continue;
-        }
-
-        /*
-         * 新候选 Profile 无法确认时不入库，
-         * 避免把已经有 SuperLike 的用户误当成候选。
-         */
-        continue;
-      }
-
-
-      if (
-        profileResult.hasSuperLike
-      ) {
-        stats.profileHasSuperLike++;
-        stats.hasSuperLike++;
-
-        if (!deleteUidSet.has(uid)) {
-          stats.deleteQueued++;
-        }
-
-        deleteUidSet.add(uid);
-        existingUidSet.delete(uid);
-
-        console.log(
-          `[SuperLike][待删除] UID=${uid} Profile确认已有SuperLike`
-        );
-
-        continue;
-      }
-    }
-
-
-    if (existsInDb) {
-      stats.existingInDb++;
-      continue;
-    }
 
 
     if (
@@ -2039,10 +2333,8 @@ async function processPagePosts(
 
 
     if (!uid) {
-      stats.profileCheckFailed++;
-
       console.log(
-        `[SuperLike][Profile跳过] Post=${postId} 没有UID，不入库`
+        `[SuperLike][跳过] Post=${postId} 没有UID，不入库`
       );
 
       continue;
@@ -2065,7 +2357,6 @@ async function processPagePosts(
         'inserted'
       ) {
         stats.inserted++;
-        existingUidSet.add(uid);
 
         console.log(
           [
@@ -2077,6 +2368,28 @@ async function processPagePosts(
             saved.postLink || '-'
           ].join(' | ')
         );
+
+      } else if (
+        saved.status ===
+        'replaced'
+      ) {
+        stats.replaced++;
+
+        console.log(
+          [
+            '[SuperLike][更新UID最新帖]',
+            `UID=${saved.uid || '-'}`,
+            `用户=${saved.username || '-'}`,
+            `评论=${saved.commentsCount}`,
+            saved.postLink || '-'
+          ].join(' | ')
+        );
+
+      } else if (
+        saved.status ===
+        'kept_existing'
+      ) {
+        stats.existingInDb++;
       }
 
     } catch (error) {
@@ -2108,8 +2421,7 @@ async function processPagePosts(
 
 async function scanOneSuperLikeMonitor(
   monitor,
-  deleteUidSet,
-  existingUidSet
+  deleteUidSet
 ) {
   const config =
     parseTopicHomepage(
@@ -2135,12 +2447,16 @@ async function scanOneSuperLikeMonitor(
   const seenThisRun =
     new Set();
 
+  const seenUidThisRun =
+    new Set();
 
-  /*
-   * 同一个 UID 在一轮里只请求一次 profile_inpage。
-   */
-  const profileCache =
-    new Map();
+  const checkpoint =
+    getScanCheckpoint(
+      monitor.id
+    );
+
+  let newestThisRound =
+    null;
 
 
   const total = {
@@ -2150,17 +2466,12 @@ async function scanOneSuperLikeMonitor(
     unknownComments: 0,
     commentsFull: 0,
     hasSuperLike: 0,
-    profileChecked: 0,
-    profileHasSuperLike: 0,
-    profileCheckFailed: 0,
     deleteQueued: 0,
     target: 0,
-    inserted: 0
+    inserted: 0,
+    replaced: 0,
+    duplicateUidInRun: 0
   };
-
-
-  let totalExisting =
-    0;
 
   let pagesScanned =
     0;
@@ -2192,7 +2503,9 @@ async function scanOneSuperLikeMonitor(
     );
 
     console.log(
-      `DB旧Post > ${EXISTING_STOP_THRESHOLD} 后停止`
+      checkpoint
+        ? `[SuperLike] 上次Checkpoint：${checkpoint.latest_created_at || '-'} / ${checkpoint.latest_post_id || '-'}`
+        : '[SuperLike] 上次Checkpoint：无（首次运行）'
     );
 
     console.log(
@@ -2216,6 +2529,33 @@ async function scanOneSuperLikeMonitor(
             }
           }
         );
+
+
+    /*
+     * Scanner 只需要 HTML / JS / XHR / fetch。
+     * 图片、视频、字体都不参与帖子解析，直接拦截，减少网络请求和内存占用。
+     */
+    await browser.route(
+      '**/*',
+      async route => {
+        const type =
+          route.request()
+            .resourceType();
+
+        if (
+          type === 'image'
+          ||
+          type === 'media'
+          ||
+          type === 'font'
+        ) {
+          await route.abort();
+          return;
+        }
+
+        await route.continue();
+      }
+    );
 
 
     const page =
@@ -2377,6 +2717,18 @@ async function scanOneSuperLikeMonitor(
     );
 
 
+    /*
+     * 后续分页始终以微博前端真实发出的第一页 sort_time 请求为模板。
+     */
+    const sortTimeRequestTemplateUrl =
+      firstSortTimeResult.url;
+
+    const sortTimeRequestTemplateHeaders =
+      firstSortTimeResult.requestHeaders
+      ||
+      {};
+
+
     let current =
       firstSortTimeResult;
 
@@ -2394,11 +2746,9 @@ async function scanOneSuperLikeMonitor(
           monitor.id,
           current.json,
           seenThisRun,
-          browser,
-          config,
-          profileCache,
+          seenUidThisRun,
           deleteUidSet,
-          existingUidSet
+          checkpoint
         );
 
 
@@ -2406,42 +2756,55 @@ async function scanOneSuperLikeMonitor(
         const key
         of Object.keys(total)
       ) {
-        total[key] +=
-          pageStats[key]
-          || 0;
+        if (
+          typeof pageStats[key]
+          === 'number'
+        ) {
+          total[key] +=
+            pageStats[key]
+            || 0;
+        }
       }
 
 
-      totalExisting +=
-        pageStats.existingInDb;
+      if (
+        pageStats.newestSeen
+        &&
+        (
+          !newestThisRound
+          ||
+          pageStats.newestSeen.createdAtMs >
+            newestThisRound.createdAtMs
+        )
+      ) {
+        newestThisRound =
+          pageStats.newestSeen;
+      }
 
 
       console.log(
         [
           `[第${pageNumber}页]`,
           `Post=${pageStats.found}`,
-          `DB已有=${pageStats.existingInDb}`,
-          `累计DB已有=${totalExisting}`,
+          `同UID重复=${pageStats.duplicateUidInRun}`,
+          `DB保留=${pageStats.existingInDb}`,
           `评论>=20=${pageStats.commentsFull}`,
           `SuperLike=${pageStats.hasSuperLike}`,
-          `Profile检查=${pageStats.profileChecked}`,
-          `Profile已超Like=${pageStats.profileHasSuperLike}`,
-          `Profile失败=${pageStats.profileCheckFailed}`,
           `待删UID=${pageStats.deleteQueued}`,
-          `新增=${pageStats.inserted}`
+          `新增=${pageStats.inserted}`,
+          `更新UID=${pageStats.replaced}`
         ].join(' | ')
       );
 
 
       if (
-        totalExisting >
-        EXISTING_STOP_THRESHOLD
+        pageStats.checkpointReached
       ) {
         stopReason =
-          `累计发现 ${totalExisting} 条 DB 已存在 post_id`;
+          '已找到上一轮最新位置';
 
         console.log(
-          `[SuperLike] DB旧Post已超过 ${EXISTING_STOP_THRESHOLD}，结束本轮。`
+          '[SuperLike] 已找到上一轮最新位置，结束本轮。'
         );
 
         break;
@@ -2460,63 +2823,23 @@ async function scanOneSuperLikeMonitor(
 
 
       /*
-       * 下一页：
-       * 先监听 sort_time，再滚动触发微博前端真实 AJAX。
+       * 下一页改为直接 AJAX：
+       *
+       * 从当前 sort_time JSON 的 moreInfo.params 读取
+       * page / since_id / max_id，
+       * 然后在已经打开的 weibo.com 页面上下文里直接 fetch。
+       *
+       * 不再滚动页面，不再触发图片/推荐/埋点等额外请求。
        */
-      const nextWaiter =
-        waitForChaohuaResponse(
-          page,
-          sortTimeFlowId,
-          FEED_WAIT_MS
+      const nextParams =
+        extractNextPageParams(
+          current.json
         );
 
 
-      console.log(
-        '[SuperLike] 滚动页面，等待下一页 sort_time AJAX...'
-      );
-
-
-      await triggerNextPage(
-        page
-      );
-
-
-      let next =
-        await nextWaiter;
-
-
-      if (next?.http418) {
-        throw new Weibo418Error('sort_time 下一页返回 HTTP 418');
-      }
-
-
-      /*
-       * 第一次没触发时，再滚一次。
-       */
-      if (!next) {
-        const retryWaiter =
-          waitForChaohuaResponse(
-            page,
-            sortTimeFlowId,
-            FEED_WAIT_MS
-          );
-
-        await triggerNextPage(
-          page
-        );
-
-        next =
-          await retryWaiter;
-
-        if (next?.http418) {
-          throw new Weibo418Error('sort_time 重试返回 HTTP 418');
-        }
-      }
-
-
-      if (!next) {
+      if (!nextParams) {
         stopReason =
-          `第${pageNumber}页后未触发下一页 sort_time AJAX`;
+          `第${pageNumber}页没有下一页参数`;
 
         console.log(
           `[SuperLike] ${stopReason}`
@@ -2526,8 +2849,89 @@ async function scanOneSuperLikeMonitor(
       }
 
 
-      current =
-        next;
+      const nextUrl =
+        buildChaohuaUrl(
+          sortTimeFlowId,
+          nextParams,
+          sortTimeRequestTemplateUrl
+        );
+
+
+      console.log(
+        `[SuperLike] 直接请求下一页 sort_time：page=${nextParams.page}`
+      );
+
+
+      const nextResult =
+        await fetchChaohuaInPage(
+          page,
+          nextUrl,
+          sortTimeRequestTemplateHeaders
+        );
+
+
+      if (
+        nextResult.httpStatus === 418
+      ) {
+        throw new Weibo418Error(
+          'sort_time 下一页返回 HTTP 418'
+        );
+      }
+
+
+      if (
+        !nextResult.ok
+      ) {
+        stopReason =
+          `sort_time 下一页 HTTP ${nextResult.httpStatus}`;
+
+        console.log(
+          `[SuperLike] ${stopReason}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] 模板URL=${sortTimeRequestTemplateUrl}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] 下一页URL=${nextUrl}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] Response=${nextResult.text || '-'}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] 模板Header=${Object.keys(
+            sortTimeRequestTemplateHeaders
+            ||
+            {}
+          ).join(',')}`
+        );
+
+        break;
+      }
+
+
+      current = {
+        url:
+          nextUrl,
+
+        page:
+          nextParams.page,
+
+        json:
+          nextResult.json
+      };
+
+
+      if (
+        PAGE_DELAY_MS > 0
+      ) {
+        await page.waitForTimeout(
+          PAGE_DELAY_MS
+        );
+      }
     }
 
 
@@ -2544,6 +2948,34 @@ async function scanOneSuperLikeMonitor(
 
       } catch {
         // ignore
+      }
+    }
+
+
+    /*
+     * 只有本轮确实看到了有效的最新帖子，才推进 checkpoint。
+     * 即使后面因为 checkpoint 命中而停止，也以本轮最前面的最新帖为新 checkpoint。
+     */
+    if (
+      newestThisRound
+    ) {
+      try {
+        saveScanCheckpoint(
+          monitor.id,
+          newestThisRound.postId,
+          newestThisRound.createdAt,
+          newestThisRound.createdAtMs
+        );
+
+        console.log(
+          `[SuperLike][Checkpoint更新] ${newestThisRound.createdAt || '-'} / ${newestThisRound.postId}`
+        );
+
+      } catch (error) {
+        console.error(
+          '[SuperLike][Checkpoint更新失败]',
+          error
+        );
       }
     }
 
@@ -2601,21 +3033,6 @@ async function scanOneSuperLikeMonitor(
     );
 
     console.log(
-      'Profile实际请求UID数：',
-      total.profileChecked
-    );
-
-    console.log(
-      'Profile确认已有SuperLike：',
-      total.profileHasSuperLike
-    );
-
-    console.log(
-      'Profile检查失败：',
-      total.profileCheckFailed
-    );
-
-    console.log(
       '本Monitor新增待删UID：',
       total.deleteQueued
     );
@@ -2626,8 +3043,18 @@ async function scanOneSuperLikeMonitor(
     );
 
     console.log(
-      '新增：',
+      '同UID本轮重复：',
+      total.duplicateUidInRun
+    );
+
+    console.log(
+      '新增UID：',
       total.inserted
+    );
+
+    console.log(
+      '更新UID最新帖：',
+      total.replaced
     );
 
     console.log(
@@ -2666,18 +3093,11 @@ async function scanSuperLikePosts() {
 
   try {
     initDatabase();
+    initSuperLikeCheckpointTable();
 
 
     const deleteUidSet =
       new Set();
-
-    const existingUidSet =
-      getExistingSuperLikeUids();
-
-    console.log(
-      `[SuperLike] 本轮开始时数据库候选UID=${existingUidSet.size}`
-    );
-
 
     const monitors =
       getSuperLikeMonitors();
@@ -2711,8 +3131,7 @@ async function scanSuperLikePosts() {
       try {
         await scanOneSuperLikeMonitor(
           monitor,
-          deleteUidSet,
-          existingUidSet
+          deleteUidSet
         );
 
       } catch (error) {
@@ -2795,9 +3214,20 @@ async function runSuperLikeRoundSafely(label = '本轮') {
 }
 
 
+function getNormalScanIntervalMs() {
+  const hour =
+    new Date()
+      .getHours();
+
+  return hour >= 19
+    ? NIGHT_SCAN_INTERVAL_MS
+    : DAY_SCAN_INTERVAL_MS;
+}
+
+
 function getNextDelayMs(result) {
   if (!result?.rateLimited) {
-    return SCAN_INTERVAL_MS;
+    return getNormalScanIntervalMs();
   }
 
   return consecutive418 <= 1
@@ -2827,7 +3257,11 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    `# 正常间隔 ${SCAN_INTERVAL_MS / 60000} 分钟`
+    `# 00:00-18:59：每 ${DAY_SCAN_INTERVAL_MS / 60000} 分钟`
+  );
+
+  console.log(
+    `# 19:00-23:59：每 ${NIGHT_SCAN_INTERVAL_MS / 60000} 分钟`
   );
 
   console.log(
@@ -2847,11 +3281,15 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    `# DB已有 post_id > ${EXISTING_STOP_THRESHOLD} 时结束`
+    '# 命中上一轮 checkpoint（最新时间 + post_id）时结束'
   );
 
   console.log(
-    '# 评论<20 + 无SuperLike -> 入库'
+    '# 每个 monitor + UID 只保留一条最新帖子'
+  );
+
+  console.log(
+    '# 评论<20 + feed无chao_like -> 入库（扫描过程不请求Profile）'
   );
 
   console.log(
