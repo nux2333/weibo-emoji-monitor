@@ -58,7 +58,7 @@ const POST_DELAY_MS =
 /*
  * 与 scan-superlike 保持一致：
  *
- * 评论 > 21
+ * 评论 >= 21
  * → 删除
  */
 const MAX_COMMENTS = 21;
@@ -1706,7 +1706,7 @@ async function recheckOneMonitor(
   );
 
   console.log(
-    `因评论>${MAX_COMMENTS}删除：${stats.deletedByComments}`
+    `因评论>=${MAX_COMMENTS}删除：${stats.deletedByComments}`
   );
 
   console.log(
@@ -2958,7 +2958,7 @@ async function runLightCommentRecheck(signal = null) {
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式2 浏览器AJAX评论复检');
   console.log('# 单个 headless Chromium + 单个 Page + 页面内 buildComments fetch');
-  console.log(`# 评论 > ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
+  console.log(`# 评论 >= ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
   console.log('# 其余 → 只更新 comments_count');
   console.log('# Hot Queue：只检查到期帖子，不再全库轮询');
   console.log('# 优先级：18-20 > 15-17 > 10-14 > 5-9 > 0-4');
@@ -3065,7 +3065,7 @@ async function runLightCommentRecheck(signal = null) {
         Number(result.commentsCount);
 
       if (
-        commentsCount >
+        commentsCount >=
         LIGHT_COMMENT_DELETE_THRESHOLD
       ) {
         const deleted =
@@ -4313,7 +4313,7 @@ function askRecheckMode() {
     console.log('');
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
-    console.log('2 = 评论 Hot Queue（每1分钟，仅检查到期/高评论帖子，评论 > 21 删除）');
+    console.log('2 = 评论 Hot Queue（每1分钟，仅检查到期/高评论帖子，评论 >= 21 删除）');
     console.log('3 = Profile低频兜底（每轮最多少量UID；晚19点后暂停，Mode4优先）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
@@ -4462,7 +4462,7 @@ async function main() {
     );
 
     console.log(
-      `# 评论>${MAX_COMMENTS} → 删除当前帖子`
+      `# 评论>=${MAX_COMMENTS} → 删除当前帖子`
     );
 
     console.log(
