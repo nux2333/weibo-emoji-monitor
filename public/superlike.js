@@ -401,24 +401,6 @@ function renderTable() {
       </td>
 
 
-      <td class="time">
-        ${escapeHtml(
-          formatTime(
-            row.first_seen_at
-          )
-        )}
-      </td>
-
-
-      <td class="time">
-        ${escapeHtml(
-          formatTime(
-            row.last_seen_at
-          )
-        )}
-      </td>
-
-
       <td>
 
         ${

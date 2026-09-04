@@ -120,6 +120,22 @@ function parseTopicHomepage(topicUrl) {
   const containerId =
     match[1];
 
+  /*
+   * 例如：
+   *
+   * 100808f1d33f71dff693a2708cb3e8ef584a44
+   *
+   * ↓
+   *
+   * hash =
+   * f1d33f71dff693a2708cb3e8ef584a44
+   */
+  const topicHash =
+    containerId.replace(
+      /^100808/,
+      ''
+    );
+
   return {
     homepage:
       `https://weibo.com/p/${containerId}`,
@@ -128,7 +144,25 @@ function parseTopicHomepage(topicUrl) {
       containerId,
 
     feedFlowId:
-      `${containerId}_-_feed`
+      `${containerId}_-_feed`,
+
+    topicHash:
+
+      topicHash,
+
+    /*
+     * 用户在这个超话里的 profile
+     */
+    profileContainerId:
+      `231140${topicHash}_-_profile_inpage`,
+
+    /*
+     * 超LIKE榜
+     *
+     * profile 请求的 lfid 要用到
+     */
+    chaoLikeListContainerId:
+      `231140${topicHash}_-_chaolikenew`
   };
 }
 
@@ -1331,7 +1365,300 @@ async function triggerNextPage(
     // ignore
   }
 }
+/**
+ * ============================================================
+ * 构造用户 profile_inpage API
+ * ============================================================
+ */
+function buildProfileInPageApiUrl(
+  config,
+  uid
+) {
+  const url =
+    new URL(
+      'https://m.weibo.cn/api/container/getIndex'
+    );
 
+  url.searchParams.set(
+    'containerid',
+    config.profileContainerId
+  );
+
+  /*
+   * 我们需要最终得到类似：
+   *
+   * target_uid%25238013199784
+   *
+   * URLSearchParams 本身还会再 encode 一次，
+   * 所以这里写：
+   *
+   * target_uid%238013199784
+   */
+  url.searchParams.set(
+    'extparam',
+    `target_uid%23${uid}`
+  );
+
+  url.searchParams.set(
+    'luicode',
+    '10000011'
+  );
+
+  url.searchParams.set(
+    'lfid',
+    config.chaoLikeListContainerId
+  );
+
+  url.searchParams.set(
+    'launchid',
+    '10000360-page_H5'
+  );
+
+  return url.toString();
+}
+
+
+/**
+ * ============================================================
+ * 递归判断 profile response 是否有超LIKE
+ * ============================================================
+ */
+function profileHasSuperLike(
+  value,
+  visited = new Set()
+) {
+  if (
+    value === null
+    ||
+    value === undefined
+  ) {
+    return false;
+  }
+
+
+  /*
+   * string：
+   *
+   * scheme 里面可能出现：
+   *
+   * union_id=chao_like
+   */
+  if (
+    typeof value === 'string'
+  ) {
+    const lower =
+      value.toLowerCase();
+
+
+    if (
+      lower.includes(
+        'union_id=chao_like'
+      )
+      ||
+      lower.includes(
+        'union_id%3dchao_like'
+      )
+      ||
+      lower.includes(
+        'union_id%253dchao_like'
+      )
+    ) {
+      return true;
+    }
+
+
+    return false;
+  }
+
+
+  if (
+    typeof value !== 'object'
+  ) {
+    return false;
+  }
+
+
+  /*
+   * 防止递归遇到循环对象
+   */
+  if (
+    visited.has(value)
+  ) {
+    return false;
+  }
+
+
+  visited.add(value);
+
+
+  /*
+   * 你给的真实 profile response 里：
+   *
+   * title_sub: "超LIKE"
+   */
+  if (
+    String(
+      value.title_sub
+      ?? ''
+    )
+      .trim()
+      .toLowerCase()
+    ===
+    '超like'
+  ) {
+    return true;
+  }
+
+
+  const children =
+    Array.isArray(value)
+      ? value
+      : Object.values(value);
+
+
+  for (
+    const child
+    of children
+  ) {
+    if (
+      profileHasSuperLike(
+        child,
+        visited
+      )
+    ) {
+      return true;
+    }
+  }
+
+
+  return false;
+}
+
+
+/**
+ * ============================================================
+ * 请求这个 UID 在当前超话里的 profile
+ * ============================================================
+ */
+async function checkUserSuperLikeByProfile(
+  page,
+  config,
+  uid
+) {
+  const url =
+    buildProfileInPageApiUrl(
+      config,
+      uid
+    );
+
+
+  try {
+    const response =
+      await page.request.get(
+        url,
+        {
+          timeout:
+            15000,
+
+          headers: {
+            Accept:
+              'application/json, text/plain, */*',
+
+            Referer:
+              `https://m.weibo.cn/p/index?containerid=${encodeURIComponent(
+                config.profileContainerId
+              )}`
+          }
+        }
+      );
+
+
+    const status =
+      response.status();
+
+
+    if (
+      status < 200
+      ||
+      status >= 300
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status,
+        url,
+        message:
+          `HTTP ${status}`
+      };
+    }
+
+
+    let json;
+
+
+    try {
+      json =
+        await response.json();
+
+    } catch (error) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status,
+        url,
+        message:
+          `JSON解析失败：${error.message}`
+      };
+    }
+
+
+    /*
+     * m.weibo API 正常一般：
+     *
+     * ok: 1
+     */
+    if (
+      Number(
+        json?.ok
+        ?? 1
+      )
+      !== 1
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status,
+        url,
+        message:
+          `API ok=${json?.ok}`
+      };
+    }
+
+
+    return {
+      ok: true,
+
+      hasSuperLike:
+        profileHasSuperLike(
+          json
+        ),
+
+      status,
+      url
+    };
+
+
+  } catch (error) {
+    return {
+      ok: false,
+      hasSuperLike: null,
+      status: null,
+      url,
+      message:
+        error.message
+    };
+  }
+}
 
 /**
  * ============================================================
@@ -1339,10 +1666,13 @@ async function triggerNextPage(
  * ============================================================
  */
 
-function processPagePosts(
+async function processPagePosts(
   monitorId,
   json,
-  seenThisRun
+  seenThisRun,
+  page,
+  config,
+  profileCache
 ) {
   const stats = {
     found: 0,
@@ -1350,7 +1680,13 @@ function processPagePosts(
     existingInDb: 0,
     unknownComments: 0,
     commentsFull: 0,
+
     hasSuperLike: 0,
+
+    profileChecked: 0,
+    profileHasSuperLike: 0,
+    profileCheckFailed: 0,
+
     target: 0,
     inserted: 0
   };
@@ -1377,12 +1713,16 @@ function processPagePosts(
     }
 
 
+    /*
+     * 本轮 response 去重
+     */
     if (
       seenThisRun.has(
         postId
       )
     ) {
       stats.duplicateInRun++;
+
       continue;
     }
 
@@ -1391,19 +1731,27 @@ function processPagePosts(
       postId
     );
 
+
     stats.found++;
 
 
+    /*
+     * DB 已存在
+     */
     if (
       postIdExists(
         postId
       )
     ) {
       stats.existingInDb++;
+
       continue;
     }
 
 
+    /*
+     * 评论数量
+     */
     const commentsCount =
       getCommentsCount(
         post
@@ -1414,29 +1762,163 @@ function processPagePosts(
       commentsCount === null
     ) {
       stats.unknownComments++;
+
       continue;
     }
 
 
+    /*
+     * >=20 不要
+     */
     if (
       commentsCount >=
       MAX_COMMENTS
     ) {
       stats.commentsFull++;
+
       continue;
     }
 
 
+    /*
+     * ==========================
+     * 第一层判断
+     *
+     * 最新发帖 Response 本身
+     * 已经明确有 chao_like
+     *
+     * 那就直接排除。
+     * ==========================
+     */
     if (
       hasSuperLike(
         post
       )
     ) {
       stats.hasSuperLike++;
+
       continue;
     }
 
 
+    /*
+     * ==========================
+     * 第二层判断
+     *
+     * 帖子里没有 chao_like
+     *
+     * → 取 UID
+     * → profile_inpage 再确认
+     * ==========================
+     */
+    const uid =
+      getUid(
+        post
+      );
+
+
+    if (!uid) {
+      stats.profileCheckFailed++;
+
+
+      console.log(
+        `[SuperLike][Profile跳过] Post=${postId} 没有UID，不入库`
+      );
+
+
+      continue;
+    }
+
+
+    /*
+     * 同一个 UID 一轮只请求一次
+     */
+    let profileResult =
+      profileCache.get(
+        String(uid)
+      );
+
+
+    if (!profileResult) {
+      console.log(
+        `[SuperLike][Profile检查] UID=${uid}`
+      );
+
+
+      profileResult =
+        await checkUserSuperLikeByProfile(
+          page,
+          config,
+          uid
+        );
+
+
+      profileCache.set(
+        String(uid),
+        profileResult
+      );
+
+
+      stats.profileChecked++;
+    }
+
+
+    /*
+     * profile 请求失败：
+     *
+     * 不把它当成“没有超LIKE”
+     *
+     * 为避免误入库，直接跳过。
+     */
+    if (
+      !profileResult.ok
+    ) {
+      stats.profileCheckFailed++;
+
+
+      console.log(
+        `[SuperLike][Profile失败] UID=${uid} | ${
+          profileResult.message
+          ||
+          'unknown'
+        }`
+      );
+
+
+      continue;
+    }
+
+
+    /*
+     * Profile 明确确认：
+     * 已经有超LIKE
+     */
+    if (
+      profileResult.hasSuperLike
+    ) {
+      stats.profileHasSuperLike++;
+
+      stats.hasSuperLike++;
+
+
+      console.log(
+        `[SuperLike][Profile排除] UID=${uid} 已有超LIKE`
+      );
+
+
+      continue;
+    }
+
+
+    /*
+     * 到这里才是真正候选：
+     *
+     * 评论 < 20
+     * +
+     * 帖子没有 chao_like
+     * +
+     * Profile 也没有超LIKE
+     */
     stats.target++;
 
 
@@ -1467,6 +1949,7 @@ function processPagePosts(
         );
       }
 
+
     } catch (error) {
       if (
         String(
@@ -1478,8 +1961,10 @@ function processPagePosts(
           )
       ) {
         stats.existingInDb++;
+
         continue;
       }
+
 
       throw error;
     }
@@ -1522,6 +2007,12 @@ async function scanOneSuperLikeMonitor(
   const seenThisRun =
     new Set();
 
+	/*
+	 * 同一个 UID 在本轮扫描中，
+	 * profile_inpage 只请求一次。
+	 */
+  const profileCache =
+	  new Map();
 
   const total = {
     found: 0,
@@ -1753,12 +2244,15 @@ async function scanOneSuperLikeMonitor(
       pagesScanned++;
 
 
-      const pageStats =
-        processPagePosts(
-          monitor.id,
-          current.json,
-          seenThisRun
-        );
+	  const pageStats =
+	    await processPagePosts(
+	      monitor.id,
+	      current.json,
+	      seenThisRun,
+	      page,
+	      config,
+	      profileCache
+	    );
 
 
       for (
