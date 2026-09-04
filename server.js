@@ -28,6 +28,67 @@ const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me';
 
 app.use(express.json({ limit: '2mb' }));
+
+/*
+ * ============================================================
+ * Public access control
+ *
+ * Local access:
+ *   - allow all existing pages / APIs
+ *
+ * Cloudflare Tunnel access:
+ *   - only expose the SuperLike page
+ *   - only expose the exact static assets used by SuperLike
+ *   - only expose /api/superlike-posts
+ *
+ * Other public routes return 404.
+ * ============================================================
+ */
+app.use((req, res, next) => {
+  const isCloudflareRequest =
+    Boolean(
+      req.headers['cf-ray']
+      ||
+      req.headers['cf-connecting-ip']
+    );
+
+  /*
+   * localhost / normal local access:
+   * keep the original behavior unchanged.
+   */
+  if (!isCloudflareRequest) {
+    return next();
+  }
+
+  /*
+   * Exact public allowlist.
+   *
+   * Do not allow every .js/.css file, otherwise files such as
+   * admin.js could still be fetched directly from /public.
+   */
+  const allowedPaths = new Set([
+    '/superlike',
+    '/superlike.html',
+    '/superlike.js',
+    '/style.css',
+    '/api/superlike-posts',
+    '/favicon.ico'
+  ]);
+
+  if (allowedPaths.has(req.path)) {
+    return next();
+  }
+
+  /*
+   * Hide all other pages / APIs from public access.
+   * Return 404 instead of 403 so the route is not advertised.
+   */
+  return res
+    .status(404)
+    .type('text/plain')
+    .send('Not Found');
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 function checkAdmin(req, res, next) {
