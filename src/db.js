@@ -279,6 +279,11 @@ function initDatabase() {
 	);
 
 
+	ensureColumn(
+	  'monitors',
+	  'monitor_type',
+	  "TEXT NOT NULL DEFAULT 'comments'"
+	);
 	/*
 	 * 索引
 	 */

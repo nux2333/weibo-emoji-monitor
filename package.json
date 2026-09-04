@@ -5,15 +5,11 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "rebuild-comments": "node src/rebuild-comments.js"
+    "rebuild-comments": "node src/rebuild-comments.js",
+    "scan-superlike": "node src/superlike-scanner.js"
   },
   "dependencies": {
     "express": "^5.1.0",
     "playwright": "^1.55.0"
   }
-}
-
-"scripts": {
-  "start": "node server.js",
-  "scan-superlike": "node scripts/superlike-batch.js"
 }

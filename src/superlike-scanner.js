@@ -17,8 +17,8 @@ const { db } = require('./db');
  * SUPERLIKE_SCAN_INTERVAL_MS
  */
 const SCAN_INTERVAL_MS =
-  Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
-  || 15 * 60 * 1000;
+	Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
+	|| 15 * 60 * 1000;
 
 
 /**
@@ -30,16 +30,16 @@ const SCAN_INTERVAL_MS =
  * 可以继续调大。
  */
 const SCROLL_TIMES =
-  Number(process.env.SUPERLIKE_SCROLL_TIMES)
-  || 30;
+	Number(process.env.SUPERLIKE_SCROLL_TIMES)
+	|| 30;
 
 
 /**
  * 每次滚动后的等待时间。
  */
 const SCROLL_DELAY_MS =
-  Number(process.env.SUPERLIKE_SCROLL_DELAY_MS)
-  || 1000;
+	Number(process.env.SUPERLIKE_SCROLL_DELAY_MS)
+	|| 1000;
 
 
 /**
@@ -47,8 +47,8 @@ const SCROLL_DELAY_MS =
  * 等待接口加载。
  */
 const INITIAL_WAIT_MS =
-  Number(process.env.SUPERLIKE_INITIAL_WAIT_MS)
-  || 3000;
+	Number(process.env.SUPERLIKE_INITIAL_WAIT_MS)
+	|| 3000;
 
 
 /**
@@ -76,10 +76,12 @@ let running = false;
  */
 function initSuperLikeTable() {
 
-  db.exec(`
+	db.exec(`
     CREATE TABLE IF NOT EXISTS superlike_posts (
 
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+      monitor_id INTEGER,
 
       post_id TEXT NOT NULL UNIQUE,
 
@@ -105,127 +107,139 @@ function initSuperLikeTable() {
 
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-      raw_json TEXT
+      raw_json TEXT,
 
+      FOREIGN KEY(monitor_id)
+        REFERENCES monitors(id)
+        ON DELETE CASCADE
     )
   `);
 
 
-  /**
-   * 老数据库自动补字段。
-   */
-  ensureColumn(
-    'superlike_posts',
-    'uid',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'monitor_id',
+		'INTEGER'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'username',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'uid',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'post_link',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'username',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'post_text',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'post_link',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'comments_count',
-    'INTEGER NOT NULL DEFAULT 0'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'post_text',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'current_has_superlike',
-    'INTEGER NOT NULL DEFAULT 0'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'comments_count',
+		'INTEGER NOT NULL DEFAULT 0'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'icon_summary',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'current_has_superlike',
+		'INTEGER NOT NULL DEFAULT 0'
+	);
 
-  /**
-   * 近7天经验值。
-   *
-   * NULL：
-   * 目前未知
-   *
-   * 0：
-   * 确认经验值为0
-   *
-   * 所以不要设置DEFAULT 0。
-   */
-  ensureColumn(
-    'superlike_posts',
-    'experience_7d',
-    'INTEGER'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'icon_summary',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'post_created_at',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'experience_7d',
+		'INTEGER'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'first_seen_at',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'post_created_at',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'last_seen_at',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'first_seen_at',
+		'TEXT'
+	);
 
-  ensureColumn(
-    'superlike_posts',
-    'raw_json',
-    'TEXT'
-  );
+	ensureColumn(
+		'superlike_posts',
+		'last_seen_at',
+		'TEXT'
+	);
+
+	ensureColumn(
+		'superlike_posts',
+		'raw_json',
+		'TEXT'
+	);
 
 
-  /**
-   * 索引
-   */
-  db.exec(`
+	db.exec(`
+    CREATE INDEX IF NOT EXISTS
+      idx_superlike_posts_monitor
+    ON superlike_posts(monitor_id)
+  `);
+
+	db.exec(`
     CREATE INDEX IF NOT EXISTS
       idx_superlike_posts_uid
     ON superlike_posts(uid)
   `);
 
-  db.exec(`
+	db.exec(`
     CREATE INDEX IF NOT EXISTS
       idx_superlike_posts_comments_count
     ON superlike_posts(comments_count)
   `);
 
-  db.exec(`
+	db.exec(`
     CREATE INDEX IF NOT EXISTS
       idx_superlike_posts_superlike
     ON superlike_posts(current_has_superlike)
   `);
 
-  db.exec(`
+	db.exec(`
     CREATE INDEX IF NOT EXISTS
       idx_superlike_posts_last_seen
     ON superlike_posts(last_seen_at)
   `);
 }
 
+function getSuperLikeMonitors() {
+
+	return db.prepare(`
+    SELECT
+      id,
+      name,
+      url,
+      enabled
+    FROM monitors
+    WHERE enabled = 1
+      AND monitor_type = 'superlike'
+    ORDER BY id
+  `).all();
+}
 
 /**
  * ============================================================
@@ -233,35 +247,35 @@ function initSuperLikeTable() {
  * ============================================================
  */
 function ensureColumn(
-  tableName,
-  columnName,
-  columnType
+	tableName,
+	columnName,
+	columnType
 ) {
 
-  const columns =
-    db.prepare(
-      `PRAGMA table_info(${tableName})`
-    ).all();
+	const columns =
+		db.prepare(
+			`PRAGMA table_info(${tableName})`
+		).all();
 
 
-  const exists =
-    columns.some(
-      column =>
-        column.name === columnName
-    );
+	const exists =
+		columns.some(
+			column =>
+				column.name === columnName
+		);
 
 
-  if (exists) {
-    return;
-  }
+	if (exists) {
+		return;
+	}
 
 
-  console.log(
-    `[SuperLike] 增加数据库字段：${columnName}`
-  );
+	console.log(
+		`[SuperLike] 增加数据库字段：${columnName}`
+	);
 
 
-  db.exec(`
+	db.exec(`
     ALTER TABLE ${tableName}
     ADD COLUMN ${columnName} ${columnType}
   `);
@@ -275,57 +289,57 @@ function ensureColumn(
  */
 function stripHtml(value) {
 
-  if (
-    value === null ||
-    value === undefined
-  ) {
-    return '';
-  }
+	if (
+		value === null ||
+		value === undefined
+	) {
+		return '';
+	}
 
 
-  return String(value)
+	return String(value)
 
-    .replace(
-      /<br\s*\/?>/gi,
-      '\n'
-    )
+		.replace(
+			/<br\s*\/?>/gi,
+			'\n'
+		)
 
-    .replace(
-      /<[^>]+>/g,
-      ''
-    )
+		.replace(
+			/<[^>]+>/g,
+			''
+		)
 
-    .replace(
-      /&nbsp;/gi,
-      ' '
-    )
+		.replace(
+			/&nbsp;/gi,
+			' '
+		)
 
-    .replace(
-      /&lt;/gi,
-      '<'
-    )
+		.replace(
+			/&lt;/gi,
+			'<'
+		)
 
-    .replace(
-      /&gt;/gi,
-      '>'
-    )
+		.replace(
+			/&gt;/gi,
+			'>'
+		)
 
-    .replace(
-      /&amp;/gi,
-      '&'
-    )
+		.replace(
+			/&amp;/gi,
+			'&'
+		)
 
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
+		.replace(
+			/&quot;/gi,
+			'"'
+		)
 
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
+		.replace(
+			/&#39;/gi,
+			"'"
+		)
 
-    .trim();
+		.trim();
 }
 
 
@@ -336,22 +350,22 @@ function stripHtml(value) {
  */
 function getPostId(post) {
 
-  const value =
-    post?.idstr
-    ?? post?.mid
-    ?? post?.id;
+	const value =
+		post?.idstr
+		?? post?.mid
+		?? post?.id;
 
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return '';
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return '';
+	}
 
 
-  return String(value);
+	return String(value);
 }
 
 
@@ -362,22 +376,22 @@ function getPostId(post) {
  */
 function getUid(post) {
 
-  const value =
-    post?.user?.idstr
-    ?? post?.user?.id
-    ?? post?.uid;
+	const value =
+		post?.user?.idstr
+		?? post?.user?.id
+		?? post?.uid;
 
 
-  if (
-    value === null ||
-    value === undefined ||
-    value === ''
-  ) {
-    return '';
-  }
+	if (
+		value === null ||
+		value === undefined ||
+		value === ''
+	) {
+		return '';
+	}
 
 
-  return String(value);
+	return String(value);
 }
 
 
@@ -388,11 +402,11 @@ function getUid(post) {
  */
 function getUsername(post) {
 
-  return (
-    post?.user?.screen_name
-    ?? post?.user?.name
-    ?? null
-  );
+	return (
+		post?.user?.screen_name
+		?? post?.user?.name
+		?? null
+	);
 }
 
 
@@ -403,12 +417,12 @@ function getUsername(post) {
  */
 function getPostText(post) {
 
-  return stripHtml(
-    post?.text
-    ?? post?.raw_text
-    ?? post?.text_raw
-    ?? ''
-  );
+	return stripHtml(
+		post?.text
+		?? post?.raw_text
+		?? post?.text_raw
+		?? ''
+	);
 }
 
 
@@ -419,24 +433,24 @@ function getPostText(post) {
  */
 function getCommentsCount(post) {
 
-  const value =
-    post?.comments_count
-    ?? post?.comment_count
-    ?? 0;
+	const value =
+		post?.comments_count
+		?? post?.comment_count
+		?? 0;
 
 
-  const number =
-    Number(value);
+	const number =
+		Number(value);
 
 
-  if (
-    !Number.isFinite(number)
-  ) {
-    return 0;
-  }
+	if (
+		!Number.isFinite(number)
+	) {
+		return 0;
+	}
 
 
-  return number;
+	return number;
 }
 
 
@@ -447,15 +461,15 @@ function getCommentsCount(post) {
  */
 function getPostCreatedAt(post) {
 
-  const value =
-    post?.created_at
-    ?? post?.createdAt
-    ?? null;
+	const value =
+		post?.created_at
+		?? post?.createdAt
+		?? null;
 
 
-  return value
-    ? String(value)
-    : null;
+	return value
+		? String(value)
+		: null;
 }
 
 
@@ -466,76 +480,76 @@ function getPostCreatedAt(post) {
  */
 function getPostLink(post) {
 
-  const candidates = [
+	const candidates = [
 
-    post?.scheme,
+		post?.scheme,
 
-    post?.url,
+		post?.url,
 
-    post?.mblog_url,
+		post?.mblog_url,
 
-    post?.detail_url
+		post?.detail_url
 
-  ];
-
-
-  for (
-    const value of candidates
-  ) {
-
-    if (
-      typeof value !== 'string'
-    ) {
-      continue;
-    }
+	];
 
 
-    /**
-     * 某些scheme可能是：
-     *
-     * sinaweibo://...
-     *
-     * 这种暂时不要。
-     */
-    if (
-      value.startsWith(
-        'http://'
-      )
-      ||
-      value.startsWith(
-        'https://'
-      )
-    ) {
+	for (
+		const value of candidates
+	) {
 
-      if (
-        value.includes(
-          'weibo'
-        )
-      ) {
-
-        return value;
-      }
-    }
-  }
+		if (
+			typeof value !== 'string'
+		) {
+			continue;
+		}
 
 
-  /**
-   * 没拿到原始Link时，
-   * 使用移动端detail。
-   */
-  const postId =
-    getPostId(post);
+		/**
+		 * 某些scheme可能是：
+		 *
+		 * sinaweibo://...
+		 *
+		 * 这种暂时不要。
+		 */
+		if (
+			value.startsWith(
+				'http://'
+			)
+			||
+			value.startsWith(
+				'https://'
+			)
+		) {
+
+			if (
+				value.includes(
+					'weibo'
+				)
+			) {
+
+				return value;
+			}
+		}
+	}
 
 
-  if (postId) {
+	/**
+	 * 没拿到原始Link时，
+	 * 使用移动端detail。
+	 */
+	const postId =
+		getPostId(post);
 
-    return (
-      `https://m.weibo.cn/detail/${postId}`
-    );
-  }
+
+	if (postId) {
+
+		return (
+			`https://m.weibo.cn/detail/${postId}`
+		);
+	}
 
 
-  return '';
+	return '';
 }
 
 
@@ -546,68 +560,68 @@ function getPostLink(post) {
  */
 function looksLikePost(obj) {
 
-  if (
-    !obj ||
-    typeof obj !== 'object' ||
-    Array.isArray(obj)
-  ) {
+	if (
+		!obj ||
+		typeof obj !== 'object' ||
+		Array.isArray(obj)
+	) {
 
-    return false;
-  }
-
-
-  const postId =
-    obj.idstr
-    ?? obj.mid
-    ?? obj.id;
+		return false;
+	}
 
 
-  if (!postId) {
-    return false;
-  }
+	const postId =
+		obj.idstr
+		?? obj.mid
+		?? obj.id;
 
 
-  /**
-   * 必须有user。
-   *
-   * 主要为了避免把：
-   *
-   * 评论
-   * 用户资料
-   * 其他对象
-   *
-   * 错认为微博。
-   */
-  if (!obj.user) {
-    return false;
-  }
+	if (!postId) {
+		return false;
+	}
 
 
-  return (
+	/**
+	 * 必须有user。
+	 *
+	 * 主要为了避免把：
+	 *
+	 * 评论
+	 * 用户资料
+	 * 其他对象
+	 *
+	 * 错认为微博。
+	 */
+	if (!obj.user) {
+		return false;
+	}
 
-    obj.text !== undefined
 
-    ||
+	return (
 
-    obj.raw_text !== undefined
+		obj.text !== undefined
 
-    ||
+		||
 
-    obj.text_raw !== undefined
+		obj.raw_text !== undefined
 
-    ||
+		||
 
-    obj.comments_count !== undefined
+		obj.text_raw !== undefined
 
-    ||
+		||
 
-    obj.reposts_count !== undefined
+		obj.comments_count !== undefined
 
-    ||
+		||
 
-    obj.attitudes_count !== undefined
+		obj.reposts_count !== undefined
 
-  );
+		||
+
+		obj.attitudes_count !== undefined
+
+	);
 }
 
 
@@ -617,77 +631,77 @@ function looksLikePost(obj) {
  * ============================================================
  */
 function findPosts(
-  value,
-  result = [],
-  visited = new Set()
+	value,
+	result = [],
+	visited = new Set()
 ) {
 
-  if (
-    !value ||
-    typeof value !== 'object'
-  ) {
-    return result;
-  }
+	if (
+		!value ||
+		typeof value !== 'object'
+	) {
+		return result;
+	}
 
 
-  if (
-    visited.has(value)
-  ) {
-    return result;
-  }
+	if (
+		visited.has(value)
+	) {
+		return result;
+	}
 
 
-  visited.add(value);
+	visited.add(value);
 
 
-  if (
-    looksLikePost(value)
-  ) {
+	if (
+		looksLikePost(value)
+	) {
 
-    result.push(value);
-  }
-
-
-  if (
-    Array.isArray(value)
-  ) {
-
-    for (
-      const item of value
-    ) {
-
-      findPosts(
-        item,
-        result,
-        visited
-      );
-    }
+		result.push(value);
+	}
 
 
-    return result;
-  }
+	if (
+		Array.isArray(value)
+	) {
+
+		for (
+			const item of value
+		) {
+
+			findPosts(
+				item,
+				result,
+				visited
+			);
+		}
 
 
-  for (
-    const child
-    of Object.values(value)
-  ) {
-
-    if (
-      child &&
-      typeof child === 'object'
-    ) {
-
-      findPosts(
-        child,
-        result,
-        visited
-      );
-    }
-  }
+		return result;
+	}
 
 
-  return result;
+	for (
+		const child
+		of Object.values(value)
+	) {
+
+		if (
+			child &&
+			typeof child === 'object'
+		) {
+
+			findPosts(
+				child,
+				result,
+				visited
+			);
+		}
+	}
+
+
+	return result;
 }
 
 
@@ -714,64 +728,64 @@ function findPosts(
  */
 function hasSuperLike(post) {
 
-  if (!post?.user) {
-    return false;
-  }
+	if (!post?.user) {
+		return false;
+	}
 
 
-  let text;
+	let text;
 
 
-  try {
+	try {
 
-    text =
-      JSON.stringify(
-        post.user
-      ).toLowerCase();
+		text =
+			JSON.stringify(
+				post.user
+			).toLowerCase();
 
-  } catch {
+	} catch {
 
-    return false;
-  }
+		return false;
+	}
 
 
-  return (
+	return (
 
-    text.includes(
-      'chao_like'
-    )
+		text.includes(
+			'chao_like'
+		)
 
-    ||
+		||
 
-    text.includes(
-      'chaolike'
-    )
+		text.includes(
+			'chaolike'
+		)
 
-    ||
+		||
 
-    text.includes(
-      'chao-like'
-    )
+		text.includes(
+			'chao-like'
+		)
 
-    ||
+		||
 
-    text.includes(
-      'super_like'
-    )
+		text.includes(
+			'super_like'
+		)
 
-    ||
+		||
 
-    text.includes(
-      'superlike'
-    )
+		text.includes(
+			'superlike'
+		)
 
-    ||
+		||
 
-    text.includes(
-      '超like'
-    )
+		text.includes(
+			'超like'
+		)
 
-  );
+	);
 }
 
 
@@ -799,171 +813,171 @@ function hasSuperLike(post) {
  */
 function extractIcons(post) {
 
-  const user =
-    post?.user;
+	const user =
+		post?.user;
 
 
-  if (!user) {
-    return [];
-  }
+	if (!user) {
+		return [];
+	}
 
 
-  const result =
-    new Set();
+	const result =
+		new Set();
 
 
-  const visited =
-    new Set();
+	const visited =
+		new Set();
 
 
-  const iconKeyPattern =
-    /icon|badge|medal|label|level|pendant|title/i;
+	const iconKeyPattern =
+		/icon|badge|medal|label|level|pendant|title/i;
 
 
-  function walk(
-    value,
-    keyName = ''
-  ) {
+	function walk(
+		value,
+		keyName = ''
+	) {
 
-    if (
-      value === null ||
-      value === undefined
-    ) {
+		if (
+			value === null ||
+			value === undefined
+		) {
 
-      return;
-    }
-
-
-    /**
-     * String
-     */
-    if (
-      typeof value === 'string'
-    ) {
-
-      if (
-        !iconKeyPattern.test(
-          keyName
-        )
-      ) {
-
-        return;
-      }
+			return;
+		}
 
 
-      const text =
-        value.trim();
+		/**
+		 * String
+		 */
+		if (
+			typeof value === 'string'
+		) {
+
+			if (
+				!iconKeyPattern.test(
+					keyName
+				)
+			) {
+
+				return;
+			}
 
 
-      if (!text) {
-        return;
-      }
+			const text =
+				value.trim();
 
 
-      if (
-        text.length > 100
-      ) {
-
-        return;
-      }
+			if (!text) {
+				return;
+			}
 
 
-      /**
-       * 不要把图片地址
-       * 当成icon名称显示。
-       */
-      if (
-        /^https?:\/\//i.test(
-          text
-        )
-      ) {
+			if (
+				text.length > 100
+			) {
 
-        return;
-      }
+				return;
+			}
 
 
-      /**
-       * 不展示超Like。
-       *
-       * 因为有超Like的人
-       * 本来就不会进入候选池。
-       */
-      if (
-        /chao[_-]?like|chaolike|super[_-]?like|superlike|超like/i
-          .test(text)
-      ) {
+			/**
+			 * 不要把图片地址
+			 * 当成icon名称显示。
+			 */
+			if (
+				/^https?:\/\//i.test(
+					text
+				)
+			) {
 
-        return;
-      }
-
-
-      result.add(text);
-
-      return;
-    }
+				return;
+			}
 
 
-    /**
-     * Number / Boolean
-     */
-    if (
-      typeof value !== 'object'
-    ) {
-      return;
-    }
+			/**
+			 * 不展示超Like。
+			 *
+			 * 因为有超Like的人
+			 * 本来就不会进入候选池。
+			 */
+			if (
+				/chao[_-]?like|chaolike|super[_-]?like|superlike|超like/i
+					.test(text)
+			) {
+
+				return;
+			}
 
 
-    if (
-      visited.has(value)
-    ) {
-      return;
-    }
+			result.add(text);
+
+			return;
+		}
 
 
-    visited.add(value);
+		/**
+		 * Number / Boolean
+		 */
+		if (
+			typeof value !== 'object'
+		) {
+			return;
+		}
 
 
-    if (
-      Array.isArray(value)
-    ) {
-
-      for (
-        const item of value
-      ) {
-
-        walk(
-          item,
-          keyName
-        );
-      }
+		if (
+			visited.has(value)
+		) {
+			return;
+		}
 
 
-      return;
-    }
+		visited.add(value);
 
 
-    for (
-      const [
-        key,
-        child
-      ]
-      of Object.entries(value)
-    ) {
+		if (
+			Array.isArray(value)
+		) {
 
-      walk(
-        child,
-        key
-      );
-    }
-  }
+			for (
+				const item of value
+			) {
 
-
-  walk(user);
+				walk(
+					item,
+					keyName
+				);
+			}
 
 
-  return Array.from(
-    result
-  );
+			return;
+		}
+
+
+		for (
+			const [
+				key,
+				child
+			]
+			of Object.entries(value)
+		) {
+
+			walk(
+				child,
+				key
+			);
+		}
+	}
+
+
+	walk(user);
+
+
+	return Array.from(
+		result
+	);
 }
 
 
@@ -977,137 +991,142 @@ function extractIcons(post) {
  * 1. 无超Like
  * 2. 评论数 < 20
  */
-function saveTargetPost(post) {
+function saveTargetPost(
+	monitorId,
+	post
+) {
 
-  const postId =
-    getPostId(post);
-
-
-  if (!postId) {
-
-    return {
-
-      status: 'skip',
-
-      reason: 'no_post_id'
-
-    };
-  }
+	const postId =
+		getPostId(post);
 
 
-  const commentsCount =
-    getCommentsCount(post);
+	if (!postId) {
+
+		return {
+
+			status: 'skip',
+
+			reason: 'no_post_id'
+
+		};
+	}
 
 
-  /**
-   * 评论 >= 20
-   *
-   * 不入库
-   */
-  if (
-    commentsCount >=
-    MAX_COMMENTS
-  ) {
-
-    return {
-
-      status: 'skip',
-
-      reason: 'comments_full'
-
-    };
-  }
+	const commentsCount =
+		getCommentsCount(post);
 
 
-  /**
-   * 已有超Like
-   *
-   * 不入库
-   */
-  if (
-    hasSuperLike(post)
-  ) {
+	/**
+	 * 评论 >= 20
+	 *
+	 * 不入库
+	 */
+	if (
+		commentsCount >=
+		MAX_COMMENTS
+	) {
 
-    return {
+		return {
 
-      status: 'skip',
+			status: 'skip',
 
-      reason: 'has_superlike'
+			reason: 'comments_full'
 
-    };
-  }
-
-
-  const uid =
-    getUid(post);
+		};
+	}
 
 
-  const username =
-    getUsername(post);
+	/**
+	 * 已有超Like
+	 *
+	 * 不入库
+	 */
+	if (
+		hasSuperLike(post)
+	) {
+
+		return {
+
+			status: 'skip',
+
+			reason: 'has_superlike'
+
+		};
+	}
 
 
-  const postLink =
-    getPostLink(post);
+	const uid =
+		getUid(post);
 
 
-  const postText =
-    getPostText(post);
+	const username =
+		getUsername(post);
 
 
-  const postCreatedAt =
-    getPostCreatedAt(post);
+	const postLink =
+		getPostLink(post);
 
 
-  const icons =
-    extractIcons(post);
+	const postText =
+		getPostText(post);
 
 
-  const iconSummary =
-    icons.length > 0
-
-      ? icons.join(' / ')
-
-      : '无';
+	const postCreatedAt =
+		getPostCreatedAt(post);
 
 
-  let rawJson = null;
+	const icons =
+		extractIcons(post);
 
 
-  try {
+	const iconSummary =
+		icons.length > 0
 
-    rawJson =
-      JSON.stringify(post);
+			? icons.join(' / ')
 
-  } catch {
-
-    rawJson = null;
-  }
+			: '无';
 
 
-  /**
-   * 看数据库以前有没有。
-   */
-  const exists =
-    db.prepare(`
+	let rawJson = null;
+
+
+	try {
+
+		rawJson =
+			JSON.stringify(post);
+
+	} catch {
+
+		rawJson = null;
+	}
+
+
+	/**
+	 * 看数据库以前有没有。
+	 */
+	const exists =
+		db.prepare(`
       SELECT id
       FROM superlike_posts
       WHERE post_id = ?
     `).get(
-      postId
-    );
+			postId
+		);
 
 
-  /**
-   * ========================================================
-   * UPSERT
-   * ========================================================
-   *
-   * experience_7d 不更新。
-   *
-   * 因为以后这个字段可能由另一个程序计算。
-   */
-  db.prepare(`
+	/**
+	 * ========================================================
+	 * UPSERT
+	 * ========================================================
+	 *
+	 * experience_7d 不更新。
+	 *
+	 * 因为以后这个字段可能由另一个程序计算。
+	 */
+	db.prepare(`
     INSERT INTO superlike_posts (
+
+      monitor_id,
 
       post_id,
 
@@ -1134,42 +1153,31 @@ function saveTargetPost(post) {
       last_seen_at,
 
       raw_json
-
     )
 
     VALUES (
-
       ?,
-
       ?,
-
       ?,
-
       ?,
-
       ?,
-
       ?,
-
+      ?,
       0,
-
       ?,
-
       NULL,
-
       ?,
-
       CURRENT_TIMESTAMP,
-
       CURRENT_TIMESTAMP,
-
       ?
-
     )
 
     ON CONFLICT(post_id)
 
     DO UPDATE SET
+
+      monitor_id =
+        excluded.monitor_id,
 
       uid =
         excluded.uid,
@@ -1186,8 +1194,7 @@ function saveTargetPost(post) {
       comments_count =
         excluded.comments_count,
 
-      current_has_superlike =
-        0,
+      current_has_superlike = 0,
 
       icon_summary =
         excluded.icon_summary,
@@ -1203,50 +1210,50 @@ function saveTargetPost(post) {
 
       raw_json =
         excluded.raw_json
-
   `).run(
 
-    postId,
+		monitorId,
 
-    uid || null,
+		postId,
 
-    username,
+		uid || null,
 
-    postLink || null,
+		username,
 
-    postText,
+		postLink || null,
 
-    commentsCount,
+		postText,
 
-    iconSummary,
+		commentsCount,
 
-    postCreatedAt,
+		iconSummary,
 
-    rawJson
+		postCreatedAt,
 
-  );
+		rawJson
+	);
 
 
-  return {
+	return {
 
-    status:
-      exists
-        ? 'updated'
-        : 'inserted',
+		status:
+			exists
+				? 'updated'
+				: 'inserted',
 
-    postId,
+		postId,
 
-    uid,
+		uid,
 
-    username,
+		username,
 
-    postLink,
+		postLink,
 
-    commentsCount,
+		commentsCount,
 
-    iconSummary
+		iconSummary
 
-  };
+	};
 }
 
 
@@ -1256,143 +1263,147 @@ function saveTargetPost(post) {
  * ============================================================
  */
 function processResponseJson(
-  json,
-  seenThisRun
+	monitorId,
+	json,
+	seenThisRun
 ) {
 
-  const posts =
-    findPosts(json);
+	const posts =
+		findPosts(json);
 
 
-  const stats = {
+	const stats = {
 
-    found: 0,
+		found: 0,
 
-    duplicate: 0,
+		duplicate: 0,
 
-    commentsFull: 0,
+		commentsFull: 0,
 
-    hasSuperLike: 0,
+		hasSuperLike: 0,
 
-    target: 0,
+		target: 0,
 
-    inserted: 0,
+		inserted: 0,
 
-    updated: 0
+		updated: 0
 
-  };
-
-
-  for (
-    const post of posts
-  ) {
-
-    const postId =
-      getPostId(post);
+	};
 
 
-    if (!postId) {
-      continue;
-    }
+	for (
+		const post of posts
+	) {
+
+		const postId =
+			getPostId(post);
 
 
-    /**
-     * 同一轮请求里，
-     * 同一个微博可能重复出现在不同JSON中。
-     */
-    if (
-      seenThisRun.has(
-        postId
-      )
-    ) {
-
-      stats.duplicate++;
-
-      continue;
-    }
+		if (!postId) {
+			continue;
+		}
 
 
-    seenThisRun.add(
-      postId
-    );
+		/**
+		 * 同一轮请求里，
+		 * 同一个微博可能重复出现在不同JSON中。
+		 */
+		if (
+			seenThisRun.has(
+				postId
+			)
+		) {
+
+			stats.duplicate++;
+
+			continue;
+		}
 
 
-    stats.found++;
+		seenThisRun.add(
+			postId
+		);
 
 
-    const commentsCount =
-      getCommentsCount(post);
+		stats.found++;
 
 
-    /**
-     * 第一层：
-     * 评论数筛选
-     */
-    if (
-      commentsCount >=
-      MAX_COMMENTS
-    ) {
-
-      stats.commentsFull++;
-
-      continue;
-    }
+		const commentsCount =
+			getCommentsCount(post);
 
 
-    /**
-     * 第二层：
-     * 超Like筛选
-     */
-    if (
-      hasSuperLike(post)
-    ) {
+		/**
+		 * 第一层：
+		 * 评论数筛选
+		 */
+		if (
+			commentsCount >=
+			MAX_COMMENTS
+		) {
 
-      stats.hasSuperLike++;
+			stats.commentsFull++;
 
-      continue;
-    }
-
-
-    /**
-     * 到这里就是候选目标。
-     */
-    stats.target++;
+			continue;
+		}
 
 
-    const result =
-      saveTargetPost(post);
+		/**
+		 * 第二层：
+		 * 超Like筛选
+		 */
+		if (
+			hasSuperLike(post)
+		) {
+
+			stats.hasSuperLike++;
+
+			continue;
+		}
 
 
-    if (
-      result.status ===
-      'inserted'
-    ) {
-
-      stats.inserted++;
+		/**
+		 * 到这里就是候选目标。
+		 */
+		stats.target++;
 
 
-      console.log(
-        [
-          '[新增]',
-          `UID=${result.uid || '-'}`,
-          `用户=${result.username || '-'}`,
-          `评论=${result.commentsCount}`,
-          `Icon=${result.iconSummary || '无'}`,
-          result.postLink || '-'
-        ].join(' | ')
-      );
-
-    } else if (
-      result.status ===
-      'updated'
-    ) {
-
-      stats.updated++;
-    }
-  }
+		const result =
+			saveTargetPost(
+				monitorId,
+				post
+			);
 
 
-  return stats;
+		if (
+			result.status ===
+			'inserted'
+		) {
+
+			stats.inserted++;
+
+
+			console.log(
+				[
+					'[新增]',
+					`UID=${result.uid || '-'}`,
+					`用户=${result.username || '-'}`,
+					`评论=${result.commentsCount}`,
+					`Icon=${result.iconSummary || '无'}`,
+					result.postLink || '-'
+				].join(' | ')
+			);
+
+		} else if (
+			result.status ===
+			'updated'
+		) {
+
+			stats.updated++;
+		}
+	}
+
+
+	return stats;
 }
 
 
@@ -1401,526 +1412,332 @@ function processResponseJson(
  * 执行一轮扫描
  * ============================================================
  */
-async function scanSuperLikePosts() {
+async function scanOneSuperLikeMonitor(
+	monitor
+) {
 
-  /**
-   * 防止Batch重叠。
-   */
-  if (running) {
+	const topicUrl =
+		monitor.url;
 
-    console.log(
-      '[SuperLike] 上一轮尚未结束，本轮跳过。'
-    );
 
-    return;
-  }
+	console.log('');
+	console.log(
+		'=============================================='
+	);
 
+	console.log(
+		`SuperLike：${monitor.name}`
+	);
 
-  /**
-   * 超话URL
-   */
-  const topicUrl =
-    process.env.SUPERLIKE_TOPIC_URL;
+	console.log(
+		`Monitor ID：${monitor.id}`
+	);
 
+	console.log(
+		`URL：${topicUrl}`
+	);
 
-  if (!topicUrl) {
+	console.log(
+		'=============================================='
+	);
 
-    console.error('');
-    console.error(
-      '[SuperLike] 未设置 SUPERLIKE_TOPIC_URL'
-    );
 
-    console.error('');
-    console.error(
-      '例如：'
-    );
+	const profileDir =
+		path.join(
+			__dirname,
+			'..',
+			'data',
+			'superlike-browser-profile'
+		);
 
-    console.error(
-      'set SUPERLIKE_TOPIC_URL=https://xxxx'
-    );
 
-    console.error('');
+	let browser = null;
 
-    return;
-  }
 
+	const total = {
 
-  running = true;
+		found: 0,
 
+		duplicate: 0,
 
-  initSuperLikeTable();
+		commentsFull: 0,
 
+		hasSuperLike: 0,
 
-  /**
-   * Playwright profile
-   *
-   * 微博登录Cookie保存在这里。
-   */
-  const profileDir =
-    path.join(
-      __dirname,
-      '..',
-      'data',
-      'superlike-browser-profile'
-    );
+		target: 0,
 
+		inserted: 0,
 
-  let browser =
-    null;
+		updated: 0
 
+	};
 
-  const total = {
 
-    found: 0,
+	const startedAt =
+		Date.now();
 
-    duplicate: 0,
 
-    commentsFull: 0,
+	try {
 
-    hasSuperLike: 0,
+		browser =
+			await chromium.launchPersistentContext(
+				profileDir,
+				{
 
-    target: 0,
+					headless:
+						process.env.SUPERLIKE_HEADLESS
+						=== '1',
 
-    inserted: 0,
+					viewport: {
+						width: 1280,
+						height: 900
+					}
+				}
+			);
 
-    updated: 0
 
-  };
+		const page =
+			browser.pages()[0]
+			|| await browser.newPage();
 
 
-  const startedAt =
-    Date.now();
+		const seenThisRun =
+			new Set();
 
 
-  try {
+		const pendingResponses =
+			new Set();
 
-    console.log('');
-    console.log(
-      '=============================================='
-    );
 
-    console.log(
-      'SuperLike 实时新帖扫描'
-    );
-
-    console.log(
-      '开始时间：',
-      new Date().toLocaleString()
-    );
+		page.on(
+			'response',
+			response => {
 
-    console.log(
-      '规则：无超Like + 评论数 < 20'
-    );
+				const task =
+					(async () => {
 
-    console.log(
-      '=============================================='
-    );
+						try {
 
+							const contentType =
+								(
+									response.headers()[
+									'content-type'
+									] || ''
+								).toLowerCase();
 
-    /**
-     * ========================================================
-     * 打开浏览器
-     * ========================================================
-     */
-    browser =
-      await chromium.launchPersistentContext(
-        profileDir,
-        {
 
-          /**
-           * 默认显示浏览器。
-           *
-           * 设置：
-           *
-           * SUPERLIKE_HEADLESS=1
-           *
-           * 才会后台运行。
-           */
-          headless:
-            process.env.SUPERLIKE_HEADLESS
-            === '1',
+							if (
+								!contentType.includes(
+									'application/json'
+								)
+							) {
+								return;
+							}
 
-          viewport: {
 
-            width: 1280,
+							const responseUrl =
+								response.url();
 
-            height: 900
 
-          }
+							if (
+								!responseUrl
+									.toLowerCase()
+									.includes('weibo')
+							) {
+								return;
+							}
 
-        }
-      );
 
+							let json;
 
-    const page =
-      browser.pages()[0]
-      || await browser.newPage();
 
+							try {
 
-    /**
-     * 同一轮微博去重。
-     */
-    const seenThisRun =
-      new Set();
+								json =
+									await response.json();
 
+							} catch {
 
-    /**
-     * 等待所有response处理结束。
-     */
-    const pendingResponses =
-      new Set();
+								return;
+							}
 
 
-    /**
-     * ========================================================
-     * 监听JSON Response
-     * ========================================================
-     */
-    page.on(
-      'response',
-      response => {
+							const stats =
+								processResponseJson(
+									monitor.id,
+									json,
+									seenThisRun
+								);
 
-        const task =
-          (async () => {
 
-            try {
+							for (
+								const key
+								of Object.keys(total)
+							) {
 
-              const contentType =
-                (
-                  response.headers()[
-                    'content-type'
-                  ]
-                  || ''
-                ).toLowerCase();
+								total[key] +=
+									stats[key] || 0;
+							}
 
 
-              /**
-               * 只要JSON。
-               */
-              if (
-                !contentType.includes(
-                  'application/json'
-                )
-              ) {
+						} catch (error) {
 
-                return;
-              }
+							console.error(
+								'[SuperLike] Response处理失败：',
+								error.message
+							);
+						}
 
+					})();
 
-              const responseUrl =
-                response.url();
 
+				pendingResponses.add(task);
 
-              /**
-               * 只处理微博相关域名。
-               */
-              if (
-                !responseUrl
-                  .toLowerCase()
-                  .includes(
-                    'weibo'
-                  )
-              ) {
 
-                return;
-              }
+				task.finally(
+					() => {
 
+						pendingResponses.delete(
+							task
+						);
 
-              let json;
+					}
+				);
+			}
+		);
 
 
-              try {
+		console.log(
+			`[SuperLike] 打开：${monitor.name}`
+		);
 
-                json =
-                  await response.json();
 
-              } catch {
+		await page.goto(
+			topicUrl,
+			{
 
-                return;
-              }
+				waitUntil:
+					'domcontentloaded',
 
+				timeout:
+					60 * 1000
+			}
+		);
 
-              const stats =
-                processResponseJson(
-                  json,
-                  seenThisRun
-                );
 
+		await page.waitForTimeout(
+			INITIAL_WAIT_MS
+		);
 
-              for (
-                const key
-                of Object.keys(total)
-              ) {
 
-                total[key] +=
-                  stats[key] || 0;
-              }
+		for (
+			let i = 1;
+			i <= SCROLL_TIMES;
+			i++
+		) {
 
-            } catch (error) {
+			await page.evaluate(
+				() => {
 
-              console.error(
-                '[SuperLike] Response处理失败：',
-                error.message
-              );
-            }
+					window.scrollTo(
+						0,
+						document.body.scrollHeight
+					);
 
-          })();
+				}
+			);
 
 
-        pendingResponses.add(
-          task
-        );
+			await page.waitForTimeout(
+				SCROLL_DELAY_MS
+			);
 
 
-        task.finally(
-          () => {
+			if (
+				i % 5 === 0
+			) {
 
-            pendingResponses.delete(
-              task
-            );
+				console.log(
+					`[SuperLike] ${monitor.name} 滚动 ${i}/${SCROLL_TIMES}`
+				);
+			}
+		}
 
-          }
-        );
-      }
-    );
 
+		await page.waitForTimeout(
+			2000
+		);
 
-    /**
-     * ========================================================
-     * 打开超话
-     * ========================================================
-     */
-    console.log('');
-    console.log(
-      '[SuperLike] 打开超话：'
-    );
 
-    console.log(
-      topicUrl
-    );
+		if (
+			pendingResponses.size > 0
+		) {
 
+			await Promise.allSettled(
+				Array.from(
+					pendingResponses
+				)
+			);
+		}
 
-    await page.goto(
-      topicUrl,
-      {
 
-        waitUntil:
-          'domcontentloaded',
+		const seconds =
+			Math.round(
+				(
+					Date.now()
+					- startedAt
+				) / 1000
+			);
 
-        timeout:
-          60 * 1000
 
-      }
-    );
+		console.log('');
+		console.log(
+			`========== ${monitor.name} 结果 ==========`
+		);
 
+		console.log(
+			'扫描微博：',
+			total.found
+		);
 
-    /**
-     * 等首页Response。
-     */
-    await page.waitForTimeout(
-      INITIAL_WAIT_MS
-    );
+		console.log(
+			'评论>=20：',
+			total.commentsFull
+		);
 
+		console.log(
+			'已有超Like：',
+			total.hasSuperLike
+		);
 
-    /**
-     * ========================================================
-     * 滚动加载新帖子
-     * ========================================================
-     */
-    for (
-      let i = 1;
-      i <= SCROLL_TIMES;
-      i++
-    ) {
+		console.log(
+			'符合候选：',
+			total.target
+		);
 
-      await page.evaluate(
-        () => {
+		console.log(
+			'新入库：',
+			total.inserted
+		);
 
-          window.scrollTo(
-            0,
-            document.body.scrollHeight
-          );
+		console.log(
+			'更新：',
+			total.updated
+		);
 
-        }
-      );
+		console.log(
+			'耗时：',
+			`${seconds}秒`
+		);
 
 
-      await page.waitForTimeout(
-        SCROLL_DELAY_MS
-      );
+	} finally {
 
+		if (browser) {
 
-      if (
-        i % 5 === 0
-      ) {
-
-        console.log(
-          `[SuperLike] 滚动进度 ${i}/${SCROLL_TIMES}`
-        );
-      }
-    }
-
-
-    /**
-     * 最后一批请求。
-     */
-    await page.waitForTimeout(
-      2000
-    );
-
-
-    /**
-     * 等待response处理结束。
-     */
-    if (
-      pendingResponses.size > 0
-    ) {
-
-      await Promise.allSettled(
-        Array.from(
-          pendingResponses
-        )
-      );
-    }
-
-
-    /**
-     * ========================================================
-     * DB统计
-     * ========================================================
-     */
-    const dbStats =
-      db.prepare(`
-        SELECT
-
-          COUNT(*) AS post_count,
-
-          COUNT(
-            DISTINCT uid
-          ) AS user_count
-
-        FROM superlike_posts
-
-        WHERE
-          current_has_superlike = 0
-
-          AND comments_count < ?
-      `).get(
-        MAX_COMMENTS
-      );
-
-
-    const seconds =
-      Math.round(
-        (
-          Date.now()
-          - startedAt
-        )
-        / 1000
-      );
-
-
-    console.log('');
-    console.log(
-      '=============== 本轮结果 ==============='
-    );
-
-    console.log(
-      '扫描微博：',
-      total.found
-    );
-
-    console.log(
-      '本轮重复：',
-      total.duplicate
-    );
-
-    console.log(
-      '评论>=20：',
-      total.commentsFull
-    );
-
-    console.log(
-      '已有超Like：',
-      total.hasSuperLike
-    );
-
-    console.log(
-      '符合候选：',
-      total.target
-    );
-
-    console.log(
-      '新入库：',
-      total.inserted
-    );
-
-    console.log(
-      '已有数据更新：',
-      total.updated
-    );
-
-    console.log(
-      '----------------------------------------'
-    );
-
-    console.log(
-      '数据库候选帖子：',
-      dbStats?.post_count ?? 0
-    );
-
-    console.log(
-      '数据库候选用户：',
-      dbStats?.user_count ?? 0
-    );
-
-    console.log(
-      '本轮耗时：',
-      `${seconds}秒`
-    );
-
-    console.log(
-      '========================================'
-    );
-
-
-  } catch (error) {
-
-    console.error('');
-    console.error(
-      '[SuperLike] 扫描失败：'
-    );
-
-    console.error(error);
-
-  } finally {
-
-    if (browser) {
-
-      try {
-
-        await browser.close();
-
-      } catch (error) {
-
-        console.error(
-          '[SuperLike] 浏览器关闭失败：',
-          error.message
-        );
-      }
-    }
-
-
-    running = false;
-
-
-    console.log('');
-    console.log(
-      '[SuperLike] 本轮扫描结束'
-    );
-
-    console.log('');
-  }
+			await browser.close();
+		}
+	}
 }
 
 
@@ -1959,90 +1776,170 @@ async function scanSuperLikePosts() {
  */
 async function startSuperLikeBatch() {
 
-  initSuperLikeTable();
+	initSuperLikeTable();
 
 
-  const minutes =
-    SCAN_INTERVAL_MS
-    / 1000
-    / 60;
+	const minutes =
+		SCAN_INTERVAL_MS
+		/ 1000
+		/ 60;
 
 
-  console.log('');
-  console.log(
-    '################################################'
-  );
+	console.log('');
+	console.log(
+		'################################################'
+	);
 
-  console.log(
-    '# SuperLike Batch'
-  );
+	console.log(
+		'# SuperLike Batch'
+	);
 
-  console.log(
-    `# 每 ${minutes} 分钟扫描一次`
-  );
+	console.log(
+		`# 每 ${minutes} 分钟扫描一次`
+	);
 
-  console.log(
-    '# 条件：无超Like + 评论 < 20'
-  );
+	console.log(
+		'# 条件：无超Like + 评论 < 20'
+	);
 
-  console.log(
-    '# Ctrl+C 停止'
-  );
+	console.log(
+		'# Ctrl+C 停止'
+	);
 
-  console.log(
-    '################################################'
-  );
+	console.log(
+		'################################################'
+	);
 
-  console.log('');
+	console.log('');
 
 
-  /**
-   * ========================================================
-   * 第一轮立即执行
-   * ========================================================
-   */
-  try {
+	/**
+	 * ========================================================
+	 * 第一轮立即执行
+	 * ========================================================
+	 */
+	try {
 
-    await scanSuperLikePosts();
+		await scanSuperLikePosts();
 
-  } catch (error) {
+	} catch (error) {
 
-    console.error(
-      '[SuperLike] 第一轮执行失败：',
-      error
+		console.error(
+			'[SuperLike] 第一轮执行失败：',
+			error
+		);
+	}
+
+
+	/**
+	 * ========================================================
+	 * 后面每15分钟运行
+	 * ========================================================
+	 */
+	setInterval(
+		async () => {
+
+			console.log('');
+			console.log(
+				'[SuperLike] 到达下一轮执行时间'
+			);
+
+
+			try {
+
+				await scanSuperLikePosts();
+
+			} catch (error) {
+
+				console.error(
+					'[SuperLike] 定时扫描失败：',
+					error
+				);
+			}
+
+		},
+		SCAN_INTERVAL_MS
+	);
+}
+
+
+async function scanSuperLikePosts() {
+
+  if (running) {
+
+    console.log(
+      '[SuperLike] 上一轮还没结束，本轮跳过。'
     );
+
+    return;
   }
 
 
-  /**
-   * ========================================================
-   * 后面每15分钟运行
-   * ========================================================
-   */
-  setInterval(
-    async () => {
+  running = true;
+
+
+  try {
+
+    initSuperLikeTable();
+
+
+    const monitors =
+      getSuperLikeMonitors();
+
+
+    if (
+      monitors.length === 0
+    ) {
 
       console.log('');
       console.log(
-        '[SuperLike] 到达下一轮执行时间'
+        '[SuperLike] 没有启用的 SuperLike Monitor。'
       );
 
+      console.log(
+        "请在 monitors 表配置 monitor_type='superlike'。"
+      );
+
+      return;
+    }
+
+
+    console.log('');
+    console.log(
+      `[SuperLike] 本轮共 ${monitors.length} 个 Monitor`
+    );
+
+
+    for (
+      const monitor
+      of monitors
+    ) {
 
       try {
 
-        await scanSuperLikePosts();
+        await scanOneSuperLikeMonitor(
+          monitor
+        );
 
       } catch (error) {
 
         console.error(
-          '[SuperLike] 定时扫描失败：',
+          `[SuperLike] ${monitor.name} 扫描失败：`,
           error
         );
-      }
 
-    },
-    SCAN_INTERVAL_MS
-  );
+        /**
+         * 一个Monitor失败，
+         * 不影响下一个Monitor继续执行。
+         */
+      }
+    }
+
+
+  } finally {
+
+    running = false;
+  }
 }
 
 
@@ -2052,16 +1949,16 @@ async function startSuperLikeBatch() {
  * ============================================================
  */
 process.on(
-  'SIGINT',
-  () => {
+	'SIGINT',
+	() => {
 
-    console.log('');
-    console.log(
-      '[SuperLike] 收到Ctrl+C，Batch停止。'
-    );
+		console.log('');
+		console.log(
+			'[SuperLike] 收到Ctrl+C，Batch停止。'
+		);
 
-    process.exit(0);
-  }
+		process.exit(0);
+	}
 );
 
 
@@ -2072,29 +1969,29 @@ process.on(
  */
 module.exports = {
 
-  initSuperLikeTable,
+	initSuperLikeTable,
 
-  scanSuperLikePosts,
+	scanSuperLikePosts,
 
-  startSuperLikeBatch,
+	startSuperLikeBatch,
 
-  hasSuperLike,
+	hasSuperLike,
 
-  extractIcons,
+	extractIcons,
 
-  findPosts,
+	findPosts,
 
-  getPostId,
+	getPostId,
 
-  getUid,
+	getUid,
 
-  getUsername,
+	getUsername,
 
-  getPostText,
+	getPostText,
 
-  getPostLink,
+	getPostLink,
 
-  getCommentsCount
+	getCommentsCount
 
 };
 
@@ -2119,19 +2016,19 @@ module.exports = {
  * 所以server和Batch彻底分离。
  */
 if (
-  require.main === module
+	require.main === module
 ) {
 
-  startSuperLikeBatch()
-    .catch(
-      error => {
+	startSuperLikeBatch()
+		.catch(
+			error => {
 
-        console.error(
-          '[SuperLike] Batch启动失败：',
-          error
-        );
+				console.error(
+					'[SuperLike] Batch启动失败：',
+					error
+				);
 
-        process.exit(1);
-      }
-    );
+				process.exit(1);
+			}
+		);
 }
