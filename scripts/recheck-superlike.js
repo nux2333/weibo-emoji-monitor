@@ -94,18 +94,18 @@ function getDistinctUsers(
     SELECT
       uid,
       MAX(username) AS username,
-      COUNT(*) AS post_count
+      COUNT(*) AS post_count,
+      MIN(id) AS first_id
     FROM superlike_posts
     WHERE monitor_id = ?
       AND uid IS NOT NULL
       AND uid <> ''
     GROUP BY uid
-    ORDER BY uid
+    ORDER BY first_id ASC
   `).all(
     monitorId
   );
 }
-
 
 /**
  * 获取某个用户当前数据库里的全部候选帖子。
