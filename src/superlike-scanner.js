@@ -2,11 +2,14 @@ const {
   createBatchLogger
 } = require('./batch-logger');
 
+let batchLogger = null;
 
-const batchLogger =
-  createBatchLogger(
-    'scan-superlike'
-  );
+if (require.main === module) {
+  batchLogger =
+    createBatchLogger(
+      'scan-superlike'
+    );
+}
 
 const path = require('path');
 const { chromium } = require('playwright');
