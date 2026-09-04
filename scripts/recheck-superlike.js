@@ -1,3 +1,13 @@
+const {
+  createBatchLogger
+} = require('../src/batch-logger');
+
+
+const batchLogger =
+  createBatchLogger(
+    'recheck-superlike'
+  );
+  
 const path = require('path');
 
 const {

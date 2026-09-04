@@ -168,8 +168,6 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
   `);
-  db.pragma('busy_timeout = 5000');
-
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
   ensureColumn('comments', 'customerid', 'TEXT');

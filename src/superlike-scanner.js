@@ -1,3 +1,13 @@
+const {
+  createBatchLogger
+} = require('./batch-logger');
+
+
+const batchLogger =
+  createBatchLogger(
+    'scan-superlike'
+  );
+
 const path = require('path');
 const { chromium } = require('playwright');
 const { db, initDatabase } = require('./db');
@@ -757,172 +767,140 @@ function waitForChaohuaResponse(
  * 点击一级“最新”
  * ============================================================
  */
-
 async function clickPrimaryLatest(
   page
 ) {
-  /*
-   * 优先找一级导航：
-   * 热门 / 最新 / 精华...
-   *
-   * 用共同容器排除其它“最新”文字。
-   */
-  const result =
-    await page.evaluate(
-      () => {
-        function isVisible(el) {
-          const rect =
-            el.getBoundingClientRect();
+  console.log(
+    '[SuperLike] 等待一级“最新”Tab渲染...'
+  );
 
-          const style =
-            window.getComputedStyle(
-              el
-            );
+  const timeoutMs = 15000;
+  const startedAt = Date.now();
 
-          return (
-            rect.width > 0
-            &&
-            rect.height > 0
-            &&
-            style.display !== 'none'
-            &&
-            style.visibility !== 'hidden'
-          );
-        }
-
-
-        const all =
-          Array.from(
-            document.querySelectorAll(
-              'a,button,span,div,li'
-            )
-          )
-          .filter(isVisible);
-
-
-        const latestNodes =
-          all.filter(
-            node =>
-              (
-                node.textContent
-                || ''
-              ).trim()
-              === '最新'
-          );
-
-
-        const hotNodes =
-          all.filter(
-            node =>
-              (
-                node.textContent
-                || ''
-              ).trim()
-              === '热门'
-          );
-
-
-        for (
-          const latest
-          of latestNodes
-        ) {
-          let parent =
-            latest.parentElement;
-
-          let depth = 0;
-
-
-          while (
-            parent
-            &&
-            depth < 8
-          ) {
-            const text =
-              (
-                parent.textContent
-                || ''
-              )
-                .replace(
-                  /\s+/g,
-                  ''
-                );
-
-
-            const containsHot =
-              hotNodes.some(
-                hot =>
-                  parent.contains(hot)
-              );
-
-
-            if (
-              containsHot
-              &&
-              text.includes('热门')
-              &&
-              text.includes('最新')
-              &&
-              text.length <= 100
-            ) {
-              const clickable =
-                latest.closest(
-                  'a,button,[role="tab"],[role="button"],li'
-                )
-                || latest;
-
-
-              clickable.scrollIntoView({
-                block: 'center'
-              });
-
-
-              clickable.click();
-
-
-              return {
-                clicked: true,
-                html:
-                  (
-                    clickable.outerHTML
-                    || ''
-                  ).slice(
-                    0,
-                    300
-                  )
-              };
-            }
-
-
-            parent =
-              parent.parentElement;
-
-            depth++;
-          }
-        }
-
-
-        return {
-          clicked: false
-        };
-      }
-    );
-
-
-  if (
-    result.clicked
+  while (
+    Date.now() - startedAt < timeoutMs
   ) {
-    console.log(
-      `[SuperLike] 已点击一级“最新”：${result.html || ''}`
-    );
 
-    return true;
+    /*
+     * 只负责找到真正的“最新”文字节点。
+     *
+     * 不在 page.evaluate() 里面 click，
+     * 而是返回 locator 后让 Playwright 真正点击。
+     */
+    const latest =
+      page.locator(
+        '.wbpro-textcut'
+      )
+      .filter({
+        hasText: /^最新$/
+      });
+
+
+    const count =
+      await latest.count();
+
+
+    if (
+      count > 0
+    ) {
+
+      for (
+        let i = 0;
+        i < count;
+        i++
+      ) {
+
+        const textNode =
+          latest.nth(i);
+
+
+        if (
+          !await textNode.isVisible()
+        ) {
+          continue;
+        }
+
+
+        /*
+         * DOM：
+         *
+         * woo-box-item-inlineBlock
+         *   └─ ...
+         *       └─ wbpro-textcut "最新"
+         *
+         * 所以必须向上找到
+         * woo-box-item-inlineBlock
+         *
+         * 不能点击 wbpro-tab2 总容器。
+         */
+        const tab =
+          textNode.locator(
+            'xpath=ancestor::div[contains(@class,"woo-box-item-inlineBlock")][1]'
+          );
+
+
+        if (
+          await tab.count()
+          ===
+          0
+        ) {
+          continue;
+        }
+
+
+        if (
+          !await tab.isVisible()
+        ) {
+          continue;
+        }
+
+
+        const html =
+          await tab.evaluate(
+            element =>
+              element.outerHTML
+          );
+
+
+        console.log(
+          `[SuperLike] 找到一级“最新”Tab：${html.slice(
+            0,
+            500
+          )}`
+        );
+
+
+        /*
+         * Playwright真实点击。
+         */
+        await tab.click({
+          force: true
+        });
+
+
+        console.log(
+          '[SuperLike] 已点击一级“最新”'
+        );
+
+
+        return true;
+      }
+    }
+
+
+    await page.waitForTimeout(
+      500
+    );
   }
+
+
+  console.error(
+    '[SuperLike] 15秒内仍未找到一级“最新”Tab'
+  );
 
 
   return false;
 }
-
-
 /**
  * ============================================================
  * 从 _feed Response 找“最新发帖” containerid
@@ -1538,386 +1516,223 @@ async function checkUserSuperLikeByProfile(
     `[SuperLike][ProfileURL] ${url}`
   );
 
-  const MAX_RETRY = 3;
-
   let profilePage = null;
 
   try {
-    for (
-      let attempt = 1;
-      attempt <= MAX_RETRY;
-      attempt++
-    ) {
-      try {
-        /*
-         * 每次 retry 前确认 page 还活着。
-         *
-         * 微博 visitor 流程有时会主动关闭当前 tab，
-         * 所以不能长期复用一个固定 profilePage。
-         */
-        if (
-          !profilePage
-          ||
-          profilePage.isClosed()
-        ) {
-          profilePage =
-            await context.newPage();
-        }
+    profilePage =
+      await context.newPage();
 
-        if (
-          attempt > 1
-        ) {
-          await profilePage.waitForTimeout(
-            1000
-          );
-        }
+    /*
+     * 先打开 m.weibo.cn 首页，
+     * 让 visitor/cookie/session 建立起来。
+     */
+    await profilePage.goto(
+      'https://m.weibo.cn/',
+      {
+        waitUntil:
+          'domcontentloaded',
 
-        const response =
-          await profilePage.goto(
-            url,
-            {
-              waitUntil:
-                'domcontentloaded',
-
-              timeout:
-                30000
-            }
-          );
-
-        /*
-         * goto 偶尔在 visitor 跳转期间拿不到 Response。
-         * 不立即失败，下一次 retry 重新建 page 再试。
-         */
-        if (!response) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} attempt=${attempt}/${MAX_RETRY} | goto没有Response`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        const status =
-          response.status();
-
-        const finalUrl =
-          response.url();
-
-        console.log(
-          `[SuperLike][ProfileResponse] UID=${uid} attempt=${attempt}/${MAX_RETRY} status=${status} url=${finalUrl}`
-        );
-
-        /*
-         * 第一次访问 m.weibo.cn 时，
-         * 可能进入 visitor.passport.weibo.cn。
-         *
-         * visitor 页面可能设置 cookie、跳转，
-         * 也可能直接把当前 tab 关闭。
-         *
-         * 所以这里等待一下后丢弃当前 tab，
-         * 下一次 retry 新建一个 page。
-         */
-        if (
-          finalUrl.includes(
-            'visitor.passport.weibo.cn'
-          )
-        ) {
-          console.log(
-            `[SuperLike][Visitor] UID=${uid} 进入 visitor 初始化，下一次使用新页面重试`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.waitForTimeout(
-                2000
-              );
-            } catch {
-              // visitor 可能已经把 tab 关闭，忽略
-            }
-          }
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        /*
-         * 必须确认最终仍然是 JSON API。
-         */
-        if (
-          !finalUrl.includes(
-            '/api/container/getIndex'
-          )
-        ) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} 最终URL不是 getIndex API`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        if (
-          status < 200
-          ||
-          status >= 300
-        ) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} HTTP=${status}`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        let bodyText;
-
-        try {
-          bodyText =
-            await response.text();
-        } catch (error) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} Response读取失败：${error.message}`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        console.log(
-          `[SuperLike][Profile前100] ${bodyText.slice(
-            0,
-            100
-          )}`
-        );
-
-        /*
-         * visitor / 风控偶尔会返回 HTML。
-         */
-        if (
-          bodyText
-            .trimStart()
-            .startsWith(
-              '<'
-            )
-        ) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} 返回HTML`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        let json;
-
-        try {
-          json =
-            JSON.parse(
-              bodyText
-            );
-        } catch (error) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} JSON解析失败：${error.message}`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        if (
-          Number(
-            json?.ok
-            ?? 0
-          )
-          !== 1
-        ) {
-          console.log(
-            `[SuperLike][Profile重试] UID=${uid} API ok=${json?.ok}`
-          );
-
-          if (
-            profilePage
-            &&
-            !profilePage.isClosed()
-          ) {
-            try {
-              await profilePage.close();
-            } catch {
-              // ignore
-            }
-          }
-
-          profilePage = null;
-
-          continue;
-        }
-
-        const hasSuperLike =
-          profileHasSuperLike(
-            json
-          );
-
-        console.log(
-          `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
-        );
-
-        return {
-          ok: true,
-          hasSuperLike,
-          status,
-          url:
-            finalUrl
-        };
-
-      } catch (error) {
-        console.log(
-          `[SuperLike][Profile异常] UID=${uid} attempt=${attempt}/${MAX_RETRY} | ${error.message}`
-        );
-
-        /*
-         * 当前 tab 无论是否已经关闭，都丢弃。
-         * 下一次 retry 使用新的 page。
-         */
-        if (
-          profilePage
-          &&
-          !profilePage.isClosed()
-        ) {
-          try {
-            await profilePage.close();
-          } catch {
-            // ignore
-          }
-        }
-
-        profilePage = null;
-
-        if (
-          attempt === MAX_RETRY
-        ) {
-          return {
-            ok: false,
-            hasSuperLike: null,
-            status: null,
-            url,
-            message:
-              error.message
-          };
-        }
+        timeout:
+          30000
       }
+    );
+
+    await profilePage.waitForTimeout(
+      1000
+    );
+
+    /*
+     * 然后在浏览器页面上下文里 fetch JSON API。
+     */
+    const result =
+      await profilePage.evaluate(
+        async requestUrl => {
+          try {
+            const response =
+              await fetch(
+                requestUrl,
+                {
+                  method: 'GET',
+
+                  credentials:
+                    'include',
+
+                  headers: {
+                    Accept:
+                      'application/json, text/plain, */*'
+                  }
+                }
+              );
+
+            const text =
+              await response.text();
+
+            return {
+              ok:
+                response.ok,
+
+              status:
+                response.status,
+
+              finalUrl:
+                response.url,
+
+              text
+            };
+
+          } catch (error) {
+            return {
+              ok: false,
+              status: null,
+              finalUrl: requestUrl,
+              text: '',
+              error:
+                error.message
+            };
+          }
+        },
+
+        url
+      );
+
+    console.log(
+      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} url=${result.finalUrl}`
+    );
+
+    if (
+      result.error
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status:
+          result.status,
+
+        url:
+          result.finalUrl,
+
+        message:
+          result.error
+      };
     }
 
+    if (
+      !result.ok
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status:
+          result.status,
+
+        url:
+          result.finalUrl,
+
+        message:
+          `HTTP ${result.status}`
+      };
+    }
+
+    console.log(
+      `[SuperLike][Profile前100] ${result.text.slice(
+        0,
+        100
+      )}`
+    );
+
+    if (
+      result.text
+        .trimStart()
+        .startsWith('<')
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status:
+          result.status,
+
+        url:
+          result.finalUrl,
+
+        message:
+          '返回HTML，不是JSON'
+      };
+    }
+
+    let json;
+
+    try {
+      json =
+        JSON.parse(
+          result.text
+        );
+
+    } catch (error) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status:
+          result.status,
+
+        url:
+          result.finalUrl,
+
+        message:
+          `JSON解析失败：${error.message}`
+      };
+    }
+
+    if (
+      Number(
+        json?.ok
+        ?? 0
+      )
+      !== 1
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status:
+          result.status,
+
+        url:
+          result.finalUrl,
+
+        message:
+          `API ok=${json?.ok}`
+      };
+    }
+
+    const hasSuperLike =
+      profileHasSuperLike(
+        json
+      );
+
+    console.log(
+      `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
+    );
+
+    return {
+      ok: true,
+      hasSuperLike,
+      status:
+        result.status,
+
+      url:
+        result.finalUrl
+    };
+
+  } catch (error) {
     return {
       ok: false,
       hasSuperLike: null,
       status: null,
       url,
       message:
-        `连续 ${MAX_RETRY} 次未取得有效 Profile JSON`
+        error.message
     };
 
   } finally {
-    /*
-     * 每个 UID 检查结束后关闭临时 page。
-     *
-     * BrowserContext 本身仍然保留，
-     * 所以 visitor/cookie 可以继续共享给下一个 UID。
-     */
     if (
       profilePage
       &&
@@ -1931,7 +1746,6 @@ async function checkUserSuperLikeByProfile(
     }
   }
 }
-
 
 /**
  * ============================================================
