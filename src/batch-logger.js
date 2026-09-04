@@ -44,7 +44,18 @@ function formatLogTime(date) {
 }
 
 
-function createBatchLogger(batchName) {
+function createBatchLogger(batchName, mode = null) {
+
+  const normalizedMode =
+    mode === null
+    || mode === undefined
+    || String(mode).trim() === ''
+      ? ''
+      : (
+          /^mode\d+$/i.test(String(mode).trim())
+            ? String(mode).trim().toLowerCase()
+            : `mode${String(mode).trim()}`
+        );
 
   const startTime =
     new Date();
@@ -67,7 +78,9 @@ function createBatchLogger(batchName) {
 
 
   const fileName =
-    `${batchName}_${formatTimestamp(startTime)}.log`;
+    normalizedMode
+      ? `${batchName}_${normalizedMode}_${formatTimestamp(startTime)}.log`
+      : `${batchName}_${formatTimestamp(startTime)}.log`;
 
 
   const logFile =
@@ -232,7 +245,7 @@ function createBatchLogger(batchName) {
   write(
     'INFO',
     [
-      `Batch启动：${batchName}`
+      `Batch启动：${batchName}${normalizedMode ? ` | 模式=${normalizedMode}` : ''}`
     ]
   );
 

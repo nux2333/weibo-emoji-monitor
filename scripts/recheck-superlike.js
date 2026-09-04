@@ -3,10 +3,7 @@ const {
 } = require('../src/batch-logger');
 
 
-const batchLogger =
-  createBatchLogger(
-    'recheck-superlike'
-  );
+let batchLogger = null;
   
 const path = require('path');
 const readline = require('readline');
@@ -618,7 +615,8 @@ function upsertSuperLikeUsers(
         last_seen_rank
       )
       VALUES(?,?,?,?,?,?,?)
-      ON CONFLICT(monitor_id, uid) DO UPDATE SET
+      ON CONFLICT(uid) DO UPDATE SET
+        monitor_id = excluded.monitor_id,
         scan_date = excluded.scan_date,
         last_seen_at = excluded.last_seen_at,
         last_seen_rank = excluded.last_seen_rank
@@ -4176,6 +4174,24 @@ async function main() {
 
   const mode =
     await askRecheckMode();
+
+
+  /*
+   * 模式确定后再创建日志文件。
+   * 这样日志名会是：
+   * recheck-superlike_mode1_YYYYMMDD_HHMMSS.log
+   * ...
+   * recheck-superlike_mode4_YYYYMMDD_HHMMSS.log
+   */
+  batchLogger =
+    createBatchLogger(
+      'recheck-superlike',
+      mode
+    );
+
+  console.log(
+    `[Recheck] 当前模式：mode${mode}`
+  );
 
 
   if (mode === '4') {

@@ -181,13 +181,22 @@ function initDatabase() {
 
     CREATE TABLE IF NOT EXISTS superlike_users (
       monitor_id INTEGER NOT NULL,
-      uid TEXT NOT NULL,
+      uid TEXT PRIMARY KEY,
       scan_date TEXT NOT NULL,
       first_seen_at TEXT NOT NULL,
       last_seen_at TEXT NOT NULL,
       first_seen_rank INTEGER,
       last_seen_rank INTEGER,
-      PRIMARY KEY (monitor_id, uid),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
+
+    CREATE TABLE IF NOT EXISTS superlike_scan_checkpoint (
+      monitor_id INTEGER PRIMARY KEY,
+      latest_post_id TEXT,
+      latest_created_at TEXT,
+      latest_created_at_ms INTEGER,
+      updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
   `);
@@ -214,6 +223,20 @@ function initDatabase() {
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
+
+  // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
+  // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
+  db.exec(`
+    DELETE FROM superlike_users
+    WHERE rowid NOT IN (
+      SELECT MIN(rowid)
+      FROM superlike_users
+      GROUP BY uid
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_superlike_users_uid_unique
+      ON superlike_users(uid);
+  `);
 
   migrateSuperlikePostsIfNeeded();
   
@@ -253,6 +276,366 @@ function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_superlike_users_uid
       ON superlike_users(uid);
   `);
+}
+
+
+/* ============================================================
+ * SuperLike DB helpers
+ * ============================================================ */
+
+function getSuperLikeMonitors() {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      id,
+      name,
+      url,
+      enabled,
+      monitor_type
+    FROM monitors
+    WHERE enabled = 1
+      AND monitor_type = 'superlike'
+    ORDER BY id
+  `).all();
+}
+
+function superLikePostIdExists(postId) {
+  initDatabase();
+
+  if (!postId) {
+    return false;
+  }
+
+  return !!db.prepare(`
+    SELECT 1
+    FROM superlike_posts
+    WHERE post_id = ?
+    LIMIT 1
+  `).get(String(postId));
+}
+
+function getExistingSuperLikeUids() {
+  initDatabase();
+
+  return new Set(
+    db.prepare(`
+      SELECT DISTINCT uid
+      FROM superlike_posts
+      WHERE uid IS NOT NULL
+        AND uid <> ''
+    `).all()
+      .map(row => String(row.uid))
+  );
+}
+
+function getLocalDateString(date = new Date()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date);
+
+  const values = Object.fromEntries(
+    parts
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value])
+  );
+
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function saveSuperLikeUser(monitorId, uid, scanDate = null) {
+  initDatabase();
+
+  const normalizedMonitorId = Number(monitorId);
+  const normalizedUid = String(uid || '').trim();
+
+  if (!Number.isFinite(normalizedMonitorId) || normalizedMonitorId <= 0) {
+    throw new Error('saveSuperLikeUser 缺少有效 monitorId');
+  }
+
+  if (!normalizedUid) {
+    return false;
+  }
+
+  const date = scanDate || getLocalDateString();
+
+  const existed = !!db.prepare(`
+    SELECT 1
+    FROM superlike_users
+    WHERE uid = ?
+    LIMIT 1
+  `).get(normalizedUid);
+
+  db.prepare(`
+    INSERT INTO superlike_users(
+      monitor_id,
+      uid,
+      scan_date,
+      first_seen_at,
+      last_seen_at
+    )
+    VALUES(
+      ?, ?, ?,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT(uid)
+    DO UPDATE SET
+      scan_date = excluded.scan_date,
+      last_seen_at = CURRENT_TIMESTAMP
+  `).run(
+    normalizedMonitorId,
+    normalizedUid,
+    date
+  );
+
+  return !existed;
+}
+
+function saveSuperLikeTargetPost(data = {}) {
+  initDatabase();
+
+  const monitorId = Number(data.monitorId);
+  const postId = String(data.postId || '').trim();
+  const uid = String(data.uid || '').trim();
+  const username = data.username || '';
+  const postLink = data.postLink || null;
+  const postText = data.postText || '';
+  const commentsCount = Number(data.commentsCount);
+  const iconSummary = data.iconSummary || '无';
+  const postCreatedAt = data.postCreatedAt || null;
+  const postCreatedAtMs = Number(data.postCreatedAtMs);
+  const rawJson = data.rawJson || null;
+
+  if (!Number.isFinite(monitorId) || monitorId <= 0) {
+    throw new Error('saveSuperLikeTargetPost 缺少有效 monitorId');
+  }
+  if (!postId) {
+    throw new Error('saveSuperLikeTargetPost 缺少 postId');
+  }
+  if (!uid) {
+    throw new Error('saveSuperLikeTargetPost 缺少 uid');
+  }
+
+  const existing = db.prepare(`
+    SELECT
+      id,
+      post_id,
+      comments_count,
+      post_created_at
+    FROM superlike_posts
+    WHERE monitor_id = ?
+      AND uid = ?
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(monitorId, uid);
+
+  if (existing) {
+    const existingComments = Number(existing.comments_count);
+    const existingMs = existing.post_created_at
+      ? Date.parse(existing.post_created_at)
+      : null;
+
+    const shouldReplace =
+      (
+        Number.isFinite(commentsCount)
+        && (
+          !Number.isFinite(existingComments)
+          || commentsCount > existingComments
+        )
+      )
+      ||
+      (
+        Number.isFinite(commentsCount)
+        && Number.isFinite(existingComments)
+        && commentsCount === existingComments
+        && Number.isFinite(postCreatedAtMs)
+        && (
+          !Number.isFinite(existingMs)
+          || postCreatedAtMs > existingMs
+        )
+      );
+
+    if (!shouldReplace) {
+      return {
+        status: 'kept_existing',
+        postId: String(existing.post_id),
+        uid
+      };
+    }
+
+    db.prepare(`
+      DELETE FROM superlike_posts
+      WHERE monitor_id = ?
+        AND uid = ?
+    `).run(monitorId, uid);
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_posts(
+      monitor_id,
+      post_id,
+      uid,
+      username,
+      post_link,
+      post_text,
+      comments_count,
+      current_has_superlike,
+      icon_summary,
+      experience_7d,
+      post_created_at,
+      first_seen_at,
+      last_seen_at,
+      raw_json
+    )
+    VALUES(
+      ?,?,?,?,?,?,?,
+      0,
+      ?,
+      NULL,
+      ?,
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP,
+      ?
+    )
+  `).run(
+    monitorId,
+    postId,
+    uid,
+    username,
+    postLink,
+    postText,
+    commentsCount,
+    iconSummary,
+    postCreatedAt,
+    rawJson
+  );
+
+  return {
+    status: existing ? 'replaced' : 'inserted',
+    postId,
+    uid,
+    username,
+    postLink,
+    commentsCount,
+    iconSummary
+  };
+}
+
+function deletePostsByUidSet(uidSet) {
+  initDatabase();
+
+  const uids = Array.from(uidSet || [])
+    .map(uid => String(uid || '').trim())
+    .filter(Boolean);
+
+  if (uids.length === 0) {
+    return 0;
+  }
+
+  const CHUNK_SIZE = 500;
+  let deleted = 0;
+
+  db.exec('BEGIN');
+
+  try {
+    for (let i = 0; i < uids.length; i += CHUNK_SIZE) {
+      const chunk = uids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+
+      const result = db.prepare(`
+        DELETE FROM superlike_posts
+        WHERE uid IN (${placeholders})
+      `).run(...chunk);
+
+      deleted += result.changes || 0;
+    }
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback error
+    }
+    throw error;
+  }
+
+  return deleted;
+}
+
+function cleanupSuperLikePostsByUsersTable() {
+  initDatabase();
+
+  const result = db.prepare(`
+    DELETE FROM superlike_posts
+    WHERE uid IN (
+      SELECT uid
+      FROM superlike_users
+    )
+  `).run();
+
+  return result.changes || 0;
+}
+
+function getScanCheckpoint(monitorId) {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms
+    FROM superlike_scan_checkpoint
+    WHERE monitor_id = ?
+  `).get(monitorId) || null;
+}
+
+function saveScanCheckpoint(
+  monitorId,
+  latestPostId,
+  latestCreatedAt,
+  latestCreatedAtMs
+) {
+  initDatabase();
+
+  if (
+    !latestPostId
+    || !Number.isFinite(Number(latestCreatedAtMs))
+  ) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_scan_checkpoint(
+      monitor_id,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms,
+      updated_at
+    )
+    VALUES(
+      ?, ?, ?, ?,
+      CURRENT_TIMESTAMP
+    )
+    ON CONFLICT(monitor_id)
+    DO UPDATE SET
+      latest_post_id = excluded.latest_post_id,
+      latest_created_at = excluded.latest_created_at,
+      latest_created_at_ms = excluded.latest_created_at_ms,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    monitorId,
+    String(latestPostId),
+    latestCreatedAt || null,
+    Number(latestCreatedAtMs)
+  );
+
+  return true;
 }
 
 function getMonitors(onlyEnabled = true) {
@@ -688,5 +1071,14 @@ module.exports = {
   saveComment, saveComments, getComments, getAllComments, getCommentIds,
   saveApiResponse, getApiResponses, getAllApiResponses, getApiResponseById,
   getLatestFailedApiResponse, getLatestApiResponse,
-  saveDailyStats, getDailyStats, getMonitorResult
+  saveDailyStats, getDailyStats, getMonitorResult,
+  getSuperLikeMonitors,
+  superLikePostIdExists,
+  getExistingSuperLikeUids,
+  saveSuperLikeUser,
+  saveSuperLikeTargetPost,
+  deletePostsByUidSet,
+  cleanupSuperLikePostsByUsersTable,
+  getScanCheckpoint,
+  saveScanCheckpoint
 };
