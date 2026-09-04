@@ -45,6 +45,16 @@ const SCAN_INTERVAL_MS =
   Number(process.env.SUPERLIKE_SCAN_INTERVAL_MS)
   || 15 * 60 * 1000;
 
+const RATE_LIMIT_BACKOFF_1_MS =
+  Number(process.env.SUPERLIKE_418_BACKOFF_1_MS)
+  || 30 * 60 * 1000;
+
+const RATE_LIMIT_BACKOFF_2_MS =
+  Number(process.env.SUPERLIKE_418_BACKOFF_2_MS)
+  || 60 * 60 * 1000;
+
+let consecutive418 = 0;
+
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
   || 50;
@@ -133,7 +143,9 @@ function deleteSuperLikeUsersByUid(uidSet) {
   const CHUNK_SIZE = 500;
   let deleted = 0;
 
-  const deleteTx = db.transaction(() => {
+  db.exec('BEGIN');
+
+  try {
     for (let i = 0; i < uids.length; i += CHUNK_SIZE) {
       const chunk = uids.slice(i, i + CHUNK_SIZE);
       const placeholders = chunk.map(() => '?').join(',');
@@ -145,10 +157,57 @@ function deleteSuperLikeUsersByUid(uidSet) {
 
       deleted += result.changes || 0;
     }
-  });
 
-  deleteTx();
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore
+    }
+
+    throw error;
+  }
+
   return deleted;
+}
+
+
+
+class Weibo418Error extends Error {
+  constructor(message = '微博 HTTP 418') {
+    super(message);
+    this.name = 'Weibo418Error';
+    this.isWeibo418 = true;
+  }
+}
+
+function isWeibo418Error(error) {
+  return !!(
+    error
+    && (
+      error.isWeibo418
+      || error.name === 'Weibo418Error'
+      || String(error.message || '').includes('HTTP 418')
+    )
+  );
+}
+
+async function assertPageNot418(page, response = null) {
+  if (response && response.status && response.status() === 418) {
+    throw new Weibo418Error('微博首页返回 HTTP 418');
+  }
+
+  const title = await page.title().catch(() => '');
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+
+  if (
+    title.includes('418')
+    || bodyText.includes('HTTP ERROR 418')
+    || bodyText.includes('HTTP 418')
+  ) {
+    throw new Weibo418Error('微博页面检测到 HTTP 418');
+  }
 }
 
 
@@ -742,6 +801,18 @@ function waitForChaohuaResponse(
       console.log(
         `[SuperLike][AJAX] status=${response.status()} flowId=${info.flowId} page=${info.page}`
       );
+
+      if (response.status() === 418) {
+        done = true;
+        clearTimeout(timer);
+        page.off('response', onResponse);
+        resolve({
+          http418: true,
+          url: response.url(),
+          page: info.page
+        });
+        return;
+      }
 
       let json;
 
@@ -2158,20 +2229,27 @@ async function scanOneSuperLikeMonitor(
     );
 
 
-    await page.goto(
-      config.homepage,
-      {
-        waitUntil:
-          'domcontentloaded',
+    const homepageResponse =
+      await page.goto(
+        config.homepage,
+        {
+          waitUntil:
+            'domcontentloaded',
 
-        timeout:
-          60 * 1000
-      }
-    );
+          timeout:
+            60 * 1000
+        }
+      );
 
 
     await page.waitForTimeout(
       INITIAL_WAIT_MS
+    );
+
+
+    await assertPageNot418(
+      page,
+      homepageResponse
     );
 
 
@@ -2211,6 +2289,11 @@ async function scanOneSuperLikeMonitor(
 
     const feedResult =
       await feedWaiter;
+
+
+    if (feedResult?.http418) {
+      throw new Weibo418Error('_feed 返回 HTTP 418');
+    }
 
 
     if (!feedResult) {
@@ -2402,6 +2485,11 @@ async function scanOneSuperLikeMonitor(
         await nextWaiter;
 
 
+      if (next?.http418) {
+        throw new Weibo418Error('sort_time 下一页返回 HTTP 418');
+      }
+
+
       /*
        * 第一次没触发时，再滚一次。
        */
@@ -2419,6 +2507,10 @@ async function scanOneSuperLikeMonitor(
 
         next =
           await retryWaiter;
+
+        if (next?.http418) {
+          throw new Weibo418Error('sort_time 重试返回 HTTP 418');
+        }
       }
 
 
@@ -2624,6 +2716,10 @@ async function scanSuperLikePosts() {
         );
 
       } catch (error) {
+        if (isWeibo418Error(error)) {
+          throw error;
+        }
+
         console.error(
           `[SuperLike] ${monitor.name} 扫描失败：`,
           error
@@ -2664,12 +2760,49 @@ async function scanSuperLikePosts() {
 async function runSuperLikeRoundSafely(label = '本轮') {
   try {
     await scanSuperLikePosts();
+
+    consecutive418 = 0;
+
+    return {
+      ok: true,
+      rateLimited: false
+    };
+
   } catch (error) {
+    if (isWeibo418Error(error)) {
+      consecutive418++;
+
+      console.error(
+        `[SuperLike] ${label}命中微博 HTTP 418，本轮立即停止。连续418=${consecutive418}`
+      );
+
+      return {
+        ok: false,
+        rateLimited: true
+      };
+    }
+
     console.error(
       `[SuperLike] ${label}扫描失败，但 Batch 不会中断：`,
       error
     );
+
+    return {
+      ok: false,
+      rateLimited: false
+    };
   }
+}
+
+
+function getNextDelayMs(result) {
+  if (!result?.rateLimited) {
+    return SCAN_INTERVAL_MS;
+  }
+
+  return consecutive418 <= 1
+    ? RATE_LIMIT_BACKOFF_1_MS
+    : RATE_LIMIT_BACKOFF_2_MS;
 }
 
 
@@ -2694,7 +2827,11 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    `# 每 ${SCAN_INTERVAL_MS / 60000} 分钟重新开始`
+    `# 正常间隔 ${SCAN_INTERVAL_MS / 60000} 分钟`
+  );
+
+  console.log(
+    `# HTTP 418退避：第一次 ${RATE_LIMIT_BACKOFF_1_MS / 60000} 分钟，连续418 ${RATE_LIMIT_BACKOFF_2_MS / 60000} 分钟`
   );
 
   console.log(
@@ -2726,29 +2863,32 @@ async function startSuperLikeBatch() {
   );
 
 
-  /*
-   * 先建立定时器，再执行首次扫描。
-   * 这样即使首次扫描发生异常，15分钟后的下一轮仍然存在。
-   */
-  setInterval(
-    () => {
-      console.log('');
-      console.log(
-        `[SuperLike] ${SCAN_INTERVAL_MS / 60000}分钟到，重新开始。`
-      );
+  const scheduleNext = async (label) => {
+    const result =
+      await runSuperLikeRoundSafely(label);
 
-      void runSuperLikeRoundSafely('定时');
-    },
+    const delayMs =
+      getNextDelayMs(result);
 
-    SCAN_INTERVAL_MS
-  );
+    console.log(
+      `[SuperLike] 下一轮将在 ${Math.round(delayMs / 60000)} 分钟后开始。`
+    );
+
+    setTimeout(
+      () => {
+        console.log('');
+        console.log(
+          '[SuperLike] 到达下一轮时间，重新开始。'
+        );
+
+        void scheduleNext('定时');
+      },
+      delayMs
+    );
+  };
 
 
-  /*
-   * 首次立即执行。
-   * 错误只记录，不向外抛出，不影响后续定时扫描。
-   */
-  await runSuperLikeRoundSafely('首次');
+  await scheduleNext('首次');
 }
 
 
@@ -2770,6 +2910,8 @@ module.exports = {
   getSuperLikeMonitors,
   scanSuperLikePosts,
   runSuperLikeRoundSafely,
+  isWeibo418Error,
+  assertPageNot418,
   scanOneSuperLikeMonitor,
   startSuperLikeBatch,
   hasSuperLike,
