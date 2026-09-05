@@ -6,6 +6,54 @@ const {
 let batchLogger = null;
   
 const path = require('path');
+
+function getPlaywrightProxyConfig(rawValue) {
+  const raw = String(rawValue || '').trim();
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+
+    const server =
+      `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
+
+    const proxy = { server };
+
+    if (parsed.username) {
+      proxy.username = decodeURIComponent(parsed.username);
+    }
+
+    if (parsed.password) {
+      proxy.password = decodeURIComponent(parsed.password);
+    }
+
+    return proxy;
+  } catch {
+    return {
+      server: raw
+    };
+  }
+}
+
+function getModeProxyConfig(mode) {
+  const perMode =
+    mode === '2'
+      ? process.env.SUPERLIKE_MODE2_PROXY
+      : mode === '3'
+        ? process.env.SUPERLIKE_MODE3_PROXY
+        : mode === '4'
+          ? process.env.SUPERLIKE_MODE4_PROXY
+          : process.env.SUPERLIKE_RECHECK_PROXY;
+
+  return getPlaywrightProxyConfig(
+    perMode
+    || process.env.WEIBO_PROXY
+  );
+}
+
 const readline = require('readline');
 
 const {
@@ -2426,11 +2474,21 @@ async function runLightSuperLikeRecheck(signal = null) {
      * 使用和 SuperLike 扫描一致的持久化 Profile。
      * 这样可以复用已经建立好的微博 visitor/session。
      */
+    const proxy =
+      getModeProxyConfig('3');
+
+    if (proxy) {
+      console.log(
+        `[模式3] 使用代理：${proxy.server}`
+      );
+    }
+
     context =
       await chromium.launchPersistentContext(
         profileDir,
         {
           headless: true,
+          ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
             height: 900
@@ -3008,11 +3066,21 @@ async function runLightCommentRecheck(signal = null) {
         'superlike-browser-profile-recheck-light'
       );
 
+    const proxy =
+      getModeProxyConfig('2');
+
+    if (proxy) {
+      console.log(
+        `[模式2] 使用代理：${proxy.server}`
+      );
+    }
+
     context =
       await chromium.launchPersistentContext(
         profileDir,
         {
           headless: true,
+          ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
             height: 900
@@ -4065,11 +4133,21 @@ async function runMode4Forever() {
   let round = 0;
 
   try {
+    const proxy =
+      getModeProxyConfig('4');
+
+    if (proxy) {
+      console.log(
+        `[模式4] 使用代理：${proxy.server}`
+      );
+    }
+
     context =
       await chromium.launchPersistentContext(
         profileDir,
         {
           headless: false,
+          ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
             height: 900
@@ -4431,6 +4509,15 @@ async function main() {
 
   try {
 
+    const proxy =
+      getModeProxyConfig('1');
+
+    if (proxy) {
+      console.log(
+        `[模式1] 使用代理：${proxy.server}`
+      );
+    }
+
     context =
       await chromium.launchPersistentContext(
         profileDir,
@@ -4443,6 +4530,8 @@ async function main() {
            */
           headless:
             false,
+
+          ...(proxy ? { proxy } : {}),
 
           viewport: {
             width:
