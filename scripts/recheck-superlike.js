@@ -1922,14 +1922,23 @@ function getCommentCheckIntervalMinutes(commentsCount) {
   return 10;
 }
 
-function getHotCandidatePosts() {
+function getCommentCandidatePosts(queueType = 'normal') {
   /*
-   * Mode2 到期队列：
-   * - 不限制60条；本轮取出全部已经到期的数据
-   * - 从未检查过（comment_next_check_at IS NULL）的帖子立即进入队列
-   * - 到期集合内仍按 comments_count DESC，越接近21越优先
-   * - 每条成功检查后重新计算下一次检查时间
+   * Mode2 双队列：
+   *
+   * HOT：
+   *   comments_count 18~20
+   *   每30秒独立一轮，不被普通队列阻塞。
+   *
+   * NORMAL：
+   *   comments_count 0~17
+   *   只处理已到期/从未检查的数据，并持续轮询。
+   *
+   * 两个队列互斥，因此不会同一时刻重复检查同一条帖子。
    */
+  const isHot =
+    queueType === 'hot';
+
   return db.prepare(`
     SELECT
       id,
@@ -1945,6 +1954,11 @@ function getHotCandidatePosts() {
     WHERE post_id IS NOT NULL
       AND post_id <> ''
       AND comments_count < ?
+      AND ${
+        isHot
+          ? 'comments_count >= 18'
+          : 'comments_count < 18'
+      }
       AND (
         comment_next_check_at IS NULL
         OR datetime(comment_next_check_at) <= CURRENT_TIMESTAMP
@@ -3314,9 +3328,19 @@ async function getCommentsCountFromDomOnly(
   }
 }
 
-async function runLightCommentRecheck(signal = null) {
+async function runLightCommentRecheck(
+  signal = null,
+  queueType = 'normal'
+) {
   const posts =
-    getHotCandidatePosts();
+    getCommentCandidatePosts(
+      queueType
+    );
+
+  const queueLabel =
+    queueType === 'hot'
+      ? 'HOT'
+      : 'NORMAL';
 
   const stats = {
     total: posts.length,
@@ -3329,15 +3353,18 @@ async function runLightCommentRecheck(signal = null) {
 
   console.log('');
   console.log('########################################');
-  console.log('# SuperLike Recheck - 模式2 浏览器AJAX评论复检');
+  console.log(`# SuperLike Recheck - 模式2 ${queueLabel}队列`);
   console.log('# 单个 headless Chromium + 单个 Page + 页面内 buildComments fetch');
   console.log(`# 评论 >= ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
   console.log('# 其余 → 只更新 comments_count');
-  console.log('# 每30秒为最短轮询间隔；上一轮没跑完时不强制取消');
-  console.log('# 只处理 comment_next_check_at 已到期或从未检查过的帖子');
-  console.log('# 本轮无数量上限；到期集合内按 comments_count DESC 优先');
+  console.log(
+    queueType === 'hot'
+      ? '# HOT：只查18-20条；每30秒独立调度，不等待普通队列'
+      : '# NORMAL：只查0-17条；按comment_next_check_at到期轮询'
+  );
+  console.log('# 当前队列无数量上限；队列内按 comments_count DESC 优先');
   console.log('# 18-20条≈30秒；15-17条≈1分钟；10-14条≈2分钟；0-9条≈10分钟');
-  console.log(`本轮到期=${posts.length}`);
+  console.log(`本轮${queueLabel}到期=${posts.length}`);
   console.log('########################################');
 
   let context = null;
@@ -3370,7 +3397,9 @@ async function runLightCommentRecheck(signal = null) {
         __dirname,
         '..',
         'data',
-        'superlike-browser-profile-recheck-light'
+        queueType === 'hot'
+          ? 'superlike-browser-profile-recheck-hot'
+          : 'superlike-browser-profile-recheck-normal'
       );
 
     proxyAssignment =
@@ -3644,7 +3673,7 @@ async function runLightCommentRecheck(signal = null) {
   }
 
   console.log('');
-  console.log('========== 模式2 DOM评论复检完成 ==========');
+  console.log(`========== 模式2 ${queueLabel}评论复检完成 ==========`);
   console.log(`总帖子：${stats.total}`);
   console.log(`成功读取：${stats.checked}`);
   console.log(`更新：${stats.updated}`);
@@ -4691,6 +4720,106 @@ async function runMode4Forever() {
  * Mode2 则让当前到期队列完整跑完，避免低评论帖子长期饿死。
  * ============================================================
  */
+async function runMode2DualForever() {
+  console.log('');
+  console.log('[Recheck] 模式2：双独立循环启动。');
+  console.log('[Recheck] HOT：18-20评论，每30秒独立检查一次。');
+  console.log('[Recheck] NORMAL：0-17评论，持续处理到期队列，不阻塞HOT。');
+
+  async function runHotLoop() {
+    let round = 0;
+
+    while (true) {
+      round++;
+
+      const startedAt =
+        Date.now();
+
+      console.log('');
+      console.log(
+        `[Recheck][HOT] ===== 第${round}轮开始 =====`
+      );
+
+      try {
+        await runLightCommentRecheck(
+          null,
+          'hot'
+        );
+      } catch (error) {
+        if (!isAbortError(error)) {
+          console.error(
+            `[Recheck][HOT] 第${round}轮异常：`,
+            error
+          );
+        }
+      }
+
+      const elapsed =
+        Date.now() - startedAt;
+
+      const waitMs =
+        Math.max(
+          0,
+          MODE2_ROUND_INTERVAL_MS
+            - elapsed
+        );
+
+      if (waitMs > 0) {
+        await sleep(
+          waitMs
+        );
+      } else {
+        console.log(
+          '[Recheck][HOT] 本轮超过30秒，立即开始下一轮。'
+        );
+      }
+    }
+  }
+
+
+  async function runNormalLoop() {
+    let round = 0;
+
+    while (true) {
+      round++;
+
+      console.log('');
+      console.log(
+        `[Recheck][NORMAL] ===== 第${round}轮开始 =====`
+      );
+
+      try {
+        await runLightCommentRecheck(
+          null,
+          'normal'
+        );
+      } catch (error) {
+        if (!isAbortError(error)) {
+          console.error(
+            `[Recheck][NORMAL] 第${round}轮异常：`,
+            error
+          );
+        }
+      }
+
+      /*
+       * NORMAL 没有到期数据时不要空转烧CPU；
+       * 有大量数据时本轮跑完后也只短暂停一下，再继续捞新的到期项。
+       */
+      await sleep(
+        1000
+      );
+    }
+  }
+
+
+  await Promise.all([
+    runHotLoop(),
+    runNormalLoop()
+  ]);
+}
+
+
 async function runLightModeForever(mode) {
   let round = 0;
 
@@ -4891,7 +5020,7 @@ function askRecheckMode() {
     console.log('');
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
-    console.log('2 = 评论到期队列（30秒最短间隔；不限制条数；按评论数动态复检；>=21删除）');
+    console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
     console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；最久未检查优先；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
@@ -4952,7 +5081,12 @@ async function main() {
     return;
   }
 
-  if (mode === '2' || mode === '3') {
+  if (mode === '2') {
+    await runMode2DualForever();
+    return;
+  }
+
+  if (mode === '3') {
     await runLightModeForever(mode);
     return;
   }
