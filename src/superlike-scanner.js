@@ -3097,27 +3097,24 @@ async function scanOneSuperLikeMonitor(
 
 
     if (
-      delegatedToLocal
+      !delegatedToLocal
     ) {
-      return;
-    }
+      const seconds =
+        Math.round(
+          (
+            Date.now()
+            -
+            startedAt
+          )
+          /
+          1000
+        );
 
-    const seconds =
-      Math.round(
-        (
-          Date.now()
-          -
-          startedAt
-        )
-        /
-        1000
+
+      console.log('');
+      console.log(
+        `========== ${monitor.name} 本轮结果 ==========`
       );
-
-
-    console.log('');
-    console.log(
-      `========== ${monitor.name} 本轮结果 ==========`
-    );
 
     console.log(
       '扫描页数：',
@@ -3189,9 +3186,10 @@ async function scanOneSuperLikeMonitor(
       `${seconds}秒`
     );
 
-    console.log(
-      '=============================================='
-    );
+      console.log(
+        '=============================================='
+      );
+    }
   }
 }
 
