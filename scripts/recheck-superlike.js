@@ -6,6 +6,9 @@ const {
 let batchLogger = null;
   
 const path = require('path');
+const {
+  ProxyPool
+} = require('../src/proxy-pool');
 
 function getPlaywrightProxyConfig(rawValue) {
   const raw = String(rawValue || '').trim();
@@ -37,6 +40,24 @@ function getPlaywrightProxyConfig(rawValue) {
     };
   }
 }
+
+const MODE2_PROXY_POOL =
+  new ProxyPool({
+    rawPool:
+      process.env.SUPERLIKE_MODE2_PROXY_POOL
+      || '',
+    fallback:
+      process.env.SUPERLIKE_MODE2_PROXY
+      || process.env.WEIBO_PROXY
+      || '',
+    cooldownMs:
+      Number(
+        process.env.SUPERLIKE_PROXY_COOLDOWN_MS
+      )
+      || 30 * 60 * 1000,
+    name:
+      'mode2'
+  });
 
 function getModeProxyConfig(mode) {
   /*
@@ -2445,6 +2466,7 @@ async function runLightSuperLikeRecheck(signal = null) {
 
   let context = null;
   let page = null;
+  let proxyAssignment = null;
 
   const profileDir =
     path.join(
@@ -3087,14 +3109,39 @@ async function runLightCommentRecheck(signal = null) {
         'superlike-browser-profile-recheck-light'
       );
 
-    const proxy =
-      getModeProxyConfig('2');
+    proxyAssignment =
+      MODE2_PROXY_POOL.acquire();
 
-    if (proxy) {
+    if (
+      proxyAssignment.allCoolingDown
+    ) {
+      const waitMinutes =
+        Math.max(
+          1,
+          Math.ceil(
+            (
+              proxyAssignment.nextReadyAt
+              - Date.now()
+            )
+            / 60000
+          )
+        );
+
       console.log(
-        `[模式2] 使用代理：${proxy.server}`
+        `[模式2] 代理池全部处于418冷却中，本轮跳过；最早约${waitMinutes}分钟后可用。`
       );
+
+      return stats;
     }
+
+    const proxy =
+      proxyAssignment.proxy;
+
+    console.log(
+      proxy
+        ? `[模式2] 本轮代理：${proxyAssignment.masked}`
+        : '[模式2] 本轮使用本地IP'
+    );
 
     context =
       await chromium.launchPersistentContext(
@@ -3141,6 +3188,18 @@ async function runLightCommentRecheck(signal = null) {
             `[轻量浏览器 ${i + 1}/${posts.length}] ` +
             `ID=${post.id} | Post=${post.post_id} | HTTP 418，本轮停止`
           );
+
+          if (
+            proxyAssignment?.raw
+          ) {
+            MODE2_PROXY_POOL.markBlocked(
+              proxyAssignment.raw
+            );
+
+            console.log(
+              `[模式2] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
+            );
+          }
 
           break;
         }
