@@ -6,6 +6,141 @@ let currentKeyword = '';
 let sortKey = 'post_created_at';
 let sortDirection = 'desc';
 
+const SEARCH_STATE_KEY =
+  'superlike.searchState';
+
+
+function saveSearchState() {
+  try {
+    localStorage.setItem(
+      SEARCH_STATE_KEY,
+      JSON.stringify({
+        keyword:
+          document
+            .getElementById('keyword')
+            ?.value
+            ?? '',
+        hideBlack:
+          document
+            .getElementById('hideBlack')
+            ?.checked
+            !== false,
+        pageSize,
+        currentPage,
+        sortKey,
+        sortDirection
+      })
+    );
+  } catch {
+    // localStorage 不可用时不影响页面正常查询。
+  }
+}
+
+
+function restoreSearchState() {
+  try {
+    const raw =
+      localStorage.getItem(
+        SEARCH_STATE_KEY
+      );
+
+    if (!raw) {
+      return;
+    }
+
+    const state =
+      JSON.parse(raw);
+
+    const keywordInput =
+      document.getElementById(
+        'keyword'
+      );
+
+    if (keywordInput) {
+      keywordInput.value =
+        String(
+          state.keyword
+          ?? ''
+        );
+    }
+
+    const hideBlackInput =
+      document.getElementById(
+        'hideBlack'
+      );
+
+    if (
+      hideBlackInput
+      &&
+      typeof state.hideBlack
+        === 'boolean'
+    ) {
+      hideBlackInput.checked =
+        state.hideBlack;
+    }
+
+    const restoredPageSize =
+      Number(state.pageSize);
+
+    if (
+      [20, 50, 100, 200]
+        .includes(
+          restoredPageSize
+        )
+    ) {
+      pageSize =
+        restoredPageSize;
+
+      const pageSizeSelect =
+        document.getElementById(
+          'pageSize'
+        );
+
+      if (pageSizeSelect) {
+        pageSizeSelect.value =
+          String(pageSize);
+      }
+    }
+
+    if (
+      Number(state.currentPage)
+      >= 1
+    ) {
+      currentPage =
+        Number(
+          state.currentPage
+        );
+    }
+
+    if (
+      [
+        'post_created_at',
+        'comments_count',
+        'uid',
+        'username'
+      ].includes(
+        state.sortKey
+      )
+    ) {
+      sortKey =
+        state.sortKey;
+    }
+
+    if (
+      state.sortDirection
+        === 'asc'
+      ||
+      state.sortDirection
+        === 'desc'
+    ) {
+      sortDirection =
+        state.sortDirection;
+    }
+  } catch {
+    // 保存内容损坏时使用页面默认值。
+  }
+}
+
 
 const CSV_COLUMNS = [
   {
@@ -238,6 +373,8 @@ async function loadData(
   currentKeyword =
     getKeyword();
 
+  saveSearchState();
+
 
   const params =
     new URLSearchParams();
@@ -393,6 +530,8 @@ async function loadData(
 
   renderTable();
   renderPagination();
+
+  saveSearchState();
 }
 
 
@@ -557,6 +696,8 @@ function sortBy(key) {
   updateSortIndicators();
   renderTable();
   renderPagination();
+
+  saveSearchState();
 }
 
 
@@ -899,6 +1040,7 @@ function createPageButton(
 
       renderTable();
       renderPagination();
+      saveSearchState();
 
       window.scrollTo({
         top: 0,
@@ -1048,6 +1190,7 @@ function changePageSize() {
 
   renderTable();
   renderPagination();
+  saveSearchState();
 }
 
 
@@ -1429,8 +1572,10 @@ document
 
 initCsvColumns();
 
+restoreSearchState();
+
 loadData(
-  true
+  false
 );
 
 
