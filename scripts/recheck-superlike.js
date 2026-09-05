@@ -4938,7 +4938,7 @@ async function main() {
            * 后面稳定以后再改 headless。
            */
           headless:
-            false,
+            true,
 
           ...(proxy ? { proxy } : {}),
 
