@@ -801,7 +801,11 @@ function renderTable() {
       </td>
 
 
-      <td class="post-text">
+      <td
+        class="post-text copy-post-link"
+        data-post-link="${escapeHtml(row.post_link || '')}"
+        title="点击复制帖子链接"
+      >
         ${escapeHtml(
           row.post_text || ''
         )}
@@ -858,6 +862,37 @@ function renderTable() {
       tr
     );
   }
+}
+
+
+async function copyPostLink(cell) {
+  const link = cell?.dataset?.postLink || '';
+
+  if (!link) {
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(link);
+  } catch {
+    const textarea = document.createElement('textarea');
+    textarea.value = link;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    document.execCommand('copy');
+    textarea.remove();
+  }
+
+  const oldTitle = cell.title;
+  cell.title = '已复制';
+  cell.classList.add('copy-success');
+
+  setTimeout(() => {
+    cell.title = oldTitle;
+    cell.classList.remove('copy-success');
+  }, 800);
 }
 
 
@@ -1551,6 +1586,19 @@ function downloadCsv() {
 /* ============================================================
  * Events
  * ============================================================ */
+
+document
+  .getElementById('tbody')
+  .addEventListener('click', event => {
+    const cell = event.target.closest('.copy-post-link');
+
+    if (cell) {
+      copyPostLink(cell);
+    }
+  });
+
+
+
 
 document
   .getElementById(
