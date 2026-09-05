@@ -96,7 +96,7 @@ function normalizeProxy(line) {
     return null;
   }
 
-  return /^socks5:///i.test(
+  return /^socks5:\/\//i.test(
     noComment
   )
     ? noComment
