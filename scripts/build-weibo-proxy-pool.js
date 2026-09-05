@@ -803,9 +803,57 @@ async function main() {
   }
 }
 
-main().catch(error => {
+const MAINTAIN_INTERVAL_MS =
+  Number(
+    process.env.WEIBO_PROXY_MAINTAIN_INTERVAL_MS
+  )
+  || 15 * 60 * 1000;
+
+async function runForever() {
+  let round = 0;
+
+  console.log(
+    `[健康池] 常驻维护已启动：每 ${Math.round(MAINTAIN_INTERVAL_MS / 60000)} 分钟拉取/复测一次。`
+  );
+
+  while (true) {
+    round++;
+
+    console.log('');
+    console.log(
+      `========== 健康代理池第 ${round} 轮 ==========`
+    );
+
+    try {
+      await main();
+    } catch (error) {
+      console.error(
+        '[微博健康代理池维护失败]',
+        error
+      );
+
+      console.log(
+        '[健康池] 本轮失败不退出，15分钟后继续下一轮。'
+      );
+    }
+
+    console.log(
+      `[健康池] 第 ${round} 轮结束；${Math.round(MAINTAIN_INTERVAL_MS / 60000)} 分钟后开始下一轮。`
+    );
+
+    await new Promise(
+      resolve =>
+        setTimeout(
+          resolve,
+          MAINTAIN_INTERVAL_MS
+        )
+    );
+  }
+}
+
+runForever().catch(error => {
   console.error(
-    '[微博健康代理池维护失败]',
+    '[微博健康代理池常驻任务异常退出]',
     error
   );
 
