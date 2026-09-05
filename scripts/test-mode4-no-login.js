@@ -86,8 +86,8 @@ async function main() {
   console.log('');
   console.log('############################################');
   console.log('# Mode4 无登录分页测试');
-  console.log('# 全新临时 BrowserContext，不使用现有登录 Profile');
-  console.log('# 连续测试第1、2、3页');
+  console.log('# 全新临时 BrowserContext；先访问 m.weibo.cn 自动建立 Visitor Session，不扫码');
+  console.log('# Visitor Session 建立后连续测试第1、2、3页');
   console.log('############################################');
   console.log('Monitor: ' + monitor.name);
   console.log('containerid: ' + config.chaoLikeListContainerId);
@@ -96,6 +96,65 @@ async function main() {
   try {
     const context = await browser.newContext();
     await context.clearCookies();
+
+    console.log('');
+    console.log('========== 建立匿名 Visitor Session ==========');
+
+    const page =
+      await context.newPage();
+
+    try {
+      const response =
+        await page.goto(
+          'https://m.weibo.cn/',
+          {
+            waitUntil: 'domcontentloaded',
+            timeout: TIMEOUT_MS
+          }
+        );
+
+      console.log(
+        'm.weibo.cn HTTP状态: ' +
+        (response ? response.status() : '无Response')
+      );
+
+      /*
+       * Visitor System 的 JS 可能会自动设置匿名 SUBP/SUB/_T_WM 等
+       * visitor cookie，因此给页面一点时间完成跳转/脚本。
+       * 不扫码、不输入账号密码。
+       */
+      await page.waitForTimeout(5000);
+
+      console.log(
+        '最终URL: ' +
+        page.url()
+      );
+
+      const cookies =
+        await context.cookies();
+
+      console.log(
+        '匿名Cookie数量: ' +
+        cookies.length
+      );
+
+      if (cookies.length) {
+        console.log(
+          'Cookie名称: ' +
+          cookies
+            .map(item => item.name)
+            .join(', ')
+        );
+      }
+
+    } catch (error) {
+      console.log(
+        '建立Visitor Session异常: ' +
+        error.message
+      );
+    } finally {
+      await page.close();
+    }
 
     let sinceId = null;
     const results = [];
@@ -121,11 +180,11 @@ async function main() {
     });
 
     if (results.length >= 3 && results.every(item => item.ok)) {
-      console.log('结果：前3页都不需要扫码登录。Mode4 很可能可以改成匿名请求。');
+      console.log('结果：Visitor Session 下前3页都成功，不需要扫码登录。Mode4 可以继续验证更多分页后改成匿名 Visitor 模式。');
     } else if (results[0]?.ok && results[1] && !results[1].ok) {
-      console.log('结果：第1页匿名成功、第2页匿名失败，符合“分页开始需要登录/额外会话”的猜测。');
+      console.log('结果：Visitor Session 下第1页成功、第2页失败，说明后续分页可能确实需要更强登录态。');
     } else if (!results[0]?.ok) {
-      console.log('结果：第1页匿名请求本身就失败；当前网络/IP/Visitor限制下不能认为第一页免登录。');
+      console.log('结果：即使先建立 Visitor Session，第1页仍失败；当前环境下 Mode4 不能仅靠普通匿名 Visitor 会话。');
     } else {
       console.log('结果：出现中途失败，请根据上面的 HTTP/API ok/Body 进一步判断。');
     }
