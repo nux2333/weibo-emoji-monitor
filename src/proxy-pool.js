@@ -618,6 +618,13 @@ class ProxyPool {
     this.lastFileReloadAt =
       0;
 
+    /*
+     * 当前进程已经实际连接失败的代理暂时不再重新加入。
+     * 即使健康池文件尚未来得及淘汰它，也不会5秒后复活。
+     */
+    this.runtimeRemoved =
+      new Set();
+
     this.items =
       shuffleArray(
         Array.from(
@@ -716,7 +723,50 @@ class ProxyPool {
     const fromFile =
       loadProxyPoolFile(
         this.filePath
-      );
+      )
+        .filter(
+          raw =>
+            !this.runtimeRemoved.has(
+              raw
+            )
+        );
+
+    /*
+     * 对健康池文本文件以文件当前内容为准：
+     * 维护器删掉的失效代理，会从长驻 Scan/Mode2 内存中同步消失。
+     */
+    if (
+      String(this.filePath)
+        .toLowerCase()
+        .endsWith('.txt')
+    ) {
+      const before =
+        this.items.join('\n');
+
+      const next =
+        shuffleArray(
+          fromFile
+        );
+
+      const after =
+        next.join('\n');
+
+      if (
+        before !== after
+      ) {
+        this.items =
+          next;
+
+        this.index =
+          0;
+
+        console.log(
+          `[ProxyPool:${this.name}] 健康代理文件已刷新，当前池=${this.items.length}。`
+        );
+      }
+
+      return;
+    }
 
     if (
       fromFile.length === 0
@@ -750,7 +800,7 @@ class ProxyPool {
         0;
 
       console.log(
-        `[ProxyPool:${this.name}] 健康代理文件已刷新，当前池=${this.items.length}。`
+        `[ProxyPool:${this.name}] 代理文件已刷新，当前池=${this.items.length}。`
       );
     }
   }
@@ -1082,6 +1132,10 @@ class ProxyPool {
 
     const before =
       this.items.length;
+
+    this.runtimeRemoved.add(
+      raw
+    );
 
     this.items =
       this.items.filter(
