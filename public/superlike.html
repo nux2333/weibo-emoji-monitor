@@ -444,6 +444,20 @@
       </option>
     </select>
 
+    <label
+      style="display:flex;align-items:center;gap:6px;padding:0 6px;cursor:pointer;"
+      title="勾选后隐藏用户名、帖子内容或Icon命中黑粉关键词的数据"
+    >
+      <input
+        id="hideBlack"
+        type="checkbox"
+        checked
+        onchange="changeHideBlack()"
+        style="width:auto;max-width:none;"
+      >
+      不显示猪
+    </label>
+
     <button
       onclick="toggleCsvPanel()"
     >
