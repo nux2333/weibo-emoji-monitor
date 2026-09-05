@@ -289,6 +289,12 @@ function isProxyConnectionError(error) {
     ||
     /ERR_CONNECTION_REFUSED/i.test(text)
     ||
+    /ERR_TIMED_OUT/i.test(text)
+    ||
+    /Timeout \d+ms exceeded/i.test(text)
+    ||
+    /Navigation timeout/i.test(text)
+    ||
     /407\b/i.test(text)
     ||
     /402\b/i.test(text)
@@ -2751,7 +2757,9 @@ async function scanOneSuperLikeMonitor(
             'domcontentloaded',
 
           timeout:
-            60 * 1000
+            proxy
+              ? 15 * 1000
+              : 60 * 1000
         }
       );
 
