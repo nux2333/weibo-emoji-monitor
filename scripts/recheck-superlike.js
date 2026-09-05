@@ -43,6 +43,14 @@ function getPlaywrightProxyConfig(rawValue) {
 
 const MODE2_PROXY_POOL =
   new ProxyPool({
+    filePath:
+      process.env.SUPERLIKE_PROXY_POOL_FILE
+      || path.join(
+        __dirname,
+        '..',
+        'data',
+        'webshare-proxies.json'
+      ),
     rawPool:
       process.env.SUPERLIKE_MODE2_PROXY_POOL
       || '',
