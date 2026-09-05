@@ -381,6 +381,114 @@ function isSuperLikeUser(uid) {
   );
 }
 
+function getRecentSuperLikeProfileStatus(
+  monitorId,
+  uid,
+  cacheMinutes = 15
+) {
+  initDatabase();
+
+  const normalizedMonitorId =
+    Number(monitorId);
+
+  const normalizedUid =
+    String(uid || '').trim();
+
+  const minutes =
+    Math.max(
+      0,
+      Number(cacheMinutes) || 0
+    );
+
+  if (
+    !Number.isFinite(normalizedMonitorId)
+    ||
+    normalizedMonitorId <= 0
+    ||
+    !normalizedUid
+  ) {
+    return null;
+  }
+
+  const row =
+    db.prepare(`
+      SELECT
+        profile_status,
+        profile_last_checked_at
+      FROM superlike_posts
+      WHERE monitor_id = ?
+        AND uid = ?
+        AND profile_last_checked_at IS NOT NULL
+        AND datetime(profile_last_checked_at)
+            >= datetime('now', '-' || ? || ' minutes')
+      ORDER BY datetime(profile_last_checked_at) DESC
+      LIMIT 1
+    `).get(
+      normalizedMonitorId,
+      normalizedUid,
+      minutes
+    );
+
+  return row
+    ? {
+        status:
+          String(
+            row.profile_status
+            || 'UNKNOWN'
+          ),
+
+        checkedAt:
+          row.profile_last_checked_at
+          || null
+      }
+    : null;
+}
+
+function markSuperLikeProfileChecked(
+  monitorId,
+  uid,
+  status
+) {
+  initDatabase();
+
+  const normalizedMonitorId =
+    Number(monitorId);
+
+  const normalizedUid =
+    String(uid || '').trim();
+
+  const normalizedStatus =
+    String(status || 'UNKNOWN')
+      .trim()
+      .toUpperCase();
+
+  if (
+    !Number.isFinite(normalizedMonitorId)
+    ||
+    normalizedMonitorId <= 0
+    ||
+    !normalizedUid
+  ) {
+    return 0;
+  }
+
+  const result =
+    db.prepare(`
+      UPDATE superlike_posts
+      SET
+        profile_last_checked_at = CURRENT_TIMESTAMP,
+        profile_status = ?
+      WHERE monitor_id = ?
+        AND uid = ?
+    `).run(
+      normalizedStatus,
+      normalizedMonitorId,
+      normalizedUid
+    );
+
+  return result.changes || 0;
+}
+
 function saveSuperLikeUser(monitorId, uid, scanDate = null) {
   initDatabase();
 
@@ -1111,6 +1219,8 @@ module.exports = {
   superLikePostIdExists,
   getExistingSuperLikeUids,
   isSuperLikeUser,
+  getRecentSuperLikeProfileStatus,
+  markSuperLikeProfileChecked,
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   deletePostsByUidSet,
