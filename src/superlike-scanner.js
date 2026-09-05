@@ -81,7 +81,7 @@ let consecutive418 = 0;
 
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
-  || 50;
+  || 100;
 
 const EXISTING_STOP_THRESHOLD =
   Number(process.env.SUPERLIKE_EXISTING_STOP_THRESHOLD)
