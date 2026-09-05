@@ -203,6 +203,18 @@ function initDatabase() {
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
+
+    /*
+     * SuperLike 页面黑粉关键词。
+     * 页面“ 不显示猪 ”筛选会检查：
+     * username / post_text / icon_summary。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_black_keywords (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      keyword TEXT NOT NULL UNIQUE,
+      enabled INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
@@ -290,7 +302,36 @@ function initDatabase() {
       ON superlike_users(scan_date);
     CREATE INDEX IF NOT EXISTS idx_superlike_users_uid
       ON superlike_users(uid);
+
+    CREATE INDEX IF NOT EXISTS idx_superlike_black_keywords_enabled
+      ON superlike_black_keywords(enabled, keyword);
   `);
+
+  /*
+   * 初始黑粉关键词。
+   * INSERT OR IGNORE：以后手工增加/修改关键词不会被启动过程覆盖。
+   */
+  const seedBlackKeyword =
+    db.prepare(`
+      INSERT OR IGNORE INTO superlike_black_keywords(
+        keyword,
+        enabled
+      )
+      VALUES(?,1)
+    `);
+
+  for (
+    const keyword
+    of [
+      '雷朋',
+      '渝',
+      'lp'
+    ]
+  ) {
+    seedBlackKeyword.run(
+      keyword
+    );
+  }
 }
 
 
