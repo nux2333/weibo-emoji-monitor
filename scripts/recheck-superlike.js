@@ -3174,38 +3174,21 @@ async function runLightCommentRecheck(signal = null) {
         'superlike-browser-profile-recheck-light'
       );
 
-    proxyAssignment =
-      await MODE2_PROXY_POOL.acquire();
+    /*
+     * Mode2 默认优先走本地IP。
+     * 不在每轮开始时主动获取SCDN代理，避免免费代理预检拖慢评论复检。
+     */
+    proxyAssignment = {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
 
-    if (
-      proxyAssignment.allCoolingDown
-    ) {
-      const waitMinutes =
-        Math.max(
-          1,
-          Math.ceil(
-            (
-              proxyAssignment.nextReadyAt
-              - Date.now()
-            )
-            / 60000
-          )
-        );
-
-      console.log(
-        `[模式2] 代理池全部处于418冷却中，本轮跳过；最早约${waitMinutes}分钟后可用。`
-      );
-
-      return stats;
-    }
-
-    const proxy =
-      proxyAssignment.proxy;
+    const proxy = null;
 
     console.log(
-      proxy
-        ? `[模式2] 本轮代理：${proxyAssignment.masked}`
-        : '[模式2] 本轮使用本地IP'
+      '[模式2] 本轮优先使用本地IP'
     );
 
     context =
