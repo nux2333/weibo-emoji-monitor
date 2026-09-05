@@ -215,6 +215,19 @@ function initDatabase() {
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+
+    /*
+     * 黑粉用户表。
+     * uid 作为稳定唯一标识；用户名和主页链接用于展示/人工确认。
+     */
+    CREATE TABLE IF NOT EXISTS black_fan_users (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      uid TEXT UNIQUE,
+      username TEXT,
+      profile_link TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
   `);
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
@@ -305,6 +318,12 @@ function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_superlike_black_keywords_enabled
       ON superlike_black_keywords(enabled, keyword);
+
+    CREATE INDEX IF NOT EXISTS idx_black_fan_users_uid
+      ON black_fan_users(uid);
+
+    CREATE INDEX IF NOT EXISTS idx_black_fan_users_username
+      ON black_fan_users(username);
   `);
 
   /*
