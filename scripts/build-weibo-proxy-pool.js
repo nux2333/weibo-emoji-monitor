@@ -2,10 +2,6 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
-const SOURCE_URL =
-  process.env.PROXYCLEAN_SOURCE
-  || 'https://raw.githubusercontent.com/HankNovic/ProxyClean/refs/heads/main/SOCKS5.txt';
-
 const GOOD_POOL_FILE =
   process.env.WEIBO_GOOD_PROXY_FILE
   || path.join(
@@ -19,13 +15,13 @@ const TARGET_GOOD_COUNT =
   Number(
     process.env.WEIBO_GOOD_PROXY_TARGET
   )
-  || 10;
-
-const MAX_NEW_TESTS =
-  Number(
-    process.env.WEIBO_GOOD_PROXY_MAX_NEW_TESTS
-  )
   || 100;
+
+const MAX_CANDIDATES_PER_SOURCE =
+  Number(
+    process.env.WEIBO_PROXY_MAX_CANDIDATES_PER_SOURCE
+  )
+  || 300;
 
 const TIMEOUT_MS =
   Number(
@@ -39,7 +35,7 @@ const CONCURRENCY =
     Number(
       process.env.WEIBO_GOOD_PROXY_CONCURRENCY
     )
-    || 5
+    || 8
   );
 
 const TEST_URL =
@@ -49,6 +45,11 @@ const TEST_URL =
 const WEIBO_URL =
   process.env.WEIBO_GOOD_PROXY_WEIBO_URL
   || 'https://weibo.com/p/100808f1d33f71dff693a2708cb3e8ef584a44';
+
+const USER_AGENT =
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+  + 'AppleWebKit/537.36 (KHTML, like Gecko) '
+  + 'Chrome/152.0.0.0 Safari/537.36';
 
 function shuffle(values) {
   const arr = [...values];
@@ -64,43 +65,29 @@ function shuffle(values) {
         * (i + 1)
       );
 
-    [
-      arr[i],
-      arr[j]
-    ] = [
-      arr[j],
-      arr[i]
-    ];
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
 
   return arr;
 }
 
-function normalizeProxy(line) {
+function normalizeProxy(rawValue, defaultScheme = 'http') {
   const raw =
-    String(line || '')
+    String(rawValue || '')
+      .split('#')[0]
       .trim();
+
+  if (!raw) {
+    return null;
+  }
 
   if (
-    !raw
-    || raw.startsWith('#')
+    /^(?:https?|socks5):\/\//i.test(raw)
   ) {
-    return null;
+    return raw;
   }
 
-  const noComment =
-    raw.split('#')[0]
-      .trim();
-
-  if (!noComment) {
-    return null;
-  }
-
-  return /^socks5:\/\//i.test(
-    noComment
-  )
-    ? noComment
-    : `socks5://${noComment}`;
+  return `${defaultScheme}://${raw}`;
 }
 
 function readGoodPool() {
@@ -120,7 +107,7 @@ function readGoodPool() {
           'utf8'
         )
           .split(/\r?\n/)
-          .map(normalizeProxy)
+          .map(line => normalizeProxy(line))
           .filter(Boolean)
       )
     );
@@ -135,13 +122,10 @@ function readGoodPool() {
 }
 
 function writeGoodPool(items) {
-  const dir =
+  fs.mkdirSync(
     path.dirname(
       GOOD_POOL_FILE
-    );
-
-  fs.mkdirSync(
-    dir,
+    ),
     {
       recursive: true
     }
@@ -150,45 +134,312 @@ function writeGoodPool(items) {
   fs.writeFileSync(
     GOOD_POOL_FILE,
     items.join('\n')
-    +
-    (
-      items.length
-        ? '\n'
-        : ''
-    ),
+    + (items.length ? '\n' : ''),
     'utf8'
   );
 }
 
-async function fetchProxyClean() {
-  const response =
-    await fetch(
-      SOURCE_URL,
-      {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36'
-        }
-      }
+async function fetchText(url, timeoutMs = 20000) {
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () => controller.abort(),
+      timeoutMs
     );
 
-  if (!response.ok) {
-    throw new Error(
-      `ProxyClean HTTP ${response.status}`
-    );
+  try {
+    const response =
+      await fetch(
+        url,
+        {
+          signal:
+            controller.signal,
+
+          headers: {
+            'User-Agent':
+              USER_AGENT,
+
+            Accept:
+              'text/html,application/json,text/plain,*/*'
+          }
+        }
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
+    }
+
+    return await response.text();
+
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+async function fetchScdnCandidates() {
+  const url =
+    `https://proxy.scdn.io/api/get_proxy.php?protocol=https&count=${Math.min(20, MAX_CANDIDATES_PER_SOURCE)}`;
 
   const text =
-    await response.text();
+    await fetchText(url);
+
+  const json =
+    JSON.parse(text);
+
+  const list =
+    Array.isArray(
+      json?.data?.proxies
+    )
+      ? json.data.proxies
+      : [];
+
+  return list
+    .map(value =>
+      normalizeProxy(
+        value,
+        'http'
+      )
+    )
+    .filter(Boolean);
+}
+
+async function fetchProxyCleanCandidates() {
+  const text =
+    await fetchText(
+      'https://raw.githubusercontent.com/HankNovic/ProxyClean/refs/heads/main/SOCKS5.txt'
+    );
+
+  return shuffle(
+    text
+      .split(/\r?\n/)
+      .map(line =>
+        normalizeProxy(
+          line,
+          'socks5'
+        )
+      )
+      .filter(Boolean)
+  )
+    .slice(
+      0,
+      MAX_CANDIDATES_PER_SOURCE
+    );
+}
+
+async function fetch89IpCandidates() {
+  const results = [];
+
+  /*
+   * 89ip 没有稳定公开JSON接口，这里抓公开分页表格。
+   * 多抓几页，后续仍以微博实测为准。
+   */
+  const pages =
+    Math.max(
+      1,
+      Math.min(
+        20,
+        Number(
+          process.env.WEIBO_89IP_PAGES
+        )
+        || 10
+      )
+    );
+
+  for (
+    let page = 1;
+    page <= pages;
+    page++
+  ) {
+    try {
+      const url =
+        page === 1
+          ? 'https://www.89ip.cn/'
+          : `https://www.89ip.cn/index_${page}.html`;
+
+      const html =
+        await fetchText(url);
+
+      const regex =
+        /<td>\s*((?:\d{1,3}\.){3}\d{1,3})\s*<\/td>\s*<td>\s*(\d{2,5})\s*<\/td>/gi;
+
+      let match;
+
+      while (
+        (
+          match =
+            regex.exec(html)
+        )
+      ) {
+        results.push(
+          `http://${match[1]}:${match[2]}`
+        );
+
+        if (
+          results.length
+          >= MAX_CANDIDATES_PER_SOURCE
+        ) {
+          break;
+        }
+      }
+
+      if (
+        results.length
+        >= MAX_CANDIDATES_PER_SOURCE
+      ) {
+        break;
+      }
+
+    } catch (error) {
+      console.log(
+        `[89ip] 第${page}页获取失败：${error.message}`
+      );
+    }
+  }
+
+  return Array.from(
+    new Set(results)
+  );
+}
+
+async function fetchFate0Candidates() {
+  const text =
+    await fetchText(
+      'https://raw.githubusercontent.com/fate0/proxylist/master/proxy.list'
+    );
+
+  const results = [];
+
+  for (
+    const line
+    of text.split(/\r?\n/)
+  ) {
+    const raw =
+      String(line || '').trim();
+
+    if (!raw) {
+      continue;
+    }
+
+    try {
+      const item =
+        JSON.parse(raw);
+
+      const type =
+        String(
+          item?.type || ''
+        ).toLowerCase();
+
+      if (
+        ![
+          'http',
+          'https',
+          'socks5'
+        ].includes(type)
+      ) {
+        continue;
+      }
+
+      const host =
+        String(
+          item?.host || ''
+        ).trim();
+
+      const port =
+        Number(
+          item?.port
+        );
+
+      if (!host || !port) {
+        continue;
+      }
+
+      const scheme =
+        type === 'socks5'
+          ? 'socks5'
+          : 'http';
+
+      results.push(
+        `${scheme}://${host}:${port}`
+      );
+
+    } catch {
+      // ignore malformed rows
+    }
+  }
 
   return shuffle(
     Array.from(
-      new Set(
-        text
-          .split(/\r?\n/)
-          .map(normalizeProxy)
-          .filter(Boolean)
+      new Set(results)
+    )
+  )
+    .slice(
+      0,
+      MAX_CANDIDATES_PER_SOURCE
+    );
+}
+
+async function collectSources() {
+  const sourceFetchers = [
+    ['SCDN', fetchScdnCandidates],
+    ['ProxyClean', fetchProxyCleanCandidates],
+    ['89ip', fetch89IpCandidates],
+    ['fate0', fetchFate0Candidates]
+  ];
+
+  const all = [];
+
+  for (
+    const [name, fn]
+    of sourceFetchers
+  ) {
+    try {
+      const list =
+        await fn();
+
+      console.log(
+        `[来源:${name}] 候选=${list.length}`
+      );
+
+      all.push(
+        ...list.map(proxy => ({
+          proxy,
+          source: name
+        }))
+      );
+
+    } catch (error) {
+      console.log(
+        `[来源:${name}] 获取失败：${error.message}`
+      );
+    }
+  }
+
+  const dedup =
+    new Map();
+
+  for (
+    const item
+    of all
+  ) {
+    if (
+      !dedup.has(
+        item.proxy
       )
+    ) {
+      dedup.set(
+        item.proxy,
+        item
+      );
+    }
+  }
+
+  return shuffle(
+    Array.from(
+      dedup.values()
     )
   );
 }
@@ -197,8 +448,7 @@ async function testOne(proxy) {
   const startedAt =
     Date.now();
 
-  let browser =
-    null;
+  let browser = null;
 
   try {
     browser =
@@ -238,9 +488,7 @@ async function testOne(proxy) {
 
     const exitIp =
       String(
-        await page.textContent(
-          'body'
-        )
+        await page.textContent('body')
         || ''
       ).trim();
 
@@ -277,8 +525,7 @@ async function testOne(proxy) {
       status,
       ms:
         Date.now()
-        -
-        startedAt
+        - startedAt
     };
 
   } catch (error) {
@@ -289,8 +536,7 @@ async function testOne(proxy) {
         error.message,
       ms:
         Date.now()
-        -
-        startedAt
+        - startedAt
     };
 
   } finally {
@@ -305,7 +551,7 @@ async function testOne(proxy) {
 }
 
 async function testMany(
-  proxies,
+  items,
   {
     stopAt = Infinity,
     label = '测试'
@@ -313,18 +559,12 @@ async function testMany(
 ) {
   const list =
     Array.from(
-      proxies
-      || []
+      items || []
     );
 
-  const passed =
-    [];
-
-  let cursor =
-    0;
-
-  let done =
-    0;
+  const passed = [];
+  let cursor = 0;
+  let done = 0;
 
   async function worker() {
     while (true) {
@@ -339,34 +579,41 @@ async function testMany(
         cursor++;
 
       if (
-        index >=
-        list.length
+        index >= list.length
       ) {
         return;
       }
 
-      const proxy =
-        list[index];
+      const item =
+        typeof list[index] === 'string'
+          ? {
+              proxy: list[index],
+              source: 'existing'
+            }
+          : list[index];
 
       const result =
         await testOne(
-          proxy
+          item.proxy
         );
 
       done++;
 
       if (result.ok) {
-        passed.push(
-          result
-        );
+        passed.push({
+          ...result,
+          source:
+            item.source
+            || 'unknown'
+        });
 
         console.log(
-          `[${label} ${done}/${list.length}] PASS | ${proxy} | exit=${result.exitIp || '-'} | weibo=${result.status} | ${result.ms}ms`
+          `[${label} ${done}/${list.length}] PASS | ${item.proxy} | source=${item.source || '-'} | exit=${result.exitIp || '-'} | ${result.ms}ms`
         );
 
       } else {
         console.log(
-          `[${label} ${done}/${list.length}] FAIL | ${proxy} | ${result.error} | ${result.ms}ms`
+          `[${label} ${done}/${list.length}] FAIL | ${item.proxy} | source=${item.source || '-'} | ${result.error} | ${result.ms}ms`
         );
       }
     }
@@ -394,10 +641,10 @@ async function testMany(
 async function main() {
   console.log('');
   console.log('==============================================');
-  console.log('微博 SOCKS5 健康代理池维护');
+  console.log('微博多源健康代理池维护');
   console.log(`健康池文件: ${GOOD_POOL_FILE}`);
   console.log(`目标健康代理: ${TARGET_GOOD_COUNT}`);
-  console.log(`最多测试新代理: ${MAX_NEW_TESTS}`);
+  console.log(`单源最多候选: ${MAX_CANDIDATES_PER_SOURCE}`);
   console.log(`并发: ${CONCURRENCY}`);
   console.log(`测试微博: ${WEIBO_URL}`);
   console.log('==============================================');
@@ -405,8 +652,7 @@ async function main() {
   const oldPool =
     readGoodPool();
 
-  let healthy =
-    [];
+  let healthy = [];
 
   if (
     oldPool.length > 0
@@ -432,45 +678,41 @@ async function main() {
   const healthySet =
     new Set(
       healthy.map(
-        item =>
-          item.proxy
+        item => item.proxy
       )
     );
 
   if (
     healthySet.size
-    <
-    TARGET_GOOD_COUNT
+    < TARGET_GOOD_COUNT
   ) {
     console.log('');
     console.log(
-      `[补池] 当前健康代理=${healthySet.size}，开始从 ProxyClean 补充...`
+      `[补池] 当前健康代理=${healthySet.size}，开始从4个免费源补充...`
     );
 
-    const source =
-      await fetchProxyClean();
-
     const candidates =
-      source
-        .filter(
-          proxy =>
-            !healthySet.has(
-              proxy
-            )
-        )
-        .slice(
-          0,
-          MAX_NEW_TESTS
-        );
+      await collectSources();
+
+    const freshCandidates =
+      candidates.filter(
+        item =>
+          !healthySet.has(
+            item.proxy
+          )
+      );
+
+    console.log(
+      `[补池] 去重后新候选=${freshCandidates.length}`
+    );
 
     const need =
       TARGET_GOOD_COUNT
-      -
-      healthySet.size;
+      - healthySet.size;
 
     const newPassed =
       await testMany(
-        candidates,
+        freshCandidates,
         {
           stopAt:
             need,
@@ -484,10 +726,7 @@ async function main() {
       const item
       of newPassed
     ) {
-      healthy.push(
-        item
-      );
-
+      healthy.push(item);
       healthySet.add(
         item.proxy
       );
@@ -520,10 +759,24 @@ async function main() {
 
   writeGoodPool(
     healthy.map(
-      item =>
-        item.proxy
+      item => item.proxy
     )
   );
+
+  const sourceStats = {};
+
+  for (
+    const item
+    of healthy
+  ) {
+    const key =
+      item.source
+      || 'existing';
+
+    sourceStats[key] =
+      (sourceStats[key] || 0)
+      + 1;
+  }
 
   console.log('');
   console.log('================ 结果 ================');
@@ -535,32 +788,17 @@ async function main() {
     `已保存: ${GOOD_POOL_FILE}`
   );
 
-  if (
-    healthy.length > 0
-  ) {
-    console.log('');
-    console.log(
-      '当前健康池（按本次测试耗时排序）:'
-    );
-
-    for (
-      const item
-      of healthy
-    ) {
-      console.log(
-        `${item.proxy} | exit=${item.exitIp || '-'} | ${item.ms}ms`
-      );
-    }
-  }
+  console.log(
+    `来源分布: ${JSON.stringify(sourceStats)}`
+  );
 
   if (
     healthy.length
-    <
-    TARGET_GOOD_COUNT
+    < TARGET_GOOD_COUNT
   ) {
     console.log('');
     console.log(
-      `[提示] 本轮没凑满 ${TARGET_GOOD_COUNT} 个；下次再次运行会先复测现有健康池，再继续补新代理。`
+      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从4个源补新代理。`
     );
   }
 }
@@ -571,6 +809,5 @@ main().catch(error => {
     error
   );
 
-  process.exitCode =
-    1;
+  process.exitCode = 1;
 });
