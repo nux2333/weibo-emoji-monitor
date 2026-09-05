@@ -10,7 +10,8 @@
     "scan-superlike": "node src/superlike-scanner.js",
     "setup-proxies": "node scripts/setup-webshare-proxies.js",
     "test-proxyclean": "node scripts/test-proxyclean.js",
-    "build-weibo-proxies": "node scripts/build-weibo-proxy-pool.js"
+    "build-weibo-proxies": "node scripts/build-weibo-proxy-pool.js",
+    "test-mode4-no-login": "node scripts/test-mode4-no-login.js"
   },
   "dependencies": {
     "express": "^5.1.0",
