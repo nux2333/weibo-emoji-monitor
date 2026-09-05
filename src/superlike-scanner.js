@@ -95,6 +95,44 @@ const MAX_COMMENTS = 21;
 
 let running = false;
 
+function getPlaywrightProxyConfig(rawValue) {
+  const raw = String(rawValue || '').trim();
+
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(raw);
+
+    const server =
+      `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
+
+    const proxy = { server };
+
+    if (parsed.username) {
+      proxy.username = decodeURIComponent(parsed.username);
+    }
+
+    if (parsed.password) {
+      proxy.password = decodeURIComponent(parsed.password);
+    }
+
+    return proxy;
+  } catch {
+    return {
+      server: raw
+    };
+  }
+}
+
+function getScannerProxyConfig() {
+  return getPlaywrightProxyConfig(
+    process.env.SUPERLIKE_SCAN_PROXY
+    || process.env.WEIBO_PROXY
+  );
+}
+
 
 /* ============================================================
  * DB
@@ -2319,6 +2357,15 @@ async function scanOneSuperLikeMonitor(
     );
 
 
+    const proxy =
+      getScannerProxyConfig();
+
+    if (proxy) {
+      console.log(
+        `[SuperLike] 找贴脚本使用代理：${proxy.server}`
+      );
+    }
+
     browser =
       await chromium
         .launchPersistentContext(
@@ -2328,6 +2375,8 @@ async function scanOneSuperLikeMonitor(
             // 如需临时显示浏览器窗口，可设置 SUPERLIKE_HEADLESS=0
             headless:
               process.env.SUPERLIKE_HEADLESS !== '0',
+
+            ...(proxy ? { proxy } : {}),
 
             viewport: {
               width: 1280,
