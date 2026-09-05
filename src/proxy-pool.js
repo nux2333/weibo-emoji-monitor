@@ -113,6 +113,36 @@ function toPlaywrightProxy(rawValue) {
   }
 }
 
+function shuffleArray(values) {
+  const result =
+    Array.from(
+      values
+      || []
+    );
+
+  for (
+    let i = result.length - 1;
+    i > 0;
+    i--
+  ) {
+    const j =
+      Math.floor(
+        Math.random()
+        * (i + 1)
+      );
+
+    [
+      result[i],
+      result[j]
+    ] = [
+      result[j],
+      result[i]
+    ];
+  }
+
+  return result;
+}
+
 function maskProxy(rawValue) {
   const raw = String(rawValue || '').trim();
 
@@ -145,13 +175,22 @@ class ProxyPool {
       pool.push(String(fallback).trim());
     }
 
-    this.items = Array.from(
-      new Set(pool)
-    );
+    this.items =
+      shuffleArray(
+        Array.from(
+          new Set(pool)
+        )
+      );
 
     this.cooldownMs = Number(cooldownMs) || 30 * 60 * 1000;
     this.name = name;
     this.index = 0;
+
+    if (this.items.length > 1) {
+      console.log(
+        `[ProxyPool:${this.name}] 启动时已随机打乱代理顺序，共${this.items.length}个。`
+      );
+    }
     this.cooldownUntil = new Map();
   }
 
@@ -220,5 +259,6 @@ module.exports = {
   parseProxyPool,
   loadProxyPoolFile,
   toPlaywrightProxy,
-  maskProxy
+  maskProxy,
+  shuffleArray
 };
