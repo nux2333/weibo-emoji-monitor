@@ -2304,6 +2304,7 @@ async function scanOneSuperLikeMonitor(
 
   let browser = null;
   let proxyAssignment = null;
+  let delegatedToLocal = false;
 
 
   const startedAt =
@@ -2942,6 +2943,9 @@ async function scanOneSuperLikeMonitor(
         browser = null;
       }
 
+      delegatedToLocal =
+        true;
+
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
@@ -2953,28 +2957,45 @@ async function scanOneSuperLikeMonitor(
       isWeibo418Error(error)
       &&
       proxyAssignment?.raw
+      &&
+      !forceLocal
     ) {
-      const until =
-        SCAN_PROXY_POOL.markBlocked(
-          proxyAssignment.raw
-        );
+      SCAN_PROXY_POOL.markBlocked(
+        proxyAssignment.raw
+      );
 
-      if (until) {
-        /*
-         * 标记给外层：
-         * 这是“代理池中的当前代理”触发的418。
-         * 外层不再执行整个 Scan 的30/60分钟全局退避，
-         * 只按正常白天/晚间周期，下一轮改用下一个代理。
-         */
-        error.proxyPoolHandled =
-          true;
+      console.log(
+        `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
+      );
 
-        console.log(
-          `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
-        );
+      console.log(
+        '[SuperLike] 代理418不结束整轮，立即切回本地IP再试一次。'
+      );
+
+      if (browser) {
+        try {
+          await browser.close();
+        } catch {
+          // ignore
+        }
+
+        browser = null;
       }
+
+      delegatedToLocal =
+        true;
+
+      return await scanOneSuperLikeMonitor(
+        monitor,
+        deleteUidSet,
+        true
+      );
     }
 
+    /*
+     * 如果已经是本地IP仍然418，就把异常抛给外层，
+     * 由原来的30/60分钟全局退避处理。
+     */
     throw error;
 
   } finally {
@@ -3029,6 +3050,12 @@ async function scanOneSuperLikeMonitor(
       );
     }
 
+
+    if (
+      delegatedToLocal
+    ) {
+      return;
+    }
 
     const seconds =
       Math.round(
