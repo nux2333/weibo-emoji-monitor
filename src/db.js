@@ -55,6 +55,8 @@ function migrateSuperlikePostsIfNeeded() {
       icon_summary TEXT,
       experience_7d INTEGER,
       post_created_at TEXT,
+      /* 入库时间：固定保存中国时间（UTC+8），精确到秒；后续 UPDATE 不修改 */
+      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       comment_last_checked_at TEXT,
@@ -165,6 +167,8 @@ function initDatabase() {
       icon_summary TEXT,
       experience_7d INTEGER,
       post_created_at TEXT,
+      /* 入库时间：固定保存中国时间（UTC+8），精确到秒；后续 UPDATE 不修改 */
+      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       raw_json TEXT,
@@ -268,7 +272,26 @@ function initDatabase() {
 
   // SuperLike 高效复检队列字段。
   // 旧数据库会在启动时自动补列，不需要手工 migration。
-  ensureColumn('superlike_posts', 'comment_last_checked_at', 'TEXT');
+  // 入库时间固定为中国时间（UTC+8），精确到秒。
+  // SQLite ALTER TABLE 不能给新增列直接使用 datetime() 非常量默认值，
+  // 所以旧库先补列，再回填；新数据由 CREATE TABLE 的 DEFAULT 自动写入。
+  ensureColumn('superlike_posts', 'inserted_at', 'TEXT');
+
+  db.exec(`
+    UPDATE superlike_posts
+    SET inserted_at = COALESCE(
+      inserted_at,
+      CASE
+        WHEN first_seen_at IS NOT NULL
+          THEN datetime(first_seen_at, '+8 hours')
+        ELSE datetime('now', '+8 hours')
+      END
+    )
+    WHERE inserted_at IS NULL
+       OR inserted_at = ''
+  `);
+
+    ensureColumn('superlike_posts', 'comment_last_checked_at', 'TEXT');
   ensureColumn('superlike_posts', 'comment_next_check_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
