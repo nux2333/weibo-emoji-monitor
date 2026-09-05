@@ -240,7 +240,18 @@ app.get('/api/superlike-posts', (req, res) => {
 
     if (hideBlack) {
       where.push(`
+        /*
+         * “屏蔽🐷屎”开启时同时应用两层过滤：
+         * 1. UID 已进入 black_fan_users 的用户直接隐藏；
+         * 2. 用户名/正文/Icon 命中启用黑粉关键词的帖子隐藏。
+         */
         NOT EXISTS (
+          SELECT 1
+          FROM black_fan_users bfu
+          WHERE TRIM(COALESCE(bfu.uid, '')) <> ''
+            AND CAST(bfu.uid AS TEXT) = CAST(sp.uid AS TEXT)
+        )
+        AND NOT EXISTS (
           SELECT 1
           FROM superlike_black_keywords bk
           WHERE bk.enabled = 1
