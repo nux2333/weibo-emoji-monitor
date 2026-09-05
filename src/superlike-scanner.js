@@ -2311,8 +2311,9 @@ async function processPagePosts(
 async function scanOneSuperLikeMonitor(
   monitor,
   deleteUidSet,
-  forceLocal = false,
-  proxyFailureCount = 0
+  forceLocal = true,
+  proxyFailureCount = 0,
+  local418FallbackError = null
 ) {
   const config =
     parseTopicHomepage(
@@ -2441,8 +2442,14 @@ async function scanOneSuperLikeMonitor(
         );
 
       console.log(
-        `[SuperLike] 找贴代理池全部处于418冷却中，本轮跳过；最早约${waitMinutes}分钟后可用。`
+        `[SuperLike] 找贴代理池全部处于418冷却中；最早约${waitMinutes}分钟后可用。`
       );
+
+      if (
+        local418FallbackError
+      ) {
+        throw local418FallbackError;
+      }
 
       return;
     }
@@ -2452,10 +2459,8 @@ async function scanOneSuperLikeMonitor(
 
     console.log(
       proxy
-        ? `[SuperLike] 找贴本轮代理：${proxyAssignment.masked}`
-        : forceLocal
-          ? '[SuperLike] 代理不可用，本轮已自动切换本地IP'
-          : '[SuperLike] 找贴本轮使用本地IP'
+        ? `[SuperLike] 本地IP已418，启用救援代理：${proxyAssignment.masked}`
+        : '[SuperLike] 找贴本轮优先使用本地IP'
     );
 
     browser =
@@ -2975,46 +2980,38 @@ async function scanOneSuperLikeMonitor(
         nextFailureCount < 5
       ) {
         console.log(
-          `[SuperLike] 动态代理连接失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
+          `[SuperLike] 救援代理连接失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
         );
 
         return await scanOneSuperLikeMonitor(
           monitor,
           deleteUidSet,
           false,
-          nextFailureCount
+          nextFailureCount,
+          local418FallbackError
         );
       }
 
       console.log(
-        '[SuperLike] 连续5个动态代理均连接失败，本轮切回本地IP。'
+        '[SuperLike] 连续5个救援代理均连接失败，恢复本地418退避。'
       );
 
-      return await scanOneSuperLikeMonitor(
-        monitor,
-        deleteUidSet,
-        true,
-        nextFailureCount
-      );
+      if (
+        local418FallbackError
+      ) {
+        throw local418FallbackError;
+      }
+
+      throw error;
     }
 
     if (
       isWeibo418Error(error)
       &&
-      proxyAssignment?.raw
-      &&
-      !forceLocal
+      forceLocal
     ) {
-      SCAN_PROXY_POOL.markBlocked(
-        proxyAssignment.raw
-      );
-
       console.log(
-        `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
-      );
-
-      console.log(
-        '[SuperLike] 代理418不结束整轮，立即切回本地IP再试一次。'
+        '[SuperLike] 本地IP命中418，开始启用SCDN救援代理。'
       );
 
       if (browser) {
@@ -3033,14 +3030,38 @@ async function scanOneSuperLikeMonitor(
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
-        true
+        false,
+        0,
+        error
       );
     }
 
-    /*
-     * 如果已经是本地IP仍然418，就把异常抛给外层，
-     * 由原来的30/60分钟全局退避处理。
-     */
+    if (
+      isWeibo418Error(error)
+      &&
+      proxyAssignment?.raw
+      &&
+      !forceLocal
+    ) {
+      SCAN_PROXY_POOL.markBlocked(
+        proxyAssignment.raw
+      );
+
+      console.log(
+        `[SuperLike] 救援代理也命中418，已进入冷却：${proxyAssignment.masked}`
+      );
+
+      console.log(
+        '[SuperLike] 不再继续轮换代理，恢复本地418退避。'
+      );
+
+      if (
+        local418FallbackError
+      ) {
+        throw local418FallbackError;
+      }
+    }
+
     throw error;
 
   } finally {
@@ -3250,7 +3271,8 @@ async function scanSuperLikePosts() {
       try {
         await scanOneSuperLikeMonitor(
           monitor,
-          deleteUidSet
+          deleteUidSet,
+          true
         );
 
       } catch (error) {
