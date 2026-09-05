@@ -2530,6 +2530,7 @@ async function runLightSuperLikeRecheck(signal = null) {
   let context = null;
   let page = null;
   let proxyAssignment = null;
+  let proxyFailureCount = 0;
 
   const profileDir =
     path.join(
@@ -3288,9 +3289,7 @@ async function runLightCommentRecheck(signal = null) {
             `[模式2] 当前代理连接失败，已从动态池淘汰：${proxyAssignment.masked}`
           );
 
-          console.log(
-            '[模式2] 立即停用代理，当前轮改用本地IP继续。'
-          );
+          proxyFailureCount++;
 
           if (context) {
             try {
@@ -3300,11 +3299,54 @@ async function runLightCommentRecheck(signal = null) {
             }
           }
 
+          if (
+            proxyFailureCount < 5
+          ) {
+            console.log(
+              `[模式2] 动态代理连接失败 ${proxyFailureCount}/5，立即换下一个代理重试当前帖子。`
+            );
+
+            proxyAssignment =
+              await MODE2_PROXY_POOL.acquire();
+
+            if (
+              proxyAssignment.allCoolingDown
+              ||
+              !proxyAssignment.proxy
+            ) {
+              console.log(
+                '[模式2] 当前没有可用动态代理，提前切回本地IP。'
+              );
+
+              proxyAssignment = {
+                configured: false,
+                raw: null,
+                proxy: null,
+                masked: 'LOCAL'
+              };
+            }
+          } else {
+            console.log(
+              '[模式2] 连续5个动态代理均连接失败，当前轮切回本地IP。'
+            );
+
+            proxyAssignment = {
+              configured: false,
+              raw: null,
+              proxy: null,
+              masked: 'LOCAL'
+            };
+          }
+
+          const retryProxy =
+            proxyAssignment.proxy;
+
           context =
             await chromium.launchPersistentContext(
               profileDir,
               {
                 headless: true,
+                ...(retryProxy ? { proxy: retryProxy } : {}),
                 viewport: {
                   width: 1280,
                   height: 900
@@ -3316,17 +3358,15 @@ async function runLightCommentRecheck(signal = null) {
             context.pages()[0]
             || await context.newPage();
 
-          proxyAssignment = {
-            configured: false,
-            raw: null,
-            proxy: null,
-            masked: 'LOCAL'
-          };
+          console.log(
+            retryProxy
+              ? `[模式2] 当前轮切换代理：${proxyAssignment.masked}`
+              : '[模式2] 当前轮已切回本地IP'
+          );
 
           /*
            * i-- 后 continue：
-           * 下一次循环会重新处理当前这一条，
-           * 但这次走本地IP。
+           * 下一次循环重新处理当前这一条。
            */
           i--;
           continue;
