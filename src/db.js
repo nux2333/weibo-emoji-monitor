@@ -87,18 +87,53 @@ function migrateSuperlikePostsIfNeeded() {
 }
 
 function migrateSuperlikeUsersIfNeeded() {
-  const row = db.prepare(`
-    SELECT sql
-    FROM sqlite_master
-    WHERE type = 'table'
-      AND name = 'superlike_users'
-  `).get();
+  const tableExists = name =>
+    !!db.prepare(`
+      SELECT 1
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = ?
+      LIMIT 1
+    `).get(name);
 
-  if (!row) return;
+  const getColumns = name =>
+    db.prepare(`PRAGMA table_info(${name})`).all()
+      .map(item => String(item.name));
+
+  const oldTableExists =
+    tableExists('superlike_users_old');
+
+  const currentExists =
+    tableExists('superlike_users');
+
+  /*
+   * 上一次迁移如果在 INSERT 阶段失败，
+   * SQLite 可能已经留下：
+   *   superlike_users_old = 原始数据
+   *   superlike_users     = 新建但为空的表
+   *
+   * 这里先优先恢复这个“半迁移”状态。
+   */
+  if (oldTableExists) {
+    console.log(
+      '检测到上次 superlike_users 迁移未完成，正在自动恢复原数据...'
+    );
+
+    if (currentExists) {
+      db.exec('DROP TABLE superlike_users');
+    }
+
+    db.exec(
+      'ALTER TABLE superlike_users_old RENAME TO superlike_users'
+    );
+  }
+
+  if (!tableExists('superlike_users')) {
+    return;
+  }
 
   const columns =
-    db.prepare('PRAGMA table_info(superlike_users)').all()
-      .map(item => String(item.name));
+    getColumns('superlike_users');
 
   const obsoleteColumns = [
     'first_seen_at',
@@ -118,70 +153,126 @@ function migrateSuperlikeUsersIfNeeded() {
     '整理 superlike_users 表结构：移除 first_seen_at / first_seen_date / last_seen_date...'
   );
 
-  /*
-   * SQLite 删除多列在不同版本兼容性较差，所以重建表。
-   * inserted_at 优先保留现值；旧库没有值时用 first_seen_at 转中国时间。
-   */
+  const hasScanDate =
+    columns.includes('scan_date');
+
+  const hasFirstSeenDate =
+    columns.includes('first_seen_date');
+
+  const hasFirstSeenAt =
+    columns.includes('first_seen_at');
+
+  const hasInsertedAt =
+    columns.includes('inserted_at');
+
+  const hasLastSeenAt =
+    columns.includes('last_seen_at');
+
+  const hasFirstSeenRank =
+    columns.includes('first_seen_rank');
+
+  const hasLastSeenRank =
+    columns.includes('last_seen_rank');
+
+  const scanDateExpr =
+    [
+      hasScanDate
+        ? "NULLIF(scan_date, '')"
+        : null,
+      hasFirstSeenDate
+        ? "NULLIF(first_seen_date, '')"
+        : null,
+      hasFirstSeenAt
+        ? "date(first_seen_at, '+8 hours')"
+        : null,
+      "date('now', '+8 hours')"
+    ]
+      .filter(Boolean)
+      .join(', ');
+
   const insertedExpr =
-    columns.includes('inserted_at')
-      ? `COALESCE(NULLIF(inserted_at, ''), ${
-          columns.includes('first_seen_at')
-            ? "datetime(first_seen_at, '+8 hours')"
-            : "datetime('now', '+8 hours')"
-        })`
-      : (
-          columns.includes('first_seen_at')
-            ? "datetime(first_seen_at, '+8 hours')"
-            : "datetime('now', '+8 hours')"
-        );
+    [
+      hasInsertedAt
+        ? "NULLIF(inserted_at, '')"
+        : null,
+      hasFirstSeenAt
+        ? "datetime(first_seen_at, '+8 hours')"
+        : null,
+      "datetime('now', '+8 hours')"
+    ]
+      .filter(Boolean)
+      .join(', ');
 
-  db.exec(`
-    PRAGMA foreign_keys = OFF;
+  const lastSeenExpr =
+    [
+      hasLastSeenAt
+        ? "CASE WHEN last_seen_at IS NOT NULL AND last_seen_at <> '' THEN datetime(last_seen_at, '+8 hours') END"
+        : null,
+      "datetime('now', '+8 hours')"
+    ]
+      .filter(Boolean)
+      .join(', ');
 
-    ALTER TABLE superlike_users
-      RENAME TO superlike_users_old;
+  db.exec('BEGIN IMMEDIATE');
 
-    CREATE TABLE superlike_users (
-      monitor_id INTEGER NOT NULL,
-      uid TEXT PRIMARY KEY,
-      scan_date TEXT NOT NULL,
-      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      first_seen_rank INTEGER,
-      last_seen_rank INTEGER,
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+  try {
+    db.exec(`
+      PRAGMA foreign_keys = OFF;
+
+      ALTER TABLE superlike_users
+        RENAME TO superlike_users_old;
+
+      CREATE TABLE superlike_users (
+        monitor_id INTEGER NOT NULL,
+        uid TEXT PRIMARY KEY,
+        scan_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
+        inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+        last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+        first_seen_rank INTEGER,
+        last_seen_rank INTEGER,
+        FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+      );
+
+      INSERT INTO superlike_users(
+        monitor_id,
+        uid,
+        scan_date,
+        inserted_at,
+        last_seen_at,
+        first_seen_rank,
+        last_seen_rank
+      )
+      SELECT
+        monitor_id,
+        uid,
+        COALESCE(${scanDateExpr}),
+        COALESCE(${insertedExpr}),
+        COALESCE(${lastSeenExpr}),
+        ${hasFirstSeenRank ? 'first_seen_rank' : 'NULL'},
+        ${hasLastSeenRank ? 'last_seen_rank' : 'NULL'}
+      FROM superlike_users_old;
+
+      DROP TABLE superlike_users_old;
+
+      PRAGMA foreign_keys = ON;
+    `);
+
+    db.exec('COMMIT');
+
+    console.log(
+      'superlike_users 表结构整理完成。'
     );
 
-    INSERT INTO superlike_users(
-      monitor_id,
-      uid,
-      scan_date,
-      inserted_at,
-      last_seen_at,
-      first_seen_rank,
-      last_seen_rank
-    )
-    SELECT
-      monitor_id,
-      uid,
-      scan_date,
-      ${insertedExpr},
-      CASE
-        WHEN last_seen_at IS NOT NULL
-          AND last_seen_at <> ''
-          THEN datetime(last_seen_at, '+8 hours')
-        ELSE datetime('now', '+8 hours')
-      END,
-      first_seen_rank,
-      last_seen_rank
-    FROM superlike_users_old;
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore
+    }
 
-    DROP TABLE superlike_users_old;
-
-    PRAGMA foreign_keys = ON;
-  `);
+    throw error;
+  }
 }
-
 
 function initDatabase() {
   db.exec(`
@@ -287,7 +378,7 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS superlike_users (
       monitor_id INTEGER NOT NULL,
       uid TEXT PRIMARY KEY,
-      scan_date TEXT NOT NULL,
+      scan_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
       inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_rank INTEGER,
