@@ -3443,10 +3443,10 @@ async function scanOneSuperLikeMonitor(
         true;
 
       if (
-        nextFailureCount < 3
+        nextFailureCount < 5
       ) {
         console.log(
-          `[SuperLike] 代理失败 ${nextFailureCount}/3，立即换下一个代理重试当前Monitor。`
+          `[SuperLike] 代理失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
         );
 
         return await scanOneSuperLikeMonitor(
@@ -3459,7 +3459,7 @@ async function scanOneSuperLikeMonitor(
       }
 
       console.log(
-        '[SuperLike] 连续3个健康代理均失败，本轮立即切回本地IP。'
+        '[SuperLike] 连续5个健康代理均失败，本轮立即切回本地IP。'
       );
 
       return await scanOneSuperLikeMonitor(
@@ -3504,19 +3504,53 @@ async function scanOneSuperLikeMonitor(
         proxyAssignment.raw
       );
 
-      console.log(
-        `[SuperLike] 救援代理也命中418，已进入冷却：${proxyAssignment.masked}`
-      );
+      const nextFailureCount =
+        proxyFailureCount + 1;
 
       console.log(
-        '[SuperLike] 不再继续轮换代理，恢复本地418退避。'
+        `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}（${nextFailureCount}/5）`
       );
+
+      if (browser) {
+        try {
+          await browser.close();
+        } catch {
+          // ignore
+        }
+
+        browser = null;
+      }
+
+      delegatedToLocal =
+        true;
 
       if (
-        local418FallbackError
+        nextFailureCount < 5
       ) {
-        throw local418FallbackError;
+        console.log(
+          `[SuperLike] 418代理失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
+        );
+
+        return await scanOneSuperLikeMonitor(
+          monitor,
+          deleteUidSet,
+          false,
+          nextFailureCount,
+          local418FallbackError || error
+        );
       }
+
+      console.log(
+        '[SuperLike] 连续5个代理均命中418/失败，本轮切回本地IP重试当前Monitor。'
+      );
+
+      return await scanOneSuperLikeMonitor(
+        monitor,
+        deleteUidSet,
+        true,
+        nextFailureCount,
+        local418FallbackError || error
+      );
     }
 
     throw error;
