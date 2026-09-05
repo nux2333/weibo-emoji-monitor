@@ -795,9 +795,20 @@ function renderTable() {
 
 
       <td>
-        ${escapeHtml(
-          row.username || '-'
-        )}
+        ${
+          row.uid
+            ? `
+              <a
+                class="user-link"
+                href="https://weibo.com/p/100808f1d33f71dff693a2708cb3e8ef584a44/super_index?uid=${encodeURIComponent(row.uid)}"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                ${escapeHtml(row.username || '-')}
+              </a>
+            `
+            : escapeHtml(row.username || '-')
+        }
       </td>
 
 
