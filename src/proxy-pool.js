@@ -1,4 +1,5 @@
 const fs = require('fs');
+const net = require('net');
 
 function parseProxyPool(rawValue) {
   return String(rawValue || '')
@@ -129,6 +130,228 @@ function toPlaywrightProxy(rawValue) {
       server: raw
     };
   }
+}
+
+function checkHttpsConnectProxy(
+  rawValue,
+  {
+    targetHost = 'api.ipify.org',
+    targetPort = 443,
+    timeoutMs =
+      Number(
+        process.env.SUPERLIKE_PROXY_HEALTH_TIMEOUT_MS
+      )
+      || 5000
+  } = {}
+) {
+  return new Promise(resolve => {
+    let parsed;
+
+    try {
+      parsed =
+        new URL(
+          String(rawValue || '').trim()
+        );
+    } catch {
+      resolve(false);
+      return;
+    }
+
+    const host =
+      parsed.hostname;
+
+    const port =
+      Number(
+        parsed.port
+      )
+      || 80;
+
+    if (!host || !port) {
+      resolve(false);
+      return;
+    }
+
+    const socket =
+      net.connect({
+        host,
+        port
+      });
+
+    let settled =
+      false;
+
+    let responseText =
+      '';
+
+    const finish = value => {
+      if (settled) {
+        return;
+      }
+
+      settled = true;
+
+      try {
+        socket.destroy();
+      } catch {
+        // ignore
+      }
+
+      resolve(value);
+    };
+
+    socket.setTimeout(
+      timeoutMs
+    );
+
+    socket.once(
+      'connect',
+      () => {
+        const authHeader =
+          parsed.username
+            ? (
+                'Proxy-Authorization: Basic '
+                +
+                Buffer.from(
+                  `${decodeURIComponent(parsed.username)}:${decodeURIComponent(parsed.password || '')}`
+                ).toString('base64')
+                +
+                '\r\n'
+              )
+            : '';
+
+        socket.write(
+          `CONNECT ${targetHost}:${targetPort} HTTP/1.1\r\n`
+          +
+          `Host: ${targetHost}:${targetPort}\r\n`
+          +
+          authHeader
+          +
+          'Proxy-Connection: keep-alive\r\n'
+          +
+          '\r\n'
+        );
+      }
+    );
+
+    socket.on(
+      'data',
+      chunk => {
+        responseText +=
+          chunk.toString(
+            'latin1'
+          );
+
+        if (
+          responseText.includes(
+            '\r\n\r\n'
+          )
+        ) {
+          const firstLine =
+            responseText
+              .split('\r\n')[0]
+              || '';
+
+          finish(
+            /^HTTP\/\d(?:\.\d)?\s+200\b/i.test(
+              firstLine
+            )
+          );
+        }
+      }
+    );
+
+    socket.once(
+      'timeout',
+      () => finish(false)
+    );
+
+    socket.once(
+      'error',
+      () => finish(false)
+    );
+
+    socket.once(
+      'end',
+      () => {
+        if (!settled) {
+          finish(false);
+        }
+      }
+    );
+  });
+}
+
+async function filterHealthyProxies(
+  proxies,
+  {
+    concurrency =
+      Number(
+        process.env.SUPERLIKE_PROXY_HEALTH_CONCURRENCY
+      )
+      || 10
+  } = {}
+) {
+  const list =
+    Array.from(
+      new Set(
+        proxies
+        || []
+      )
+    );
+
+  const healthy =
+    [];
+
+  let cursor =
+    0;
+
+  async function worker() {
+    while (true) {
+      const index =
+        cursor++;
+
+      if (
+        index >=
+        list.length
+      ) {
+        return;
+      }
+
+      const raw =
+        list[index];
+
+      if (
+        await checkHttpsConnectProxy(
+          raw
+        )
+      ) {
+        healthy.push(
+          raw
+        );
+      }
+    }
+  }
+
+  const workerCount =
+    Math.max(
+      1,
+      Math.min(
+        Number(concurrency) || 10,
+        list.length || 1
+      )
+    );
+
+  await Promise.all(
+    Array.from(
+      {
+        length:
+          workerCount
+      },
+      () => worker()
+    )
+  );
+
+  return healthy;
 }
 
 function maskProxy(rawValue) {
@@ -326,7 +549,12 @@ class ProxyPool {
     dynamicMinSize = 3,
     dynamicFetchCount = 20,
     dynamicProtocol = 'https',
-    dynamicCountryCode = ''
+    dynamicCountryCode = '',
+    dynamicHealthBatches =
+      Number(
+        process.env.SUPERLIKE_DYNAMIC_PROXY_HEALTH_BATCHES
+      )
+      || 3
   } = {}) {
     const pool = [
       ...loadProxyPoolFile(
@@ -403,6 +631,15 @@ class ProxyPool {
       dynamicCountryCode
       || '';
 
+    this.dynamicHealthBatches =
+      Math.max(
+        1,
+        Number(
+          dynamicHealthBatches
+        )
+        || 3
+      );
+
     this.lastDynamicFetchAt =
       0;
 
@@ -465,7 +702,7 @@ class ProxyPool {
     }
 
     /*
-     * 避免短时间内反复打 SCDN API。
+     * 避免多个调用同时狂打 SCDN。
      */
     if (
       Date.now()
@@ -483,54 +720,81 @@ class ProxyPool {
           Date.now();
 
         try {
-          const fetched =
-            await fetchScdnProxies({
-              protocol:
-                this.dynamicProtocol,
-
-              count:
-                this.dynamicFetchCount,
-
-              countryCode:
-                this.dynamicCountryCode
-            });
-
-          if (
-            fetched.length === 0
+          for (
+            let batch = 1;
+            batch <= this.dynamicHealthBatches;
+            batch++
           ) {
+            const fetched =
+              await fetchScdnProxies({
+                protocol:
+                  this.dynamicProtocol,
+
+                count:
+                  this.dynamicFetchCount,
+
+                countryCode:
+                  this.dynamicCountryCode
+              });
+
             console.log(
-              `[ProxyPool:${this.name}] SCDN未返回可用候选代理。`
+              `[ProxyPool:${this.name}] SCDN第${batch}/${this.dynamicHealthBatches}批候选=${fetched.length}，开始HTTPS CONNECT预检...`
             );
 
-            return;
+            const healthy =
+              await filterHealthyProxies(
+                fetched
+              );
+
+            console.log(
+              `[ProxyPool:${this.name}] SCDN第${batch}批预检通过=${healthy.length}/${fetched.length}。`
+            );
+
+            if (
+              healthy.length > 0
+            ) {
+              const merged =
+                Array.from(
+                  new Set([
+                    ...this.items,
+                    ...healthy
+                  ])
+                );
+
+              this.items =
+                shuffleArray(
+                  merged
+                );
+
+              this.index =
+                0;
+
+              console.log(
+                `[ProxyPool:${this.name}] 健康代理已加入池，当前池=${this.items.length}。`
+              );
+
+              if (
+                this.getAvailableCount()
+                >= this.dynamicMinSize
+              ) {
+                break;
+              }
+            }
+
+            if (
+              batch
+              <
+              this.dynamicHealthBatches
+            ) {
+              console.log(
+                `[ProxyPool:${this.name}] 健康代理不足，立即获取下一批SCDN候选。`
+              );
+            }
           }
-
-          const merged =
-            Array.from(
-              new Set([
-                ...this.items,
-                ...fetched
-              ])
-            );
-
-          /*
-           * 每次补池后重新随机一次，避免固定顺序。
-           */
-          this.items =
-            shuffleArray(
-              merged
-            );
-
-          this.index =
-            0;
-
-          console.log(
-            `[ProxyPool:${this.name}] 从SCDN补充候选代理=${fetched.length}，当前池=${this.items.length}。`
-          );
 
         } catch (error) {
           console.log(
-            `[ProxyPool:${this.name}] SCDN代理获取失败：${error.message}`
+            `[ProxyPool:${this.name}] SCDN代理获取/预检失败：${error.message}`
           );
 
         } finally {
@@ -745,6 +1009,8 @@ module.exports = {
   parseProxyPool,
   loadProxyPoolFile,
   fetchScdnProxies,
+  checkHttpsConnectProxy,
+  filterHealthyProxies,
   toPlaywrightProxy,
   maskProxy,
   shuffleArray
