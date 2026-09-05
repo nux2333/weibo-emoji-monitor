@@ -68,11 +68,15 @@ const MODE2_PROXY_POOL =
       || process.env.WEIBO_PROXY
       || '',
 
+    /*
+     * Mode2 的 418 只做短冷却：
+     * 评论复检频率高，30分钟会很快把整个池全部冻住。
+     */
     cooldownMs:
       Number(
-        process.env.SUPERLIKE_PROXY_COOLDOWN_MS
+        process.env.SUPERLIKE_MODE2_PROXY_COOLDOWN_MS
       )
-      || 30 * 60 * 1000,
+      || 5 * 60 * 1000,
 
     name:
       'mode2'
@@ -3336,6 +3340,67 @@ async function getCommentsCountFromDomOnly(
   }
 }
 
+async function acquireMode2ProxyWaiting(
+  queueLabel,
+  signal = null
+) {
+  while (true) {
+    throwIfAborted(signal);
+
+    const assignment =
+      await MODE2_PROXY_POOL.acquire();
+
+    if (
+      assignment?.proxy
+      &&
+      !assignment.allCoolingDown
+    ) {
+      return assignment;
+    }
+
+    /*
+     * 文件里有代理，但当前全部在418冷却：
+     * 不再切本地IP硬撞，而是等最近一个代理恢复。
+     */
+    if (
+      assignment?.allCoolingDown
+      &&
+      Number.isFinite(
+        Number(assignment.nextReadyAt)
+      )
+    ) {
+      const waitMs =
+        Math.max(
+          1000,
+          Number(assignment.nextReadyAt)
+            - Date.now()
+        );
+
+      console.log(
+        `[模式2][${queueLabel}] 健康代理全部冷却，等待最近代理恢复：约${Math.ceil(waitMs / 1000)}秒。`
+      );
+
+      await sleep(
+        waitMs,
+        signal
+      );
+
+      continue;
+    }
+
+    /*
+     * 真的一个代理都没有时才允许本地兜底。
+     */
+    return {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
+  }
+}
+
+
 async function runLightCommentRecheck(
   signal = null,
   queueType = 'normal'
@@ -3411,31 +3476,23 @@ async function runLightCommentRecheck(
       );
 
     proxyAssignment =
-      await MODE2_PROXY_POOL.acquire();
+      await acquireMode2ProxyWaiting(
+        queueLabel,
+        signal
+      );
 
     let proxy =
       proxyAssignment.proxy;
 
-    if (
-      proxyAssignment.allCoolingDown
-      ||
-      !proxy
-    ) {
+    if (!proxy) {
       console.log(
-        '[模式2] 当前没有可用健康代理，本轮直接使用本地IP。'
+        `[模式2][${queueLabel}] 健康代理池确实为空，本轮才使用本地IP。`
       );
-
-      proxyAssignment = {
-        configured: false,
-        raw: null,
-        proxy: null,
-        masked: 'LOCAL'
-      };
 
       proxy = null;
     } else {
       console.log(
-        `[模式2] 本轮优先使用健康代理：${proxyAssignment.masked}`
+        `[模式2][${queueLabel}] 本轮使用健康代理：${proxyAssignment.masked}`
       );
     }
 
@@ -3482,20 +3539,90 @@ async function runLightCommentRecheck(
 
           console.log(
             `[轻量浏览器 ${i + 1}/${posts.length}] ` +
-            `ID=${post.id} | Post=${post.post_id} | HTTP 418，本轮停止`
+            `ID=${post.id} | Post=${post.post_id} | HTTP 418`
           );
 
           if (
             proxyAssignment?.raw
           ) {
-            MODE2_PROXY_POOL.markBlocked(
-              proxyAssignment.raw
-            );
+            const blockedProxy =
+              proxyAssignment;
+
+            const until =
+              MODE2_PROXY_POOL.markBlocked(
+                blockedProxy.raw
+              );
 
             console.log(
-              `[模式2] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
+              `[模式2][${queueLabel}] 当前代理418，短冷却5分钟并立即换代理：${blockedProxy.masked}` +
+              (
+                until
+                  ? ` | 恢复≈${new Date(until).toLocaleTimeString()}`
+                  : ''
+              )
             );
+
+            if (context) {
+              try {
+                await context.close();
+              } catch {
+                // ignore
+              }
+            }
+
+            /*
+             * 获取下一个代理。
+             * 如果全部冷却，会在这里等待最近一个恢复，
+             * 不再切本地IP每秒刷418。
+             */
+            proxyAssignment =
+              await acquireMode2ProxyWaiting(
+                queueLabel,
+                signal
+              );
+
+            const retryProxy =
+              proxyAssignment.proxy;
+
+            context =
+              await chromium.launchPersistentContext(
+                profileDir,
+                {
+                  headless: true,
+                  ...(retryProxy ? { proxy: retryProxy } : {}),
+                  viewport: {
+                    width: 1280,
+                    height: 900
+                  }
+                }
+              );
+
+            page =
+              context.pages()[0]
+              || await context.newPage();
+
+            console.log(
+              retryProxy
+                ? `[模式2][${queueLabel}] 418后切换代理：${proxyAssignment.masked}，重试当前帖子。`
+                : `[模式2][${queueLabel}] 代理池已空，只能本地兜底重试当前帖子。`
+            );
+
+            i--;
+            continue;
           }
+
+          /*
+           * 本地IP本身418时不要1秒后疯狂重启 NORMAL。
+           * 没有代理可切时，至少等待30秒再结束本轮。
+           */
+          console.log(
+            `[模式2][${queueLabel}] 本地IP命中418，等待30秒后再结束本轮，避免空转刷请求。`
+          );
+
+          await sleep(
+            30 * 1000,
+            signal
+          );
 
           break;
         }
@@ -3538,35 +3665,20 @@ async function runLightCommentRecheck(
             );
 
             proxyAssignment =
-              await MODE2_PROXY_POOL.acquire();
-
-            if (
-              proxyAssignment.allCoolingDown
-              ||
-              !proxyAssignment.proxy
-            ) {
-              console.log(
-                '[模式2] 当前没有可用动态代理，提前切回本地IP。'
+              await acquireMode2ProxyWaiting(
+                queueLabel,
+                signal
               );
-
-              proxyAssignment = {
-                configured: false,
-                raw: null,
-                proxy: null,
-                masked: 'LOCAL'
-              };
-            }
           } else {
             console.log(
-              '[模式2] 连续5个健康代理均连接失败，当前轮切回本地IP。'
+              '[模式2] 连续5个健康代理连接失败；不强制切本地，重新从当前健康池获取可用代理。'
             );
 
-            proxyAssignment = {
-              configured: false,
-              raw: null,
-              proxy: null,
-              masked: 'LOCAL'
-            };
+            proxyAssignment =
+              await acquireMode2ProxyWaiting(
+                queueLabel,
+                signal
+              );
           }
 
           const retryProxy =
