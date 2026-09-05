@@ -195,6 +195,7 @@ function initDatabase() {
       last_seen_at TEXT NOT NULL,
       first_seen_rank INTEGER,
       last_seen_rank INTEGER,
+      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
@@ -301,6 +302,27 @@ function initDatabase() {
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
+  ensureColumn('superlike_users', 'inserted_at', 'TEXT');
+
+  /*
+   * superlike_users 入库时间：
+   * 新数据由表 DEFAULT 自动记录中国时间（UTC+8）。
+   * 旧数据优先按 first_seen_at 回填；没有 first_seen_at 才使用当前中国时间。
+   */
+  db.exec(`
+    UPDATE superlike_users
+    SET inserted_at = COALESCE(
+      NULLIF(inserted_at, ''),
+      CASE
+        WHEN first_seen_at IS NOT NULL
+          AND first_seen_at <> ''
+          THEN datetime(first_seen_at, '+8 hours')
+        ELSE datetime('now', '+8 hours')
+      END
+    )
+    WHERE inserted_at IS NULL
+       OR inserted_at = ''
+  `);
 
   // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
   // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
