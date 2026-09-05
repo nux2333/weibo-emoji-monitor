@@ -1917,6 +1917,30 @@ function isAbortError(error) {
   );
 }
 
+function isProxyConnectionError(message) {
+  const text =
+    String(
+      message
+      || ''
+    );
+
+  return (
+    /ERR_TUNNEL_CONNECTION_FAILED/i.test(text)
+    ||
+    /ERR_PROXY_CONNECTION_FAILED/i.test(text)
+    ||
+    /ERR_CONNECTION_RESET/i.test(text)
+    ||
+    /ERR_CONNECTION_CLOSED/i.test(text)
+    ||
+    /ERR_CONNECTION_REFUSED/i.test(text)
+    ||
+    /ERR_NAME_NOT_RESOLVED/i.test(text)
+    ||
+    /proxy.*connection/i.test(text)
+  );
+}
+
 function throwIfAborted(signal) {
   if (signal?.aborted) {
     const error = new Error('本轮已被新一轮取消');
@@ -3222,6 +3246,28 @@ async function runLightCommentRecheck(signal = null) {
           `[轻量浏览器 ${i + 1}/${posts.length}] ` +
           `ID=${post.id} | Post=${post.post_id} | 失败 | ${result.message || 'unknown'}`
         );
+
+        if (
+          isProxyConnectionError(
+            result.message
+          )
+          &&
+          proxyAssignment?.raw
+        ) {
+          MODE2_PROXY_POOL.markBlocked(
+            proxyAssignment.raw
+          );
+
+          console.log(
+            `[模式2] 当前代理连接失败，已进入冷却：${proxyAssignment.masked}`
+          );
+
+          console.log(
+            '[模式2] 当前轮立即停止；下一轮自动选择下一个可用代理。'
+          );
+
+          break;
+        }
 
         await sleep(
           LIGHT_REQUEST_DELAY_MS,
