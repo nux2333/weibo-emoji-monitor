@@ -78,6 +78,38 @@ const MODE2_PROXY_POOL =
       'mode2'
   });
 
+const MODE1_PROXY_POOL =
+  new ProxyPool({
+    filePath:
+      process.env.WEIBO_GOOD_PROXY_FILE
+      || path.join(
+        __dirname,
+        '..',
+        'data',
+        'weibo-good-proxies.txt'
+      ),
+
+    dynamicSource: '',
+
+    rawPool:
+      process.env.SUPERLIKE_MODE1_PROXY_POOL
+      || '',
+
+    fallback:
+      process.env.SUPERLIKE_RECHECK_PROXY
+      || process.env.WEIBO_PROXY
+      || '',
+
+    cooldownMs:
+      Number(
+        process.env.SUPERLIKE_PROXY_COOLDOWN_MS
+      )
+      || 30 * 60 * 1000,
+
+    name:
+      'mode1'
+  });
+
 const MODE3_PROXY_POOL =
   new ProxyPool({
     filePath:
@@ -4914,17 +4946,16 @@ async function main() {
 
 
   let context = null;
+  let mode1ProxyAssignment = null;
+  let mode1ProxyFailureCount = 0;
 
-
-  try {
-
-    const proxy =
-      getModeProxyConfig('1');
-
-    if (proxy) {
-      console.log(
-        `[模式1] 使用代理：${proxy.server}`
-      );
+  async function launchMode1Context(proxy) {
+    if (context) {
+      try {
+        await context.close();
+      } catch {
+        // ignore
+      }
     }
 
     context =
@@ -4951,6 +4982,35 @@ async function main() {
           }
         }
       );
+  }
+
+
+  try {
+    mode1ProxyAssignment =
+      await MODE1_PROXY_POOL.acquire();
+
+    let proxy =
+      mode1ProxyAssignment?.proxy
+      || null;
+
+    if (
+      mode1ProxyAssignment?.allCoolingDown
+      ||
+      !proxy
+    ) {
+      mode1ProxyAssignment = null;
+      proxy = null;
+
+      console.log(
+        '[模式1] 当前没有可用健康代理，使用本地IP。'
+      );
+    } else {
+      console.log(
+        `[模式1] 优先使用健康代理：${mode1ProxyAssignment.masked}`
+      );
+    }
+
+    await launchMode1Context(proxy);
 
 
     console.log('');
@@ -4987,11 +5047,112 @@ async function main() {
       const monitor
       of monitors
     ) {
+      let completed = false;
 
-      await recheckOneMonitor(
-        context,
-        monitor
-      );
+      while (!completed) {
+        try {
+          await recheckOneMonitor(
+            context,
+            monitor
+          );
+
+          completed = true;
+
+        } catch (error) {
+          const message =
+            String(
+              error?.message
+              || error
+              || ''
+            );
+
+          const proxyFailed =
+            isProxyConnectionError(message)
+            ||
+            /ERR_TIMED_OUT/i.test(message)
+            ||
+            /Timeout \d+ms exceeded/i.test(message)
+            ||
+            /Navigation timeout/i.test(message);
+
+          const blocked418 =
+            /HTTP\s*418/i.test(message)
+            ||
+            /\b418\b/i.test(message);
+
+          if (
+            mode1ProxyAssignment?.raw
+            &&
+            (
+              proxyFailed
+              ||
+              blocked418
+            )
+          ) {
+            if (blocked418) {
+              MODE1_PROXY_POOL.markBlocked(
+                mode1ProxyAssignment.raw
+              );
+
+              console.log(
+                `[模式1] 当前代理命中418，进入冷却：${mode1ProxyAssignment.masked}`
+              );
+            } else {
+              MODE1_PROXY_POOL.remove(
+                mode1ProxyAssignment.raw
+              );
+
+              console.log(
+                `[模式1] 当前代理连接失败，已淘汰：${mode1ProxyAssignment.masked}`
+              );
+            }
+
+            mode1ProxyFailureCount++;
+
+            if (
+              mode1ProxyFailureCount
+              < 5
+            ) {
+              const next =
+                await MODE1_PROXY_POOL.acquire();
+
+              if (
+                next?.proxy
+                &&
+                !next.allCoolingDown
+              ) {
+                mode1ProxyAssignment =
+                  next;
+
+                console.log(
+                  `[模式1] 切换健康代理：${next.masked}（失败${mode1ProxyFailureCount}/5）`
+                );
+
+                await launchMode1Context(
+                  next.proxy
+                );
+
+                continue;
+              }
+            }
+
+            console.log(
+              '[模式1] 连续代理失败或当前无可用代理，切回本地IP继续。'
+            );
+
+            mode1ProxyAssignment =
+              null;
+
+            await launchMode1Context(
+              null
+            );
+
+            continue;
+          }
+
+          throw error;
+        }
+      }
     }
 
 
