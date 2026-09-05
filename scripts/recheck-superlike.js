@@ -78,6 +78,38 @@ const MODE2_PROXY_POOL =
       'mode2'
   });
 
+const MODE3_PROXY_POOL =
+  new ProxyPool({
+    filePath:
+      process.env.WEIBO_GOOD_PROXY_FILE
+      || path.join(
+        __dirname,
+        '..',
+        'data',
+        'weibo-good-proxies.txt'
+      ),
+
+    dynamicSource:
+      '',
+
+    rawPool:
+      process.env.SUPERLIKE_MODE3_PROXY_POOL
+      || '',
+
+    fallback:
+      process.env.SUPERLIKE_MODE3_PROXY
+      || '',
+
+    cooldownMs:
+      Number(
+        process.env.SUPERLIKE_PROXY_COOLDOWN_MS
+      )
+      || 30 * 60 * 1000,
+
+    name:
+      'mode3'
+  });
+
 function getModeProxyConfig(mode) {
   /*
    * 默认分流策略：
@@ -2515,12 +2547,14 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('# 复用 superlike-scanner 的 checkUserSuperLikeByProfile');
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
-  console.log('# 数据库顺序：按 UID 的 MAX(id) DESC');
+  console.log('# 数据库顺序：按最久未检查 UID 轮询');
+  console.log('# 优先使用 weibo-good-proxies.txt 健康代理池；连接失败最多换5个后回本地IP');
   console.log('########################################');
 
   let context = null;
   let page = null;
   let proxyAssignment = null;
+  let proxyFailureCount = 0;
 
   const profileDir =
     path.join(
@@ -2571,27 +2605,57 @@ async function runLightSuperLikeRecheck(signal = null) {
      * 使用和 SuperLike 扫描一致的持久化 Profile。
      * 这样可以复用已经建立好的微博 visitor/session。
      */
-    const proxy =
-      getModeProxyConfig('3');
+    proxyAssignment =
+      await MODE3_PROXY_POOL.acquire();
 
-    if (proxy) {
+    let proxy =
+      proxyAssignment.proxy;
+
+    if (
+      proxyAssignment.allCoolingDown
+      ||
+      !proxy
+    ) {
       console.log(
-        `[模式3] 使用代理：${proxy.server}`
+        '[模式3] 当前没有可用健康代理，本轮使用本地IP。'
+      );
+
+      proxyAssignment = {
+        configured: false,
+        raw: null,
+        proxy: null,
+        masked: 'LOCAL'
+      };
+
+      proxy = null;
+    } else {
+      console.log(
+        `[模式3] 本轮优先使用健康代理：${proxyAssignment.masked}`
       );
     }
 
-    context =
-      await chromium.launchPersistentContext(
-        profileDir,
-        {
-          headless: true,
-          ...(proxy ? { proxy } : {}),
-          viewport: {
-            width: 1280,
-            height: 900
+    async function relaunchContext(
+      nextProxy
+    ) {
+      await closeCurrentContext();
+
+      context =
+        await chromium.launchPersistentContext(
+          profileDir,
+          {
+            headless: true,
+            ...(nextProxy ? { proxy: nextProxy } : {}),
+            viewport: {
+              width: 1280,
+              height: 900
+            }
           }
-        }
-      );
+        );
+    }
+
+    await relaunchContext(
+      proxy
+    );
 
     outer:
     for (
@@ -2680,14 +2744,112 @@ async function runLightSuperLikeRecheck(signal = null) {
         ) {
           stats.failed++;
 
+          const message =
+            String(
+              result?.message
+              || 'unknown'
+            );
+
           console.log(
             `[轻量Profile ${i + 1}/${users.length}] ` +
-            `UID=${uid} | 失败 | ${
-              result?.message
-              ||
-              'unknown'
-            }`
+            `UID=${uid} | 失败 | ${message}`
           );
+
+          const proxyConnectionFailed =
+            /ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|SOCKS_CONNECTION_FAILED)|proxy.*(?:failed|error)|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(
+              message
+            );
+
+          if (
+            proxyConnectionFailed
+            &&
+            proxyAssignment?.raw
+          ) {
+            MODE3_PROXY_POOL.remove(
+              proxyAssignment.raw
+            );
+
+            proxyFailureCount++;
+
+            console.log(
+              `[模式3] 健康代理连接失败 ${proxyFailureCount}/5，已淘汰：${proxyAssignment.masked}`
+            );
+
+            if (
+              proxyFailureCount < 5
+            ) {
+              proxyAssignment =
+                await MODE3_PROXY_POOL.acquire();
+
+              if (
+                proxyAssignment.proxy
+              ) {
+                proxy =
+                  proxyAssignment.proxy;
+
+                console.log(
+                  `[模式3] 立即切换下一个健康代理：${proxyAssignment.masked}`
+                );
+
+                await relaunchContext(
+                  proxy
+                );
+
+                i--;
+                continue;
+              }
+            }
+
+            console.log(
+              '[模式3] 连续最多5个健康代理失败/无可用代理，本轮切回本地IP。'
+            );
+
+            proxyAssignment = {
+              configured: false,
+              raw: null,
+              proxy: null,
+              masked: 'LOCAL'
+            };
+
+            proxy = null;
+
+            await relaunchContext(
+              null
+            );
+
+            i--;
+            continue;
+          }
+
+          if (
+            result?.blocked
+            &&
+            proxyAssignment?.raw
+          ) {
+            MODE3_PROXY_POOL.markBlocked(
+              proxyAssignment.raw
+            );
+
+            console.log(
+              `[模式3] 当前代理命中418，进入冷却并切回本地IP：${proxyAssignment.masked}`
+            );
+
+            proxyAssignment = {
+              configured: false,
+              raw: null,
+              proxy: null,
+              masked: 'LOCAL'
+            };
+
+            proxy = null;
+
+            await relaunchContext(
+              null
+            );
+
+            i--;
+            continue;
+          }
 
           await sleep(
             LIGHT_REQUEST_DELAY_MS,
