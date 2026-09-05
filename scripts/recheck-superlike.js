@@ -2530,7 +2530,6 @@ async function runLightSuperLikeRecheck(signal = null) {
   let context = null;
   let page = null;
   let proxyAssignment = null;
-  let proxyFailureCount = 0;
 
   const profileDir =
     path.join(
@@ -3145,6 +3144,7 @@ async function runLightCommentRecheck(signal = null) {
   let context = null;
   let page = null;
   let proxyAssignment = null;
+  let proxyFailureCount = 0;
 
   const onAbort = () => {
     if (context) {
