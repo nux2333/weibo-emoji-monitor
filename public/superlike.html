@@ -338,6 +338,32 @@
       margin-top: 8px;
     }
 
+
+    .copy-post-link {
+      cursor: pointer;
+    }
+
+    .copy-toast {
+      position: fixed;
+      z-index: 9999;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(20, 20, 20, .9);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(5px) scale(.94);
+      transition: opacity .16s ease, transform .16s ease;
+      box-shadow: 0 3px 10px rgba(0,0,0,.18);
+    }
+
+    .copy-toast.show {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+
     @media(max-width:700px) {
       .superlike-container {
         padding: 10px 6px;
