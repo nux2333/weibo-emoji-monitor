@@ -14,9 +14,42 @@ function loadProxyPoolFile(filePath) {
   try {
     if (!fs.existsSync(filePath)) return [];
 
+    const content =
+      fs.readFileSync(
+        filePath,
+        'utf8'
+      );
+
+    /*
+     * 支持两种格式：
+     * 1) JSON（旧 Webshare 配置）
+     * 2) 纯文本，每行一个代理（weibo-good-proxies.txt）
+     */
+    if (
+      String(filePath)
+        .toLowerCase()
+        .endsWith('.txt')
+    ) {
+      return Array.from(
+        new Set(
+          content
+            .split(/\r?\n/)
+            .map(line => {
+              const raw =
+                String(line || '')
+                  .split('#')[0]
+                  .trim();
+
+              return raw;
+            })
+            .filter(Boolean)
+        )
+      );
+    }
+
     const json =
       JSON.parse(
-        fs.readFileSync(filePath, 'utf8')
+        content
       );
 
     const list =
@@ -578,6 +611,13 @@ class ProxyPool {
       );
     }
 
+    this.filePath =
+      filePath
+      || '';
+
+    this.lastFileReloadAt =
+      0;
+
     this.items =
       shuffleArray(
         Array.from(
@@ -655,7 +695,69 @@ class ProxyPool {
     }
   }
 
+  reloadFilePoolIfNeeded() {
+    if (!this.filePath) {
+      return;
+    }
+
+    const now =
+      Date.now();
+
+    if (
+      now - this.lastFileReloadAt
+      < 5000
+    ) {
+      return;
+    }
+
+    this.lastFileReloadAt =
+      now;
+
+    const fromFile =
+      loadProxyPoolFile(
+        this.filePath
+      );
+
+    if (
+      fromFile.length === 0
+    ) {
+      return;
+    }
+
+    const oldSet =
+      new Set(
+        this.items
+      );
+
+    const merged =
+      Array.from(
+        new Set([
+          ...this.items,
+          ...fromFile
+        ])
+      );
+
+    if (
+      merged.length
+      !== oldSet.size
+    ) {
+      this.items =
+        shuffleArray(
+          merged
+        );
+
+      this.index =
+        0;
+
+      console.log(
+        `[ProxyPool:${this.name}] 健康代理文件已刷新，当前池=${this.items.length}。`
+      );
+    }
+  }
+
   hasConfiguredProxy() {
+    this.reloadFilePoolIfNeeded();
+
     return (
       this.items.length > 0
       ||
@@ -807,6 +909,8 @@ class ProxyPool {
   }
 
   async acquire() {
+    this.reloadFilePoolIfNeeded();
+
     await this.ensureDynamicPool();
 
     if (
