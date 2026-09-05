@@ -8,7 +8,8 @@
     "rebuild-comments": "node src/rebuild-comments.js",
     "recheck-superlike": "node scripts/recheck-superlike.js",
     "scan-superlike": "node src/superlike-scanner.js",
-    "setup-proxies": "node scripts/setup-webshare-proxies.js"
+    "setup-proxies": "node scripts/setup-webshare-proxies.js",
+    "test-proxyclean": "node scripts/test-proxyclean.js"
   },
   "dependencies": {
     "express": "^5.1.0",
