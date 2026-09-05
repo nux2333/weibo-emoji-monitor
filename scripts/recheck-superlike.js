@@ -233,7 +233,7 @@ const MODE3_ROUND_INTERVAL_MS =
   Number(
     process.env.SUPERLIKE_MODE3_ROUND_INTERVAL_MS
   )
-  || 60 * 1000;
+  || 2 * 60 * 1000;
 
 /*
  * Mode2：
@@ -245,20 +245,14 @@ const COMMENT_HOT_BATCH_SIZE =
   || 80;
 
 /*
- * Mode3 Profile 只是兜底：
- * 晚高峰暂停，白天每轮只检查少量“长期未被 Mode4 清掉”的 UID。
+ * Mode3 Profile：
+ * 00:00-18:59 每2分钟一轮，每轮最多30个 UID。
+ * 按“最久未检查”顺序循环覆盖 superlike_posts 中全部候选 UID。
+ * 19:00 后暂停，Mode4 优先。
  */
 const PROFILE_VERIFY_BATCH_SIZE =
   Number(process.env.SUPERLIKE_PROFILE_VERIFY_BATCH_SIZE)
-  || 20;
-
-const PROFILE_VERIFY_MIN_AGE_MINUTES =
-  Number(process.env.SUPERLIKE_PROFILE_VERIFY_MIN_AGE_MINUTES)
-  || 45;
-
-const PROFILE_VERIFY_INTERVAL_MINUTES =
-  Number(process.env.SUPERLIKE_PROFILE_VERIFY_INTERVAL_MINUTES)
-  || 60;
+  || 30;
 
 
 const LIST_FIRST_RUN_MAX_PAGES =
@@ -2255,11 +2249,15 @@ function getDistinctUsersForLightProfile(
   monitorId
 ) {
   /*
-   * Profile 只做低频兜底：
-   * - 新 UID 先给 Mode4 45 分钟处理窗口
-   * - 已经在 superlike_users 的不查
-   * - 同一 UID 默认 60 分钟最多查一次
-   * - 每轮限制数量
+   * 全量 UID 分批轮询：
+   * - superlike_posts 中所有尚未确认 SuperLike 的 UID 都进入队列
+   * - 同一个 UID 无论有多少帖子，Profile 只检查一次
+   * - 从未检查过的 UID 最优先
+   * - 之后按 profile_last_checked_at 最旧的优先
+   * - 每轮最多 PROFILE_VERIFY_BATCH_SIZE 个
+   *
+   * 这样不会每轮暴力扫全库，但只要程序持续运行，
+   * 所有候选 UID 都会被循环覆盖。
    */
   return db.prepare(`
     SELECT
@@ -2273,26 +2271,24 @@ function getDistinctUsersForLightProfile(
     WHERE p.monitor_id = ?
       AND p.uid IS NOT NULL
       AND p.uid <> ''
-      AND datetime(p.first_seen_at)
-          <= datetime('now', '-' || ? || ' minutes')
       AND NOT EXISTS (
         SELECT 1
         FROM superlike_users su
         WHERE su.uid = p.uid
       )
     GROUP BY p.uid
-    HAVING
-      MAX(p.profile_last_checked_at) IS NULL
-      OR datetime(MAX(p.profile_last_checked_at))
-         <= datetime('now', '-' || ? || ' minutes')
     ORDER BY
+      CASE
+        WHEN MAX(p.profile_last_checked_at) IS NULL
+        THEN 0
+        ELSE 1
+      END ASC,
+      datetime(MAX(p.profile_last_checked_at)) ASC,
       MIN(p.first_seen_at) ASC,
       MAX(p.id) DESC
     LIMIT ?
   `).all(
     monitorId,
-    PROFILE_VERIFY_MIN_AGE_MINUTES,
-    PROFILE_VERIFY_INTERVAL_MINUTES,
     PROFILE_VERIFY_BATCH_SIZE
   );
 }
@@ -4639,7 +4635,7 @@ async function runMode4Forever() {
  * 模式2/3常驻轮询
  *
  * Mode2：30秒一轮，评论数降序 Top20。
- * Mode3：60秒检查一次低频 Profile 队列。
+ * Mode3：2分钟一轮，每轮最多30个 UID，按最久未检查优先。
  *
  * 到达下一轮边界时，如果上一轮仍未结束：
  * 先 abort 上一轮，再开启新一轮。
@@ -4657,7 +4653,7 @@ async function runLightModeForever(mode) {
   console.log(
     mode === '2'
       ? `[Recheck] 模式2：每 ${roundIntervalMs / 1000} 秒检查一次到期队列，每轮最多${COMMENT_HOT_BATCH_SIZE}条。`
-      : `[Recheck] 模式3：每 ${roundIntervalMs / 60000} 分钟检查一次低频Profile队列。`
+      : `[Recheck] 模式3：每 ${roundIntervalMs / 60000} 分钟一轮，每轮最多${PROFILE_VERIFY_BATCH_SIZE}个UID，按最久未检查优先；19点后暂停。`
   );
 
   while (true) {
@@ -4803,7 +4799,7 @@ function askRecheckMode() {
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论到期队列（每30秒；按评论数动态分配检查时间；每轮最多80条；>=21删除）');
-    console.log('3 = Profile低频兜底（每轮最多少量UID；晚19点后暂停，Mode4优先）');
+    console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；最久未检查优先；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
