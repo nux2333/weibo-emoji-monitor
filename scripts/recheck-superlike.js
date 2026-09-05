@@ -43,30 +43,21 @@ function getPlaywrightProxyConfig(rawValue) {
 
 const MODE2_PROXY_POOL =
   new ProxyPool({
+    /*
+     * Mode2 与 Scan 共用 weibo-good-proxies.txt，
+     * 只消费已经通过微博实测的健康代理。
+     */
+    filePath:
+      process.env.WEIBO_GOOD_PROXY_FILE
+      || path.join(
+        __dirname,
+        '..',
+        'data',
+        'weibo-good-proxies.txt'
+      ),
+
     dynamicSource:
-      process.env.SUPERLIKE_DISABLE_DYNAMIC_PROXY === '1'
-        ? ''
-        : 'scdn',
-
-    dynamicMinSize:
-      Number(
-        process.env.SUPERLIKE_DYNAMIC_PROXY_MIN_SIZE
-      )
-      || 3,
-
-    dynamicFetchCount:
-      Number(
-        process.env.SUPERLIKE_DYNAMIC_PROXY_FETCH_COUNT
-      )
-      || 20,
-
-    dynamicProtocol:
-      process.env.SUPERLIKE_DYNAMIC_PROXY_PROTOCOL
-      || 'https',
-
-    dynamicCountryCode:
-      process.env.SUPERLIKE_DYNAMIC_PROXY_COUNTRY
-      || '',
+      '',
 
     rawPool:
       process.env.SUPERLIKE_MODE2_PROXY_POOL
@@ -3174,22 +3165,34 @@ async function runLightCommentRecheck(signal = null) {
         'superlike-browser-profile-recheck-light'
       );
 
-    /*
-     * Mode2 默认优先走本地IP。
-     * 不在每轮开始时主动获取SCDN代理，避免免费代理预检拖慢评论复检。
-     */
-    proxyAssignment = {
-      configured: false,
-      raw: null,
-      proxy: null,
-      masked: 'LOCAL'
-    };
+    proxyAssignment =
+      await MODE2_PROXY_POOL.acquire();
 
-    const proxy = null;
+    let proxy =
+      proxyAssignment.proxy;
 
-    console.log(
-      '[模式2] 本轮优先使用本地IP'
-    );
+    if (
+      proxyAssignment.allCoolingDown
+      ||
+      !proxy
+    ) {
+      console.log(
+        '[模式2] 当前没有可用健康代理，本轮直接使用本地IP。'
+      );
+
+      proxyAssignment = {
+        configured: false,
+        raw: null,
+        proxy: null,
+        masked: 'LOCAL'
+      };
+
+      proxy = null;
+    } else {
+      console.log(
+        `[模式2] 本轮优先使用健康代理：${proxyAssignment.masked}`
+      );
+    }
 
     context =
       await chromium.launchPersistentContext(
@@ -3269,7 +3272,7 @@ async function runLightCommentRecheck(signal = null) {
           );
 
           console.log(
-            `[模式2] 当前代理连接失败，已从动态池淘汰：${proxyAssignment.masked}`
+            `[模式2] 当前健康代理连接失败，已从本进程池淘汰：${proxyAssignment.masked}`
           );
 
           proxyFailureCount++;
@@ -3286,7 +3289,7 @@ async function runLightCommentRecheck(signal = null) {
             proxyFailureCount < 5
           ) {
             console.log(
-              `[模式2] 动态代理连接失败 ${proxyFailureCount}/5，立即换下一个代理重试当前帖子。`
+              `[模式2] 健康代理连接失败 ${proxyFailureCount}/5，立即换下一个代理重试当前帖子。`
             );
 
             proxyAssignment =
@@ -3310,7 +3313,7 @@ async function runLightCommentRecheck(signal = null) {
             }
           } else {
             console.log(
-              '[模式2] 连续5个动态代理均连接失败，当前轮切回本地IP。'
+              '[模式2] 连续5个健康代理均连接失败，当前轮切回本地IP。'
             );
 
             proxyAssignment = {
