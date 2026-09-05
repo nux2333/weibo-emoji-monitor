@@ -305,6 +305,49 @@ async function fetch89IpCandidates() {
   );
 }
 
+async function fetchProxyHubCandidates() {
+  const html =
+    await fetchText(
+      'https://proxyhub.me/zh/cn-http-proxy-list.html'
+    );
+
+  const results = [];
+
+  /*
+   * ProxyHub 表格直接展示 IP / Port / 协议。
+   * 当前页面是中国 HTTP 代理列表；只把 IPv4:Port
+   * 当作候选，最终仍必须通过 ipify + 微博实测。
+   */
+  const regex =
+    /\b((?:\d{1,3}\.){3}\d{1,3})\s*(?:<[^>]+>|\s|&nbsp;)*\s*(\d{2,5})\b/g;
+
+  let match;
+
+  while (
+    (
+      match =
+        regex.exec(html)
+    )
+  ) {
+    results.push(
+      `http://${match[1]}:${match[2]}`
+    );
+
+    if (
+      results.length
+      >= MAX_CANDIDATES_PER_SOURCE
+    ) {
+      break;
+    }
+  }
+
+  return shuffle(
+    Array.from(
+      new Set(results)
+    )
+  );
+}
+
 async function fetchFate0Candidates() {
   const text =
     await fetchText(
@@ -387,6 +430,7 @@ async function collectSources() {
     ['SCDN', fetchScdnCandidates],
     ['ProxyClean', fetchProxyCleanCandidates],
     ['89ip', fetch89IpCandidates],
+    ['ProxyHub-CN', fetchProxyHubCandidates],
     ['fate0', fetchFate0Candidates]
   ];
 
@@ -688,7 +732,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[补池] 当前健康代理=${healthySet.size}，开始从4个免费源补充...`
+      `[补池] 当前健康代理=${healthySet.size}，开始从5个免费源补充...`
     );
 
     const candidates =
@@ -798,7 +842,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从4个源补新代理。`
+      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从5个源补新代理。`
     );
   }
 }
