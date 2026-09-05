@@ -2932,6 +2932,16 @@ async function scanOneSuperLikeMonitor(
         '[SuperLike] 不等待下一轮，立即改用本地IP重新执行当前Monitor。'
       );
 
+      if (browser) {
+        try {
+          await browser.close();
+        } catch {
+          // ignore
+        }
+
+        browser = null;
+      }
+
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
