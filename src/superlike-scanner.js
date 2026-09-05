@@ -2311,7 +2311,8 @@ async function processPagePosts(
 async function scanOneSuperLikeMonitor(
   monitor,
   deleteUidSet,
-  forceLocal = false
+  forceLocal = false,
+  proxyFailureCount = 0
 ) {
   const config =
     parseTopicHomepage(
@@ -2954,10 +2955,6 @@ async function scanOneSuperLikeMonitor(
         `[SuperLike] 代理连接失败：${proxyAssignment.masked}`
       );
 
-      console.log(
-        '[SuperLike] 不等待下一轮，立即改用本地IP重新执行当前Monitor。'
-      );
-
       if (browser) {
         try {
           await browser.close();
@@ -2968,13 +2965,36 @@ async function scanOneSuperLikeMonitor(
         browser = null;
       }
 
+      const nextFailureCount =
+        proxyFailureCount + 1;
+
       delegatedToLocal =
         true;
+
+      if (
+        nextFailureCount < 5
+      ) {
+        console.log(
+          `[SuperLike] 动态代理连接失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
+        );
+
+        return await scanOneSuperLikeMonitor(
+          monitor,
+          deleteUidSet,
+          false,
+          nextFailureCount
+        );
+      }
+
+      console.log(
+        '[SuperLike] 连续5个动态代理均连接失败，本轮切回本地IP。'
+      );
 
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
-        true
+        true,
+        nextFailureCount
       );
     }
 
