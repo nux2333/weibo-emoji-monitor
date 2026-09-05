@@ -295,6 +295,8 @@ function isProxyConnectionError(error) {
     ||
     /Navigation timeout/i.test(text)
     ||
+    /Failed to fetch/i.test(text)
+    ||
     /407\b/i.test(text)
     ||
     /402\b/i.test(text)
@@ -1487,56 +1489,83 @@ async function fetchChaohuaInPage(
       requestUrl,
       headers
     }) => {
-      const response =
-        await fetch(
-          requestUrl,
-          {
-            method:
-              'GET',
-
-            credentials:
-              'include',
-
-            headers
-          }
-        );
-
-
-      const text =
-        await response.text();
-
-
-      let json = null;
-
       try {
-        json =
-          JSON.parse(
-            text
+        const response =
+          await fetch(
+            requestUrl,
+            {
+              method:
+                'GET',
+
+              credentials:
+                'include',
+
+              headers
+            }
           );
 
-      } catch {
-        // 非 JSON 时保留原始文本，交给调用方打印诊断。
+
+        const text =
+          await response.text();
+
+
+        let json = null;
+
+        try {
+          json =
+            JSON.parse(
+              text
+            );
+
+        } catch {
+          // 非 JSON 时保留原始文本，交给调用方打印诊断。
+        }
+
+
+        return {
+          httpStatus:
+            response.status,
+
+          ok:
+            response.ok,
+
+          finalUrl:
+            response.url,
+
+          text:
+            text.slice(
+              0,
+              500
+            ),
+
+          json,
+
+          error:
+            null
+        };
+
+      } catch (error) {
+        return {
+          httpStatus:
+            null,
+
+          ok:
+            false,
+
+          finalUrl:
+            requestUrl,
+
+          text:
+            '',
+
+          json:
+            null,
+
+          error:
+            error?.message
+            || String(error)
+        };
       }
-
-
-      return {
-        httpStatus:
-          response.status,
-
-        ok:
-          response.ok,
-
-        finalUrl:
-          response.url,
-
-        text:
-          text.slice(
-            0,
-            500
-          ),
-
-        json
-      };
     },
 
     {
@@ -2883,6 +2912,33 @@ async function scanOneSuperLikeMonitor(
         console.error(
           `[SuperLike][_feed fallback诊断] Response=${fallbackFeed.text || '-'}`
         );
+
+        if (
+          fallbackFeed.error
+        ) {
+          console.error(
+            `[SuperLike][_feed fallback诊断] Error=${fallbackFeed.error}`
+          );
+        }
+
+        if (
+          proxyAssignment?.raw
+          &&
+          (
+            /Failed to fetch/i.test(
+              String(
+                fallbackFeed.error
+                || ''
+              )
+            )
+            ||
+            !clicked
+          )
+        ) {
+          throw new Error(
+            `代理页面状态异常：${fallbackFeed.error || '找不到最新Tab且_feed fallback失败'}`
+          );
+        }
 
         return;
       }
