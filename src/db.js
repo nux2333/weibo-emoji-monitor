@@ -204,6 +204,25 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
+
+    /*
+     * Scan 断点续扫游标。
+     * 与正式 checkpoint 分离：正式 checkpoint 只在安全追到旧边界后推进；
+     * resume 只记录“下一页从哪里继续”，失败/达到50页时保留。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_scan_resume (
+      monitor_id INTEGER PRIMARY KEY,
+      checkpoint_post_id TEXT,
+      checkpoint_created_at_ms INTEGER,
+      sort_time_flow_id TEXT NOT NULL,
+      template_url TEXT NOT NULL,
+      next_page INTEGER NOT NULL,
+      next_since_id TEXT,
+      next_max_id TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
     /*
      * SuperLike 页面黑粉关键词。
      * 页面“ 不显示猪 ”筛选会检查：
@@ -841,6 +860,104 @@ function saveScanCheckpoint(
   return true;
 }
 
+function getScanResume(monitorId) {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      checkpoint_post_id,
+      checkpoint_created_at_ms,
+      sort_time_flow_id,
+      template_url,
+      next_page,
+      next_since_id,
+      next_max_id,
+      updated_at
+    FROM superlike_scan_resume
+    WHERE monitor_id = ?
+  `).get(monitorId) || null;
+}
+
+
+function saveScanResume(
+  monitorId,
+  checkpoint,
+  sortTimeFlowId,
+  templateUrl,
+  nextParams
+) {
+  initDatabase();
+
+  if (
+    !monitorId
+    || !sortTimeFlowId
+    || !templateUrl
+    || !nextParams
+    || Number(nextParams.page) < 2
+  ) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_scan_resume(
+      monitor_id,
+      checkpoint_post_id,
+      checkpoint_created_at_ms,
+      sort_time_flow_id,
+      template_url,
+      next_page,
+      next_since_id,
+      next_max_id,
+      updated_at
+    )
+    VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(monitor_id)
+    DO UPDATE SET
+      checkpoint_post_id=excluded.checkpoint_post_id,
+      checkpoint_created_at_ms=excluded.checkpoint_created_at_ms,
+      sort_time_flow_id=excluded.sort_time_flow_id,
+      template_url=excluded.template_url,
+      next_page=excluded.next_page,
+      next_since_id=excluded.next_since_id,
+      next_max_id=excluded.next_max_id,
+      updated_at=CURRENT_TIMESTAMP
+  `).run(
+    Number(monitorId),
+    checkpoint?.latest_post_id
+      ? String(checkpoint.latest_post_id)
+      : null,
+    Number.isFinite(Number(checkpoint?.latest_created_at_ms))
+      ? Number(checkpoint.latest_created_at_ms)
+      : null,
+    String(sortTimeFlowId),
+    String(templateUrl),
+    Number(nextParams.page),
+    nextParams.since_id == null
+      ? null
+      : String(nextParams.since_id),
+    nextParams.max_id == null
+      ? '0'
+      : String(nextParams.max_id)
+  );
+
+  return true;
+}
+
+
+function clearScanResume(monitorId) {
+  initDatabase();
+
+  const result =
+    db.prepare(`
+      DELETE FROM superlike_scan_resume
+      WHERE monitor_id = ?
+    `).run(Number(monitorId));
+
+  return Number(result.changes || 0);
+}
+
+
 function getMonitors(onlyEnabled = true) {
   initDatabase();
   return onlyEnabled
@@ -1286,5 +1403,8 @@ module.exports = {
   deletePostsByUidSet,
   cleanupSuperLikePostsByUsersTable,
   getScanCheckpoint,
-  saveScanCheckpoint
+  saveScanCheckpoint,
+  getScanResume,
+  saveScanResume,
+  clearScanResume
 };
