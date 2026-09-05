@@ -101,34 +101,20 @@ let running = false;
 const SCAN_PROXY_POOL =
   new ProxyPool({
     /*
-     * 默认使用 SCDN 动态免费代理源。
-     * 如明确配置 SUPERLIKE_DISABLE_DYNAMIC_PROXY=1，
-     * 则退回本地IP/手工代理。
+     * Scan 优先使用我们自己维护、已经通过微博实测的健康代理池。
+     * 不再直接从 SCDN 临时拉原始候选。
      */
+    filePath:
+      process.env.WEIBO_GOOD_PROXY_FILE
+      || path.join(
+        __dirname,
+        '..',
+        'data',
+        'weibo-good-proxies.txt'
+      ),
+
     dynamicSource:
-      process.env.SUPERLIKE_DISABLE_DYNAMIC_PROXY === '1'
-        ? ''
-        : 'scdn',
-
-    dynamicMinSize:
-      Number(
-        process.env.SUPERLIKE_DYNAMIC_PROXY_MIN_SIZE
-      )
-      || 3,
-
-    dynamicFetchCount:
-      Number(
-        process.env.SUPERLIKE_DYNAMIC_PROXY_FETCH_COUNT
-      )
-      || 20,
-
-    dynamicProtocol:
-      process.env.SUPERLIKE_DYNAMIC_PROXY_PROTOCOL
-      || 'https',
-
-    dynamicCountryCode:
-      process.env.SUPERLIKE_DYNAMIC_PROXY_COUNTRY
-      || '',
+      '',
 
     rawPool:
       process.env.SUPERLIKE_SCAN_PROXY_POOL
@@ -2311,7 +2297,7 @@ async function processPagePosts(
 async function scanOneSuperLikeMonitor(
   monitor,
   deleteUidSet,
-  forceLocal = true,
+  forceLocal = false,
   proxyFailureCount = 0,
   local418FallbackError = null
 ) {
@@ -2459,8 +2445,8 @@ async function scanOneSuperLikeMonitor(
 
     console.log(
       proxy
-        ? `[SuperLike] 本地IP已418，启用救援代理：${proxyAssignment.masked}`
-        : '[SuperLike] 找贴本轮优先使用本地IP'
+        ? `[SuperLike] 本轮优先使用健康代理：${proxyAssignment.masked}`
+        : '[SuperLike] 当前轮使用本地IP'
     );
 
     browser =
@@ -2993,16 +2979,16 @@ async function scanOneSuperLikeMonitor(
       }
 
       console.log(
-        '[SuperLike] 连续5个救援代理均连接失败，恢复本地418退避。'
+        '[SuperLike] 连续5个健康代理均连接失败，本轮切回本地IP。'
       );
 
-      if (
+      return await scanOneSuperLikeMonitor(
+        monitor,
+        deleteUidSet,
+        true,
+        nextFailureCount,
         local418FallbackError
-      ) {
-        throw local418FallbackError;
-      }
-
-      throw error;
+      );
     }
 
     if (
@@ -3011,7 +2997,7 @@ async function scanOneSuperLikeMonitor(
       forceLocal
     ) {
       console.log(
-        '[SuperLike] 本地IP命中418，开始启用SCDN救援代理。'
+        '[SuperLike] 本地IP命中418。'
       );
 
       if (browser) {
@@ -3024,16 +3010,7 @@ async function scanOneSuperLikeMonitor(
         browser = null;
       }
 
-      delegatedToLocal =
-        true;
-
-      return await scanOneSuperLikeMonitor(
-        monitor,
-        deleteUidSet,
-        false,
-        0,
-        error
-      );
+      throw error;
     }
 
     if (
@@ -3272,7 +3249,7 @@ async function scanSuperLikePosts() {
         await scanOneSuperLikeMonitor(
           monitor,
           deleteUidSet,
-          true
+          false
         );
 
       } catch (error) {
