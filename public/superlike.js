@@ -3,6 +3,9 @@ let currentPage = 1;
 let pageSize = 50;
 let currentKeyword = '';
 
+let sortKey = 'post_created_at';
+let sortDirection = 'desc';
+
 
 const CSV_COLUMNS = [
   {
@@ -28,11 +31,6 @@ const CSV_COLUMNS = [
   {
     key: 'icon_summary',
     label: '当前Icon',
-    defaultChecked: true
-  },
-  {
-    key: 'experience_7d',
-    label: '近7天经验值',
     defaultChecked: true
   },
   {
@@ -296,20 +294,15 @@ async function loadData(
       stats.user_count ?? 0;
 
 
-  document
-    .getElementById(
-      'experienceKnown'
-    )
-    .textContent =
-      stats.experience_known ?? 0;
-
-
   allRows =
     Array.isArray(
       json.data
     )
       ? json.data
       : [];
+
+  applyCurrentSort();
+  updateSortIndicators();
 
 
   const totalPages =
@@ -337,6 +330,170 @@ async function loadData(
 }
 
 
+function parseSortableTime(value) {
+  if (!value) {
+    return 0;
+  }
+
+  let date =
+    new Date(
+      value
+    );
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+    &&
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+      String(value)
+    )
+  ) {
+    date =
+      new Date(
+        String(value)
+          .replace(
+            ' ',
+            'T'
+          )
+        +
+        '+08:00'
+      );
+  }
+
+  return Number.isNaN(
+    date.getTime()
+  )
+    ? 0
+    : date.getTime();
+}
+
+
+function compareRows(
+  a,
+  b,
+  key
+) {
+  if (
+    key === 'comments_count'
+  ) {
+    return (
+      Number(a?.[key] ?? 0)
+      -
+      Number(b?.[key] ?? 0)
+    );
+  }
+
+  if (
+    key === 'post_created_at'
+  ) {
+    return (
+      parseSortableTime(
+        a?.[key]
+      )
+      -
+      parseSortableTime(
+        b?.[key]
+      )
+    );
+  }
+
+  return String(
+    a?.[key] ?? ''
+  ).localeCompare(
+    String(
+      b?.[key] ?? ''
+    ),
+    'zh-CN',
+    {
+      numeric: true,
+      sensitivity: 'base'
+    }
+  );
+}
+
+
+function applyCurrentSort() {
+  allRows.sort(
+    (a, b) => {
+      const result =
+        compareRows(
+          a,
+          b,
+          sortKey
+        );
+
+      return sortDirection === 'asc'
+        ? result
+        : -result;
+    }
+  );
+}
+
+
+function updateSortIndicators() {
+  document
+    .querySelectorAll(
+      'th.sortable'
+    )
+    .forEach(
+      th => {
+        const key =
+          th.dataset.sortKey;
+
+        const indicator =
+          th.querySelector(
+            '.sort-indicator'
+          );
+
+        const active =
+          key === sortKey;
+
+        th.classList.toggle(
+          'sort-active',
+          active
+        );
+
+        if (indicator) {
+          indicator.textContent =
+            active
+              ? (
+                  sortDirection === 'asc'
+                    ? '▲'
+                    : '▼'
+                )
+              : '↕';
+        }
+      }
+    );
+}
+
+
+function sortBy(key) {
+  if (
+    sortKey === key
+  ) {
+    sortDirection =
+      sortDirection === 'asc'
+        ? 'desc'
+        : 'asc';
+  } else {
+    sortKey =
+      key;
+
+    sortDirection =
+      'asc';
+  }
+
+  currentPage = 1;
+
+  applyCurrentSort();
+  updateSortIndicators();
+  renderTable();
+  renderPagination();
+}
+
+
 function renderTable() {
 
   const tbody =
@@ -356,7 +513,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="8"
+          colspan="7"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -421,21 +578,6 @@ function renderTable() {
         `;
 
 
-    const experience =
-      row.experience_7d === null ||
-      row.experience_7d === undefined
-
-        ? `
-          <span class="unknown-exp">
-            —
-          </span>
-        `
-
-        : escapeHtml(
-            row.experience_7d
-          );
-
-
     tr.innerHTML = `
 
       <td class="uid">
@@ -477,11 +619,6 @@ function renderTable() {
 
       <td>
         ${icon}
-      </td>
-
-
-      <td>
-        ${experience}
       </td>
 
 
