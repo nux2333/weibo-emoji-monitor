@@ -29,7 +29,10 @@ const {
   deletePostsByUidSet,
   cleanupSuperLikePostsByUsersTable,
   getScanCheckpoint,
-  saveScanCheckpoint
+  saveScanCheckpoint,
+  getScanResume,
+  saveScanResume,
+  clearScanResume
 } = require('./db');
 
 /**
@@ -2604,6 +2607,40 @@ async function scanOneSuperLikeMonitor(
       monitor.id
     );
 
+  const storedResume =
+    getScanResume(
+      monitor.id
+    );
+
+  /*
+   * Resume 必须属于当前正式 checkpoint。
+   * checkpoint 已经推进过的旧游标绝不能继续使用。
+   */
+  const resume =
+    storedResume
+    &&
+    String(
+      storedResume.checkpoint_post_id
+      || ''
+    )
+    ===
+    String(
+      checkpoint?.latest_post_id
+      || ''
+    )
+      ? storedResume
+      : null;
+
+  if (
+    storedResume
+    &&
+    !resume
+  ) {
+    clearScanResume(
+      monitor.id
+    );
+  }
+
   let newestThisRound =
     null;
 
@@ -2668,6 +2705,12 @@ async function scanOneSuperLikeMonitor(
       checkpoint
         ? `[SuperLike] 上次Checkpoint：${checkpoint.latest_created_at || '-'} / ${checkpoint.latest_post_id || '-'}`
         : '[SuperLike] 上次Checkpoint：无（首次运行）'
+    );
+
+    console.log(
+      resume
+        ? `[SuperLike][Resume] 发现断点：下次从 sort_time page=${resume.next_page} 继续。`
+        : '[SuperLike][Resume] 无断点，从最新开始。'
     );
 
     console.log(
@@ -2973,16 +3016,87 @@ async function scanOneSuperLikeMonitor(
     let current =
       firstSortTimeResult;
 
+    let logicalPageNumber = 1;
+
+    /*
+     * 有持久化断点时：
+     * 仍先通过真实页面拿到最新的 sort_time 模板/header，
+     * 然后直接使用上次保存的 cursor 跳回中断位置。
+     */
+    if (resume) {
+      const resumeParams = {
+        page:
+          Number(resume.next_page),
+
+        since_id:
+          resume.next_since_id
+          ?? null,
+
+        max_id:
+          resume.next_max_id
+          ?? '0'
+      };
+
+      const resumeUrl =
+        buildChaohuaUrl(
+          resume.sort_time_flow_id
+          || sortTimeFlowId,
+          resumeParams,
+          sortTimeRequestTemplateUrl
+        );
+
+      console.log(
+        `[SuperLike][Resume] 从断点继续：page=${resumeParams.page}`
+      );
+
+      const resumeResult =
+        await fetchChaohuaInPage(
+          page,
+          resumeUrl,
+          sortTimeRequestTemplateHeaders
+        );
+
+      if (
+        resumeResult.httpStatus === 418
+      ) {
+        throw new Weibo418Error(
+          'Resume sort_time 返回 HTTP 418'
+        );
+      }
+
+      if (!resumeResult.ok) {
+        throw new Error(
+          `Resume sort_time HTTP ${resumeResult.httpStatus ?? '-'}：${resumeResult.error || resumeResult.text || '请求失败'}`
+        );
+      }
+
+      current = {
+        url:
+          resumeUrl,
+
+        page:
+          resumeParams.page,
+
+        json:
+          resumeResult.json
+      };
+
+      logicalPageNumber =
+        resumeParams.page;
+    }
+
     // 第二重兜底：连续 3 个完整旧页才按时间边界停止。
     const CHECKPOINT_OLD_PAGE_THRESHOLD = 3;
     let consecutiveOldCheckpointPages = 0;
 
 
     for (
-      let pageNumber = 1;
-      pageNumber <= MAX_PAGES;
-      pageNumber++
+      let batchPageIndex = 1;
+      batchPageIndex <= MAX_PAGES;
+      batchPageIndex++
     ) {
+      const pageNumber =
+        logicalPageNumber;
       pagesScanned++;
 
 
@@ -3055,6 +3169,10 @@ async function scanOneSuperLikeMonitor(
         stopReason =
           '已找到上一轮 latest_post_id';
 
+        clearScanResume(
+          monitor.id
+        );
+
         console.log(
           '[SuperLike][Checkpoint] 第一重兜底命中：当前页已完整处理，停止请求下一页。'
         );
@@ -3097,13 +3215,17 @@ async function scanOneSuperLikeMonitor(
           checkpointSafeToAdvance =
             true;
 
+          clearScanResume(
+            monitor.id
+          );
+
           break;
         }
       }
 
 
       if (
-        pageNumber >=
+        batchPageIndex >=
         MAX_PAGES
       ) {
         stopReason =
@@ -3117,7 +3239,14 @@ async function scanOneSuperLikeMonitor(
         checkpointSafeToAdvance =
           !checkpoint;
 
-        break;
+        /*
+         * 已有 checkpoint 时达到单批50页，不丢进度。
+         * 下面会在拿到 nextParams 后保存 Resume；
+         * 因此这里不能提前 break。
+         */
+        if (!checkpoint) {
+          break;
+        }
       }
 
 
@@ -3146,6 +3275,44 @@ async function scanOneSuperLikeMonitor(
 
         checkpointSafeToAdvance =
           true;
+
+        clearScanResume(
+          monitor.id
+        );
+
+        break;
+      }
+
+
+      /*
+       * 当前页已经完整处理成功，此时才把“下一页 cursor”落库。
+       * 所以即使下一页请求失败/进程退出，重启后也从未处理页继续。
+       */
+      if (checkpoint) {
+        saveScanResume(
+          monitor.id,
+          checkpoint,
+          sortTimeFlowId,
+          sortTimeRequestTemplateUrl,
+          nextParams
+        );
+
+        console.log(
+          `[SuperLike][Resume] 已保存下一页断点：page=${nextParams.page}`
+        );
+      }
+
+
+      if (
+        batchPageIndex >=
+        MAX_PAGES
+      ) {
+        stopReason =
+          `单批达到最大 ${MAX_PAGES} 页，已保存 Resume page=${nextParams.page}`;
+
+        console.log(
+          `[SuperLike][Resume] ${stopReason}；下一轮从该页继续。`
+        );
 
         break;
       }
@@ -3225,6 +3392,9 @@ async function scanOneSuperLikeMonitor(
         json:
           nextResult.json
       };
+
+      logicalPageNumber =
+        Number(nextParams.page);
 
 
       if (
