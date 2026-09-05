@@ -1545,8 +1545,7 @@ async function recheckOneMonitor(
         await checkUserSuperLikeByProfile(
           context,
           config,
-          uid,
-          signal
+          uid
         );
 
 
@@ -1599,6 +1598,23 @@ async function recheckOneMonitor(
       ) {
 
         stats.superLikeUsers++;
+
+        /*
+         * Mode1 既然已经确认该 UID 是 SuperLike，
+         * 同步写入 superlike_users，避免后续 Scan/Mode2/Mode3 再次处理。
+         */
+        const userInserted =
+          saveSuperLikeUser(
+            monitor.id,
+            uid,
+            getWeiboScanDate()
+          );
+
+        console.log(
+          userInserted
+            ? `[Recheck][SuperLike用户入库] UID=${uid} 已写入 superlike_users`
+            : `[Recheck][SuperLike用户已存在] UID=${uid}`
+        );
 
 
         const deleted =
