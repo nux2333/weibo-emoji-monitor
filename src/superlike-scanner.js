@@ -2315,6 +2315,15 @@ async function scanOneSuperLikeMonitor(
   let stopReason =
     `达到最大 ${MAX_PAGES} 页`;
 
+  /*
+   * 只有确认本轮扫描边界是完整/安全的，才允许推进 checkpoint。
+   *
+   * 418、普通HTTP失败、异常中断：
+   * 一律保留旧 checkpoint，避免下一轮跳过未扫描区间。
+   */
+  let checkpointSafeToAdvance =
+    false;
+
 
   try {
     console.log('');
@@ -2683,6 +2692,9 @@ async function scanOneSuperLikeMonitor(
           '[SuperLike][Checkpoint] 第一重兜底命中：当前页已完整处理，停止请求下一页。'
         );
 
+        checkpointSafeToAdvance =
+          true;
+
         break;
       }
 
@@ -2715,6 +2727,9 @@ async function scanOneSuperLikeMonitor(
             `[SuperLike][Checkpoint] 第二重兜底命中：${stopReason}，停止请求下一页。`
           );
 
+          checkpointSafeToAdvance =
+            true;
+
           break;
         }
       }
@@ -2726,6 +2741,14 @@ async function scanOneSuperLikeMonitor(
       ) {
         stopReason =
           `第三重兜底：达到最大 ${MAX_PAGES} 页`;
+
+        /*
+         * 首次运行没有旧 checkpoint，达到配置上限后可以建立新的 checkpoint。
+         * 已有旧 checkpoint 时，如果只是撞到最大页数但仍没追到旧边界，
+         * 说明中间可能还有未扫描数据，因此绝不能推进 checkpoint。
+         */
+        checkpointSafeToAdvance =
+          !checkpoint;
 
         break;
       }
@@ -2753,6 +2776,9 @@ async function scanOneSuperLikeMonitor(
         console.log(
           `[SuperLike] ${stopReason}`
         );
+
+        checkpointSafeToAdvance =
+          true;
 
         break;
       }
@@ -2859,6 +2885,15 @@ async function scanOneSuperLikeMonitor(
         );
 
       if (until) {
+        /*
+         * 标记给外层：
+         * 这是“代理池中的当前代理”触发的418。
+         * 外层不再执行整个 Scan 的30/60分钟全局退避，
+         * 只按正常白天/晚间周期，下一轮改用下一个代理。
+         */
+        error.proxyPoolHandled =
+          true;
+
         console.log(
           `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
         );
@@ -2879,10 +2914,16 @@ async function scanOneSuperLikeMonitor(
 
 
     /*
-     * 只有本轮确实看到了有效的最新帖子，才推进 checkpoint。
-     * 即使后面因为 checkpoint 命中而停止，也以本轮最前面的最新帖为新 checkpoint。
+     * checkpoint 只在“本轮边界完整且安全”时推进。
+     *
+     * 特别注意：
+     * 如果第N+1页418/失败，本轮前N页的数据仍然保留，
+     * 但 checkpoint 不动；下一轮会从最新位置重新扫，
+     * 直到重新追到旧 checkpoint，确保中间区间不会漏掉。
      */
     if (
+      checkpointSafeToAdvance
+      &&
       newestThisRound
     ) {
       try {
@@ -2903,6 +2944,14 @@ async function scanOneSuperLikeMonitor(
           error
         );
       }
+    } else if (
+      newestThisRound
+      &&
+      !checkpointSafeToAdvance
+    ) {
+      console.log(
+        `[SuperLike][Checkpoint保留] 本轮未完整扫到安全边界，继续保留旧Checkpoint：${checkpoint?.latest_created_at || '-'} / ${checkpoint?.latest_post_id || '-'}`
+      );
     }
 
 
@@ -3106,6 +3155,28 @@ async function runSuperLikeRoundSafely(label = '本轮') {
 
   } catch (error) {
     if (isWeibo418Error(error)) {
+      /*
+       * 使用代理池时：
+       * 418只处罚当前代理，不处罚整个找贴脚本。
+       * 下一轮按正常20/5分钟周期执行，并自动取下一个可用代理。
+       */
+      if (error.proxyPoolHandled) {
+        consecutive418 = 0;
+
+        console.error(
+          `[SuperLike] ${label}命中 HTTP 418；当前代理已冷却。找贴脚本不做全局退避，下一轮按正常周期换下一个代理。`
+        );
+
+        return {
+          ok: false,
+          rateLimited: false,
+          proxyRateLimited: true
+        };
+      }
+
+      /*
+       * 没有代理池/本地IP触发418时，仍保留原来的全局30/60分钟退避。
+       */
       consecutive418++;
 
       console.error(
