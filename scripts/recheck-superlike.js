@@ -823,7 +823,7 @@ function upsertSuperLikeUsers(
         monitor_id,
         uid,
         scan_date,
-        first_seen_at,
+        inserted_at,
         last_seen_at,
         first_seen_rank,
         last_seen_rank
