@@ -159,7 +159,17 @@ async function fetchScdnProxies({
   count =
     20,
   countryCode =
-    ''
+    '',
+  timeoutMs =
+    Number(
+      process.env.SUPERLIKE_SCDN_TIMEOUT_MS
+    )
+    || 30 * 1000,
+  retries =
+    Number(
+      process.env.SUPERLIKE_SCDN_RETRIES
+    )
+    || 3
 } = {}) {
   const url =
     new URL(apiUrl);
@@ -191,68 +201,118 @@ async function fetchScdnProxies({
     );
   }
 
-  const controller =
-    new AbortController();
+  let lastError =
+    null;
 
-  const timer =
-    setTimeout(
-      () => controller.abort(),
-      10000
-    );
+  for (
+    let attempt = 1;
+    attempt <= retries;
+    attempt++
+  ) {
+    const controller =
+      new AbortController();
 
-  try {
-    const response =
-      await fetch(
-        url.toString(),
-        {
-          signal:
-            controller.signal,
+    const timer =
+      setTimeout(
+        () => controller.abort(),
+        timeoutMs
+      );
 
-          headers: {
-            Accept:
-              'application/json'
+    try {
+      const response =
+        await fetch(
+          url.toString(),
+          {
+            signal:
+              controller.signal,
+
+            headers: {
+              Accept:
+                'application/json, text/plain, */*',
+
+              'User-Agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/152.0.0.0 Safari/537.36'
+            }
           }
-        }
+        );
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`
+        );
+      }
+
+      const json =
+        await response.json();
+
+      const list =
+        Array.isArray(
+          json?.data?.proxies
+        )
+          ? json.data.proxies
+          : [];
+
+      if (
+        list.length === 0
+      ) {
+        throw new Error(
+          'SCDN返回空代理列表'
+        );
+      }
+
+      return list
+        .map(value => {
+          const raw =
+            String(value || '')
+              .trim();
+
+          if (!raw) return '';
+
+          return /^\w+:\/\//i.test(raw)
+            ? raw
+            : `http://${raw}`;
+        })
+        .filter(Boolean);
+
+    } catch (error) {
+      lastError =
+        error;
+
+      const message =
+        error?.name === 'AbortError'
+          ? `请求超时（${timeoutMs / 1000}秒）`
+          : String(
+              error?.message
+              || error
+            );
+
+      console.log(
+        `[ProxyPool:SCDN] 获取失败 ${attempt}/${retries}：${message}`
       );
 
-    if (!response.ok) {
-      throw new Error(
-        `HTTP ${response.status}`
-      );
+      if (
+        attempt < retries
+      ) {
+        await new Promise(
+          resolve =>
+            setTimeout(
+              resolve,
+              1500 * attempt
+            )
+        );
+      }
+
+    } finally {
+      clearTimeout(timer);
     }
-
-    const json =
-      await response.json();
-
-    const list =
-      Array.isArray(
-        json?.data?.proxies
-      )
-        ? json.data.proxies
-        : [];
-
-    return list
-      .map(value => {
-        const raw =
-          String(value || '')
-            .trim();
-
-        if (!raw) return '';
-
-        /*
-         * SCDN 的 HTTPS 列表返回 host:port。
-         * Playwright 连接 CONNECT 代理时仍使用 http://host:port。
-         */
-        return /^\w+:\/\//i.test(raw)
-          ? raw
-          : `http://${raw}`;
-      })
-      .filter(Boolean);
-
-  } finally {
-    clearTimeout(timer);
   }
+
+  throw lastError
+    || new Error(
+      'SCDN代理获取失败'
+    );
 }
+
 
 class ProxyPool {
   constructor({
