@@ -8,21 +8,15 @@ function parseProxyPool(rawValue) {
 }
 
 function loadProxyPoolFile(filePath) {
-  if (!filePath) {
-    return [];
-  }
+  if (!filePath) return [];
 
   try {
-    if (!fs.existsSync(filePath)) {
-      return [];
-    }
+    if (!fs.existsSync(filePath)) return [];
 
-    const json = JSON.parse(
-      fs.readFileSync(
-        filePath,
-        'utf8'
-      )
-    );
+    const json =
+      JSON.parse(
+        fs.readFileSync(filePath, 'utf8')
+      );
 
     const list =
       Array.isArray(json)
@@ -46,26 +40,15 @@ function loadProxyPoolFile(filePath) {
           ).trim();
 
         const port =
-          String(
-            item?.port
-            || ''
-          ).trim();
+          String(item?.port || '').trim();
 
-        if (!host || !port) {
-          return '';
-        }
+        if (!host || !port) return '';
 
         const username =
-          String(
-            item?.username
-            || ''
-          ).trim();
+          String(item?.username || '').trim();
 
         const password =
-          String(
-            item?.password
-            || ''
-          ).trim();
+          String(item?.password || '').trim();
 
         const auth =
           username
@@ -85,40 +68,9 @@ function loadProxyPoolFile(filePath) {
   }
 }
 
-function toPlaywrightProxy(rawValue) {
-  const raw = String(rawValue || '').trim();
-
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(raw);
-    const proxy = {
-      server:
-        `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`
-    };
-
-    if (parsed.username) {
-      proxy.username = decodeURIComponent(parsed.username);
-    }
-
-    if (parsed.password) {
-      proxy.password = decodeURIComponent(parsed.password);
-    }
-
-    return proxy;
-  } catch {
-    return { server: raw };
-  }
-}
-
 function shuffleArray(values) {
   const result =
-    Array.from(
-      values
-      || []
-    );
+    Array.from(values || []);
 
   for (
     let i = result.length - 1;
@@ -127,8 +79,7 @@ function shuffleArray(values) {
   ) {
     const j =
       Math.floor(
-        Math.random()
-        * (i + 1)
+        Math.random() * (i + 1)
       );
 
     [
@@ -143,18 +94,163 @@ function shuffleArray(values) {
   return result;
 }
 
-function maskProxy(rawValue) {
-  const raw = String(rawValue || '').trim();
+function toPlaywrightProxy(rawValue) {
+  const raw =
+    String(rawValue || '').trim();
 
-  if (!raw) {
-    return '-';
-  }
+  if (!raw) return null;
 
   try {
-    const parsed = new URL(raw);
-    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
+    const parsed =
+      new URL(raw);
+
+    const proxy = {
+      server:
+        `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`
+    };
+
+    if (parsed.username) {
+      proxy.username =
+        decodeURIComponent(
+          parsed.username
+        );
+    }
+
+    if (parsed.password) {
+      proxy.password =
+        decodeURIComponent(
+          parsed.password
+        );
+    }
+
+    return proxy;
   } catch {
-    return raw.replace(/\/\/[^@]+@/, '//***@');
+    return {
+      server: raw
+    };
+  }
+}
+
+function maskProxy(rawValue) {
+  const raw =
+    String(rawValue || '').trim();
+
+  if (!raw) return '-';
+
+  try {
+    const parsed =
+      new URL(raw);
+
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
+
+  } catch {
+    return raw.replace(
+      /\/\/[^@]+@/,
+      '//***@'
+    );
+  }
+}
+
+async function fetchScdnProxies({
+  apiUrl =
+    'https://proxy.scdn.io/api/get_proxy.php',
+  protocol =
+    'https',
+  count =
+    20,
+  countryCode =
+    ''
+} = {}) {
+  const url =
+    new URL(apiUrl);
+
+  url.searchParams.set(
+    'protocol',
+    protocol
+  );
+
+  url.searchParams.set(
+    'count',
+    String(
+      Math.max(
+        1,
+        Math.min(
+          20,
+          Number(count) || 20
+        )
+      )
+    )
+  );
+
+  if (countryCode) {
+    url.searchParams.set(
+      'country_code',
+      String(countryCode)
+        .trim()
+        .toUpperCase()
+    );
+  }
+
+  const controller =
+    new AbortController();
+
+  const timer =
+    setTimeout(
+      () => controller.abort(),
+      10000
+    );
+
+  try {
+    const response =
+      await fetch(
+        url.toString(),
+        {
+          signal:
+            controller.signal,
+
+          headers: {
+            Accept:
+              'application/json'
+          }
+        }
+      );
+
+    if (!response.ok) {
+      throw new Error(
+        `HTTP ${response.status}`
+      );
+    }
+
+    const json =
+      await response.json();
+
+    const list =
+      Array.isArray(
+        json?.data?.proxies
+      )
+        ? json.data.proxies
+        : [];
+
+    return list
+      .map(value => {
+        const raw =
+          String(value || '')
+            .trim();
+
+        if (!raw) return '';
+
+        /*
+         * SCDN 的 HTTPS 列表返回 host:port。
+         * Playwright 连接 CONNECT 代理时仍使用 http://host:port。
+         */
+        return /^\w+:\/\//i.test(raw)
+          ? raw
+          : `http://${raw}`;
+      })
+      .filter(Boolean);
+
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -163,16 +259,35 @@ class ProxyPool {
     rawPool = '',
     fallback = '',
     filePath = '',
-    cooldownMs = 30 * 60 * 1000,
-    name = 'proxy'
+    cooldownMs =
+      30 * 60 * 1000,
+    name = 'proxy',
+    dynamicSource = '',
+    dynamicMinSize = 3,
+    dynamicFetchCount = 20,
+    dynamicProtocol = 'https',
+    dynamicCountryCode = ''
   } = {}) {
     const pool = [
-      ...loadProxyPoolFile(filePath),
-      ...parseProxyPool(rawPool)
+      ...loadProxyPoolFile(
+        filePath
+      ),
+      ...parseProxyPool(
+        rawPool
+      )
     ];
 
-    if (pool.length === 0 && String(fallback || '').trim()) {
-      pool.push(String(fallback).trim());
+    if (
+      pool.length === 0
+      &&
+      String(
+        fallback
+        || ''
+      ).trim()
+    ) {
+      pool.push(
+        String(fallback).trim()
+      );
     }
 
     this.items =
@@ -182,24 +297,197 @@ class ProxyPool {
         )
       );
 
-    this.cooldownMs = Number(cooldownMs) || 30 * 60 * 1000;
-    this.name = name;
-    this.index = 0;
+    this.cooldownMs =
+      Number(cooldownMs)
+      ||
+      30 * 60 * 1000;
 
-    if (this.items.length > 1) {
+    this.name =
+      name;
+
+    this.index =
+      0;
+
+    this.cooldownUntil =
+      new Map();
+
+    this.dynamicSource =
+      String(
+        dynamicSource
+        || ''
+      ).trim()
+        .toLowerCase();
+
+    this.dynamicMinSize =
+      Math.max(
+        1,
+        Number(dynamicMinSize)
+        || 3
+      );
+
+    this.dynamicFetchCount =
+      Math.max(
+        1,
+        Math.min(
+          20,
+          Number(dynamicFetchCount)
+          || 20
+        )
+      );
+
+    this.dynamicProtocol =
+      dynamicProtocol
+      || 'https';
+
+    this.dynamicCountryCode =
+      dynamicCountryCode
+      || '';
+
+    this.lastDynamicFetchAt =
+      0;
+
+    this.dynamicFetchInFlight =
+      null;
+
+    if (
+      this.items.length > 1
+    ) {
       console.log(
         `[ProxyPool:${this.name}] 启动时已随机打乱代理顺序，共${this.items.length}个。`
       );
     }
-    this.cooldownUntil = new Map();
   }
 
   hasConfiguredProxy() {
-    return this.items.length > 0;
+    return (
+      this.items.length > 0
+      ||
+      this.dynamicSource === 'scdn'
+    );
   }
 
-  acquire() {
-    if (this.items.length === 0) {
+  getAvailableCount() {
+    const now =
+      Date.now();
+
+    return this.items
+      .filter(
+        raw =>
+          (
+            this.cooldownUntil.get(raw)
+            || 0
+          )
+          <= now
+      )
+      .length;
+  }
+
+  async ensureDynamicPool() {
+    if (
+      this.dynamicSource
+      !== 'scdn'
+    ) {
+      return;
+    }
+
+    if (
+      this.getAvailableCount()
+      >= this.dynamicMinSize
+    ) {
+      return;
+    }
+
+    if (
+      this.dynamicFetchInFlight
+    ) {
+      await this.dynamicFetchInFlight;
+      return;
+    }
+
+    /*
+     * 避免短时间内反复打 SCDN API。
+     */
+    if (
+      Date.now()
+      -
+      this.lastDynamicFetchAt
+      <
+      15000
+    ) {
+      return;
+    }
+
+    this.dynamicFetchInFlight =
+      (async () => {
+        this.lastDynamicFetchAt =
+          Date.now();
+
+        try {
+          const fetched =
+            await fetchScdnProxies({
+              protocol:
+                this.dynamicProtocol,
+
+              count:
+                this.dynamicFetchCount,
+
+              countryCode:
+                this.dynamicCountryCode
+            });
+
+          if (
+            fetched.length === 0
+          ) {
+            console.log(
+              `[ProxyPool:${this.name}] SCDN未返回可用候选代理。`
+            );
+
+            return;
+          }
+
+          const merged =
+            Array.from(
+              new Set([
+                ...this.items,
+                ...fetched
+              ])
+            );
+
+          /*
+           * 每次补池后重新随机一次，避免固定顺序。
+           */
+          this.items =
+            shuffleArray(
+              merged
+            );
+
+          this.index =
+            0;
+
+          console.log(
+            `[ProxyPool:${this.name}] 从SCDN补充候选代理=${fetched.length}，当前池=${this.items.length}。`
+          );
+
+        } catch (error) {
+          console.log(
+            `[ProxyPool:${this.name}] SCDN代理获取失败：${error.message}`
+          );
+
+        } finally {
+          this.dynamicFetchInFlight =
+            null;
+        }
+      })();
+
+    await this.dynamicFetchInFlight;
+  }
+
+  async acquire() {
+    await this.ensureDynamicPool();
+
+    if (
+      this.items.length === 0
+    ) {
       return {
         configured: false,
         raw: null,
@@ -208,28 +496,114 @@ class ProxyPool {
       };
     }
 
-    const now = Date.now();
+    const now =
+      Date.now();
 
-    for (let offset = 0; offset < this.items.length; offset++) {
-      const idx = (this.index + offset) % this.items.length;
-      const raw = this.items[idx];
-      const until = this.cooldownUntil.get(raw) || 0;
+    for (
+      let offset = 0;
+      offset < this.items.length;
+      offset++
+    ) {
+      const idx =
+        (
+          this.index
+          + offset
+        )
+        %
+        this.items.length;
 
-      if (until <= now) {
-        this.index = (idx + 1) % this.items.length;
+      const raw =
+        this.items[idx];
+
+      const until =
+        this.cooldownUntil.get(raw)
+        || 0;
+
+      if (
+        until <= now
+      ) {
+        this.index =
+          (
+            idx + 1
+          )
+          %
+          this.items.length;
 
         return {
           configured: true,
           raw,
-          proxy: toPlaywrightProxy(raw),
-          masked: maskProxy(raw)
+          proxy:
+            toPlaywrightProxy(raw),
+          masked:
+            maskProxy(raw)
         };
       }
     }
 
-    const nextReadyAt = Math.min(
-      ...this.items.map(raw => this.cooldownUntil.get(raw) || now)
-    );
+    /*
+     * 全部冷却时再尝试向动态源补池一次。
+     */
+    if (
+      this.dynamicSource === 'scdn'
+    ) {
+      this.lastDynamicFetchAt =
+        0;
+
+      await this.ensureDynamicPool();
+
+      const retryNow =
+        Date.now();
+
+      for (
+        let offset = 0;
+        offset < this.items.length;
+        offset++
+      ) {
+        const idx =
+          (
+            this.index
+            + offset
+          )
+          %
+          this.items.length;
+
+        const raw =
+          this.items[idx];
+
+        if (
+          (
+            this.cooldownUntil.get(raw)
+            || 0
+          )
+          <= retryNow
+        ) {
+          this.index =
+            (
+              idx + 1
+            )
+            %
+            this.items.length;
+
+          return {
+            configured: true,
+            raw,
+            proxy:
+              toPlaywrightProxy(raw),
+            masked:
+              maskProxy(raw)
+          };
+        }
+      }
+    }
+
+    const nextReadyAt =
+      Math.min(
+        ...this.items.map(
+          raw =>
+            this.cooldownUntil.get(raw)
+            || now
+        )
+      );
 
     return {
       configured: true,
@@ -242,15 +616,67 @@ class ProxyPool {
   }
 
   markBlocked(rawValue) {
-    const raw = String(rawValue || '').trim();
+    const raw =
+      String(
+        rawValue
+        || ''
+      ).trim();
 
-    if (!raw || !this.items.includes(raw)) {
+    if (
+      !raw
+      ||
+      !this.items.includes(raw)
+    ) {
       return null;
     }
 
-    const until = Date.now() + this.cooldownMs;
-    this.cooldownUntil.set(raw, until);
+    const until =
+      Date.now()
+      +
+      this.cooldownMs;
+
+    this.cooldownUntil.set(
+      raw,
+      until
+    );
+
     return until;
+  }
+
+  remove(rawValue) {
+    const raw =
+      String(
+        rawValue
+        || ''
+      ).trim();
+
+    if (!raw) return false;
+
+    const before =
+      this.items.length;
+
+    this.items =
+      this.items.filter(
+        item =>
+          item !== raw
+      );
+
+    this.cooldownUntil.delete(
+      raw
+    );
+
+    if (
+      this.index >=
+      this.items.length
+    ) {
+      this.index = 0;
+    }
+
+    return (
+      this.items.length
+      <
+      before
+    );
   }
 }
 
@@ -258,6 +684,7 @@ module.exports = {
   ProxyPool,
   parseProxyPool,
   loadProxyPoolFile,
+  fetchScdnProxies,
   toPlaywrightProxy,
   maskProxy,
   shuffleArray
