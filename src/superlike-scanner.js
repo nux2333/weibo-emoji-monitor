@@ -297,6 +297,8 @@ function isProxyConnectionError(error) {
     ||
     /Failed to fetch/i.test(text)
     ||
+    /PROXY_PAGE_INVALID/i.test(text)
+    ||
     /407\b/i.test(text)
     ||
     /402\b/i.test(text)
@@ -2805,11 +2807,13 @@ async function scanOneSuperLikeMonitor(
 
 
     /*
-     * 第一优先：仍然走微博真实前端路径：
+     * 只走微博真实前端路径：
      * 先监听 _feed，再点击一级“最新”。
      *
-     * 只有 DOM 找不到，或点击后没有捕获到 _feed 时，
-     * 才启用页面内直接 fetch _feed 的 fallback。
+     * 已确认：找不到一级“最新”时，直接请求 _feed 没有救援价值。
+     * 因此不再做 _feed fallback：
+     * - 代理环境：直接判定当前代理页面不可用，淘汰并换代理；
+     * - 本地IP：直接结束当前 Monitor，等待下一轮。
      */
     const feedWaiter =
       waitForChaohuaResponse(
@@ -2830,118 +2834,58 @@ async function scanOneSuperLikeMonitor(
       );
 
 
-    let feedResult =
-      null;
+    if (!clicked) {
+      stopReason =
+        '15秒内仍未找到一级“最新”Tab';
 
-    if (clicked) {
-      feedResult =
-        await feedWaiter;
+      if (
+        proxyAssignment?.raw
+        &&
+        !forceLocal
+      ) {
+        throw new Error(
+          'PROXY_PAGE_INVALID：15秒内仍未找到一级“最新”Tab'
+        );
+      }
+
+      console.error(
+        `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
+      );
+
+      return;
     }
 
 
+    const feedResult =
+      await feedWaiter;
+
+
     if (feedResult?.http418) {
-      throw new Weibo418Error('_feed 返回 HTTP 418');
+      throw new Weibo418Error(
+        '_feed 返回 HTTP 418'
+      );
     }
 
 
     if (!feedResult) {
-      console.log(
-        clicked
-          ? '[SuperLike] 点击“最新”后未捕获到 _feed，启用直接请求 fallback...'
-          : '[SuperLike] 未找到一级“最新”Tab，启用直接请求 _feed fallback...'
+      stopReason =
+        '点击一级“最新”后未捕获到 _feed';
+
+      if (
+        proxyAssignment?.raw
+        &&
+        !forceLocal
+      ) {
+        throw new Error(
+          'PROXY_PAGE_INVALID：点击一级“最新”后未捕获到 _feed'
+        );
+      }
+
+      console.error(
+        `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
       );
 
-      const fallbackFeedUrl =
-        buildChaohuaUrl(
-          config.feedFlowId
-        );
-
-      const fallbackFeed =
-        await fetchChaohuaInPage(
-          page,
-          fallbackFeedUrl
-        );
-
-      if (
-        fallbackFeed.httpStatus
-        === 418
-      ) {
-        throw new Weibo418Error(
-          '_feed fallback 返回 HTTP 418'
-        );
-      }
-
-      if (
-        fallbackFeed.ok
-        &&
-        fallbackFeed.json
-      ) {
-        feedResult = {
-          url:
-            fallbackFeed.finalUrl
-            || fallbackFeedUrl,
-
-          page:
-            1,
-
-          json:
-            fallbackFeed.json,
-
-          requestHeaders:
-            {}
-        };
-
-        console.log(
-          `[SuperLike] _feed 直接请求 fallback 成功：${feedResult.url}`
-        );
-
-      } else {
-        stopReason =
-          clicked
-            ? '点击一级“最新”后未捕获到 _feed，且直接请求 fallback 失败'
-            : '未找到一级“最新”Tab，且直接请求 _feed fallback 失败';
-
-        console.error(
-          `[SuperLike] ${stopReason}`
-        );
-
-        console.error(
-          `[SuperLike][_feed fallback诊断] HTTP=${fallbackFeed.httpStatus ?? '-'} | URL=${fallbackFeed.finalUrl || fallbackFeedUrl}`
-        );
-
-        console.error(
-          `[SuperLike][_feed fallback诊断] Response=${fallbackFeed.text || '-'}`
-        );
-
-        if (
-          fallbackFeed.error
-        ) {
-          console.error(
-            `[SuperLike][_feed fallback诊断] Error=${fallbackFeed.error}`
-          );
-        }
-
-        if (
-          proxyAssignment?.raw
-          &&
-          (
-            /Failed to fetch/i.test(
-              String(
-                fallbackFeed.error
-                || ''
-              )
-            )
-            ||
-            !clicked
-          )
-        ) {
-          throw new Error(
-            `代理页面状态异常：${fallbackFeed.error || '找不到最新Tab且_feed fallback失败'}`
-          );
-        }
-
-        return;
-      }
+      return;
     }
 
 
@@ -3329,10 +3273,10 @@ async function scanOneSuperLikeMonitor(
         true;
 
       if (
-        nextFailureCount < 5
+        nextFailureCount < 3
       ) {
         console.log(
-          `[SuperLike] 救援代理连接失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
+          `[SuperLike] 代理失败 ${nextFailureCount}/3，立即换下一个代理重试当前Monitor。`
         );
 
         return await scanOneSuperLikeMonitor(
@@ -3345,7 +3289,7 @@ async function scanOneSuperLikeMonitor(
       }
 
       console.log(
-        '[SuperLike] 连续5个健康代理均连接失败，本轮切回本地IP。'
+        '[SuperLike] 连续3个健康代理均失败，本轮立即切回本地IP。'
       );
 
       return await scanOneSuperLikeMonitor(
