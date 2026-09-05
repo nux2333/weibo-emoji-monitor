@@ -14,6 +14,9 @@ if (require.main === module) {
 const path = require('path');
 const { chromium } = require('playwright');
 const {
+  ProxyPool
+} = require('./proxy-pool');
+const {
   initDatabase,
   getSuperLikeMonitors,
   superLikePostIdExists,
@@ -95,43 +98,23 @@ const MAX_COMMENTS = 21;
 
 let running = false;
 
-function getPlaywrightProxyConfig(rawValue) {
-  const raw = String(rawValue || '').trim();
-
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = new URL(raw);
-
-    const server =
-      `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
-
-    const proxy = { server };
-
-    if (parsed.username) {
-      proxy.username = decodeURIComponent(parsed.username);
-    }
-
-    if (parsed.password) {
-      proxy.password = decodeURIComponent(parsed.password);
-    }
-
-    return proxy;
-  } catch {
-    return {
-      server: raw
-    };
-  }
-}
-
-function getScannerProxyConfig() {
-  return getPlaywrightProxyConfig(
-    process.env.SUPERLIKE_SCAN_PROXY
-    || process.env.WEIBO_PROXY
-  );
-}
+const SCAN_PROXY_POOL =
+  new ProxyPool({
+    rawPool:
+      process.env.SUPERLIKE_SCAN_PROXY_POOL
+      || '',
+    fallback:
+      process.env.SUPERLIKE_SCAN_PROXY
+      || process.env.WEIBO_PROXY
+      || '',
+    cooldownMs:
+      Number(
+        process.env.SUPERLIKE_PROXY_COOLDOWN_MS
+      )
+      || 30 * 60 * 1000,
+    name:
+      'scan'
+  });
 
 
 /* ============================================================
@@ -2282,6 +2265,7 @@ async function scanOneSuperLikeMonitor(
 	  );
 
   let browser = null;
+  let proxyAssignment = null;
 
 
   const startedAt =
@@ -2357,14 +2341,39 @@ async function scanOneSuperLikeMonitor(
     );
 
 
-    const proxy =
-      getScannerProxyConfig();
+    proxyAssignment =
+      SCAN_PROXY_POOL.acquire();
 
-    if (proxy) {
+    if (
+      proxyAssignment.allCoolingDown
+    ) {
+      const waitMinutes =
+        Math.max(
+          1,
+          Math.ceil(
+            (
+              proxyAssignment.nextReadyAt
+              - Date.now()
+            )
+            / 60000
+          )
+        );
+
       console.log(
-        `[SuperLike] 找贴脚本使用代理：${proxy.server}`
+        `[SuperLike] 找贴代理池全部处于418冷却中，本轮跳过；最早约${waitMinutes}分钟后可用。`
       );
+
+      return;
     }
+
+    const proxy =
+      proxyAssignment.proxy;
+
+    console.log(
+      proxy
+        ? `[SuperLike] 找贴本轮代理：${proxyAssignment.masked}`
+        : '[SuperLike] 找贴本轮使用本地IP'
+    );
 
     browser =
       await chromium
@@ -2830,6 +2839,23 @@ async function scanOneSuperLikeMonitor(
   } catch (error) {
     stopReason =
       `异常：${error.message}`;
+
+    if (
+      isWeibo418Error(error)
+      &&
+      proxyAssignment?.raw
+    ) {
+      const until =
+        SCAN_PROXY_POOL.markBlocked(
+          proxyAssignment.raw
+        );
+
+      if (until) {
+        console.log(
+          `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}`
+        );
+      }
+    }
 
     throw error;
 
