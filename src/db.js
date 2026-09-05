@@ -361,6 +361,26 @@ function getLocalDateString(date = new Date()) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+function isSuperLikeUser(uid) {
+  initDatabase();
+
+  const normalizedUid =
+    String(uid || '').trim();
+
+  if (!normalizedUid) {
+    return false;
+  }
+
+  return !!db.prepare(`
+    SELECT 1
+    FROM superlike_users
+    WHERE uid = ?
+    LIMIT 1
+  `).get(
+    normalizedUid
+  );
+}
+
 function saveSuperLikeUser(monitorId, uid, scanDate = null) {
   initDatabase();
 
@@ -1090,6 +1110,7 @@ module.exports = {
   getSuperLikeMonitors,
   superLikePostIdExists,
   getExistingSuperLikeUids,
+  isSuperLikeUser,
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   deletePostsByUidSet,
