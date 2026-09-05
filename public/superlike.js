@@ -310,12 +310,62 @@ async function loadData(
       stats.user_count ?? 0;
 
 
-  allRows =
+  const rawRows =
     Array.isArray(
       json.data
     )
       ? json.data
       : [];
+
+
+  const blackKeywords =
+    Array.isArray(
+      json?.filters?.blackKeywords
+    )
+      ? json.filters.blackKeywords
+          .map(
+            value =>
+              String(value || '')
+                .trim()
+                .toLowerCase()
+          )
+          .filter(Boolean)
+      : [];
+
+
+  if (
+    hideBlack
+    &&
+    blackKeywords.length > 0
+  ) {
+    allRows =
+      rawRows.filter(
+        row => {
+          const haystack =
+            [
+              row?.username,
+              row?.post_text,
+              row?.icon_summary
+            ]
+              .map(
+                value =>
+                  String(value || '')
+                    .toLowerCase()
+              )
+              .join('\n');
+
+          return !blackKeywords.some(
+            keyword =>
+              haystack.includes(
+                keyword
+              )
+          );
+        }
+      );
+  } else {
+    allRows =
+      rawRows;
+  }
 
   applyCurrentSort();
   updateSortIndicators();
