@@ -458,7 +458,7 @@ async function fetchProxioCandidates() {
       );
     } catch (error) {
       console.log(
-        \`[proxio] \${scheme} 获取失败：\${error.message}\`
+        `[proxio] ${scheme} 获取失败：${error.message}`
       );
     }
   }
@@ -511,7 +511,7 @@ async function fetchProxmintCandidates() {
       );
     } catch (error) {
       console.log(
-        \`[Proxmint] \${scheme} 获取失败：\${error.message}\`
+        `[Proxmint] ${scheme} 获取失败：${error.message}`
       );
     }
   }
@@ -560,7 +560,7 @@ async function fetchRelayglassCandidates() {
       );
     } catch (error) {
       console.log(
-        \`[Relayglass] \${scheme} 获取失败：\${error.message}\`
+        `[Relayglass] ${scheme} 获取失败：${error.message}`
       );
     }
   }
