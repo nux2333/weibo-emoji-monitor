@@ -204,6 +204,16 @@ app.get('/api/superlike-posts', (req, res) => {
       ? Number(req.query.monitorId)
       : null;
 
+    /*
+     * 默认隐藏命中黑粉关键词的帖子。
+     * hideBlack=0 时显示全部。
+     */
+    const hideBlack =
+      String(
+        req.query.hideBlack
+        ?? '1'
+      ) !== '0';
+
     const where = [
       'sp.current_has_superlike = 0',
       'sp.comments_count < 22'
@@ -221,10 +231,30 @@ app.get('/api/superlike-posts', (req, res) => {
           sp.uid LIKE ?
           OR sp.username LIKE ?
           OR sp.post_text LIKE ?
+          OR sp.icon_summary LIKE ?
         )
       `);
       const p = `%${keyword}%`;
-      params.push(p, p, p);
+      params.push(p, p, p, p);
+    }
+
+    if (hideBlack) {
+      where.push(`
+        NOT EXISTS (
+          SELECT 1
+          FROM superlike_black_keywords bk
+          WHERE bk.enabled = 1
+            AND TRIM(COALESCE(bk.keyword, '')) <> ''
+            AND (
+              LOWER(COALESCE(sp.username, ''))
+                LIKE '%' || LOWER(bk.keyword) || '%'
+              OR LOWER(COALESCE(sp.post_text, ''))
+                LIKE '%' || LOWER(bk.keyword) || '%'
+              OR LOWER(COALESCE(sp.icon_summary, ''))
+                LIKE '%' || LOWER(bk.keyword) || '%'
+            )
+        )
+      `);
     }
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
@@ -253,16 +283,24 @@ app.get('/api/superlike-posts', (req, res) => {
       LIMIT 2000
     `).all(...params);
 
+    /*
+     * 顶部统计与当前过滤条件保持一致，
+     * 避免“页面只显示柠檬水，但统计还是全库”的错觉。
+     */
     const stats = db.prepare(`
       SELECT
         COUNT(*) AS total,
-        COUNT(DISTINCT uid) AS user_count,
-        SUM(CASE WHEN experience_7d IS NOT NULL THEN 1 ELSE 0 END)
-          AS experience_known
-      FROM superlike_posts
-      WHERE current_has_superlike=0
-        AND comments_count<22
-    `).get();
+        COUNT(DISTINCT sp.uid) AS user_count,
+        SUM(
+          CASE
+            WHEN sp.experience_7d IS NOT NULL
+            THEN 1
+            ELSE 0
+          END
+        ) AS experience_known
+      FROM superlike_posts sp
+      ${whereSql}
+    `).get(...params);
 
     const monitors = db.prepare(`
       SELECT id,name
@@ -271,12 +309,29 @@ app.get('/api/superlike-posts', (req, res) => {
       ORDER BY id
     `).all();
 
+    const blackKeywords =
+      db.prepare(`
+        SELECT keyword
+        FROM superlike_black_keywords
+        WHERE enabled = 1
+        ORDER BY id
+      `).all()
+      .map(
+        row =>
+          String(row.keyword || '')
+      )
+      .filter(Boolean);
+
     res.json({
       success: true,
       stats: {
         total: Number(stats?.total || 0),
         user_count: Number(stats?.user_count || 0),
         experience_known: Number(stats?.experience_known || 0)
+      },
+      filters: {
+        hideBlack,
+        blackKeywords
       },
       monitors,
       data
