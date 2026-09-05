@@ -1137,6 +1137,54 @@ class ProxyPool {
       raw
     );
 
+    /*
+     * 对 weibo-good-proxies.txt 这类健康池文件：
+     * Scan/Mode 实际使用时已经确认失效的代理，立即从文件永久删除。
+     * 避免下次重启进程后又把同一个坏代理重新加载回来。
+     */
+    if (
+      this.filePath
+      &&
+      String(this.filePath)
+        .toLowerCase()
+        .endsWith('.txt')
+    ) {
+      try {
+        const fileItems =
+          loadProxyPoolFile(
+            this.filePath
+          );
+
+        const nextFileItems =
+          fileItems.filter(
+            item =>
+              item !== raw
+          );
+
+        if (
+          nextFileItems.length
+          <
+          fileItems.length
+        ) {
+          fs.writeFileSync(
+            this.filePath,
+            nextFileItems.length > 0
+              ? nextFileItems.join('\n') + '\n'
+              : '',
+            'utf8'
+          );
+
+          console.log(
+            `[ProxyPool:${this.name}] 已从健康代理文件永久删除失效代理：${maskProxy(raw)}`
+          );
+        }
+      } catch (error) {
+        console.log(
+          `[ProxyPool:${this.name}] 删除健康代理文件中的失效代理失败：${error.message}`
+        );
+      }
+    }
+
     this.items =
       this.items.filter(
         item =>
