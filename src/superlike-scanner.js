@@ -1111,6 +1111,65 @@ async function clickPrimaryLatest(
     }
 
 
+    /*
+     * 第二层 DOM fallback：
+     * 微博有时会改 .wbpro-textcut class，但文字“最新”仍在。
+     * 这里不依赖具体 class，只找可见且文本精确为“最新”的节点，
+     * 再向上找常见可点击父级。
+     */
+    const genericLatest =
+      page.getByText(
+        '最新',
+        {
+          exact: true
+        }
+      );
+
+    const genericCount =
+      await genericLatest.count();
+
+    for (
+      let i = 0;
+      i < genericCount;
+      i++
+    ) {
+      const node =
+        genericLatest.nth(i);
+
+      if (
+        !await node.isVisible()
+      ) {
+        continue;
+      }
+
+      const clickable =
+        node.locator(
+          'xpath=ancestor::*[self::button or @role="tab" or contains(@class,"woo-box-item-inlineBlock")][1]'
+        );
+
+      if (
+        await clickable.count()
+        > 0
+        &&
+        await clickable.isVisible()
+      ) {
+        console.log(
+          '[SuperLike] 通过通用文字定位找到一级“最新”Tab'
+        );
+
+        await clickable.click({
+          force: true
+        });
+
+        console.log(
+          '[SuperLike] 已点击一级“最新”（通用fallback）'
+        );
+
+        return true;
+      }
+    }
+
+
     await page.waitForTimeout(
       500
     );
@@ -2709,7 +2768,11 @@ async function scanOneSuperLikeMonitor(
 
 
     /*
-     * 先监听 _feed，再点击一级“最新”
+     * 第一优先：仍然走微博真实前端路径：
+     * 先监听 _feed，再点击一级“最新”。
+     *
+     * 只有 DOM 找不到，或点击后没有捕获到 _feed 时，
+     * 才启用页面内直接 fetch _feed 的 fallback。
      */
     const feedWaiter =
       waitForChaohuaResponse(
@@ -2730,20 +2793,13 @@ async function scanOneSuperLikeMonitor(
       );
 
 
-    if (!clicked) {
-      stopReason =
-        '未找到一级“最新”Tab';
+    let feedResult =
+      null;
 
-      console.error(
-        `[SuperLike] ${stopReason}`
-      );
-
-      return;
+    if (clicked) {
+      feedResult =
+        await feedWaiter;
     }
-
-
-    const feedResult =
-      await feedWaiter;
 
 
     if (feedResult?.http418) {
@@ -2752,14 +2808,76 @@ async function scanOneSuperLikeMonitor(
 
 
     if (!feedResult) {
-      stopReason =
-        '点击一级“最新”后未捕获到 _feed Response';
-
-      console.error(
-        `[SuperLike] ${stopReason}`
+      console.log(
+        clicked
+          ? '[SuperLike] 点击“最新”后未捕获到 _feed，启用直接请求 fallback...'
+          : '[SuperLike] 未找到一级“最新”Tab，启用直接请求 _feed fallback...'
       );
 
-      return;
+      const fallbackFeedUrl =
+        buildChaohuaUrl(
+          config.feedFlowId
+        );
+
+      const fallbackFeed =
+        await fetchChaohuaInPage(
+          page,
+          fallbackFeedUrl
+        );
+
+      if (
+        fallbackFeed.httpStatus
+        === 418
+      ) {
+        throw new Weibo418Error(
+          '_feed fallback 返回 HTTP 418'
+        );
+      }
+
+      if (
+        fallbackFeed.ok
+        &&
+        fallbackFeed.json
+      ) {
+        feedResult = {
+          url:
+            fallbackFeed.finalUrl
+            || fallbackFeedUrl,
+
+          page:
+            1,
+
+          json:
+            fallbackFeed.json,
+
+          requestHeaders:
+            {}
+        };
+
+        console.log(
+          `[SuperLike] _feed 直接请求 fallback 成功：${feedResult.url}`
+        );
+
+      } else {
+        stopReason =
+          clicked
+            ? '点击一级“最新”后未捕获到 _feed，且直接请求 fallback 失败'
+            : '未找到一级“最新”Tab，且直接请求 _feed fallback 失败';
+
+        console.error(
+          `[SuperLike] ${stopReason}`
+        );
+
+        console.error(
+          `[SuperLike][_feed fallback诊断] HTTP=${fallbackFeed.httpStatus ?? '-'} | URL=${fallbackFeed.finalUrl || fallbackFeedUrl}`
+        );
+
+        console.error(
+          `[SuperLike][_feed fallback诊断] Response=${fallbackFeed.text || '-'}`
+        );
+
+        return;
+      }
     }
 
 
