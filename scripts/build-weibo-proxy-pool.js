@@ -425,13 +425,170 @@ async function fetchFate0Candidates() {
     );
 }
 
+
+async function fetchProxioCandidates() {
+  const results = [];
+
+  const sources = [
+    [
+      'https://raw.githubusercontent.com/proxio-io/proxy-list/main/socks5.txt',
+      'socks5'
+    ],
+    [
+      'https://raw.githubusercontent.com/proxio-io/proxy-list/main/https.txt',
+      'http'
+    ]
+  ];
+
+  for (const [url, scheme] of sources) {
+    try {
+      const text =
+        await fetchText(url);
+
+      results.push(
+        ...text
+          .split(/\r?\n/)
+          .map(line =>
+            normalizeProxy(
+              line,
+              scheme
+            )
+          )
+          .filter(Boolean)
+      );
+    } catch (error) {
+      console.log(
+        \`[proxio] \${scheme} 获取失败：\${error.message}\`
+      );
+    }
+  }
+
+  return shuffle(
+    Array.from(
+      new Set(results)
+    )
+  )
+    .slice(
+      0,
+      MAX_CANDIDATES_PER_SOURCE
+    );
+}
+
+
+async function fetchProxmintCandidates() {
+  const results = [];
+
+  const sources = [
+    [
+      'https://raw.githubusercontent.com/proxmint/free-proxy-list/main/proxies/socks5.txt',
+      'socks5'
+    ],
+    [
+      'https://raw.githubusercontent.com/proxmint/free-proxy-list/main/proxies/https.txt',
+      'http'
+    ],
+    [
+      'https://raw.githubusercontent.com/proxmint/free-proxy-list/main/proxies/http.txt',
+      'http'
+    ]
+  ];
+
+  for (const [url, scheme] of sources) {
+    try {
+      const text =
+        await fetchText(url);
+
+      results.push(
+        ...text
+          .split(/\r?\n/)
+          .map(line =>
+            normalizeProxy(
+              line,
+              scheme
+            )
+          )
+          .filter(Boolean)
+      );
+    } catch (error) {
+      console.log(
+        \`[Proxmint] \${scheme} 获取失败：\${error.message}\`
+      );
+    }
+  }
+
+  return shuffle(
+    Array.from(
+      new Set(results)
+    )
+  )
+    .slice(
+      0,
+      MAX_CANDIDATES_PER_SOURCE
+    );
+}
+
+
+async function fetchRelayglassCandidates() {
+  const results = [];
+
+  const sources = [
+    [
+      'https://raw.githubusercontent.com/relayglass/free-proxy-list/main/protocol/socks5/socks5.txt',
+      'socks5'
+    ],
+    [
+      'https://raw.githubusercontent.com/relayglass/free-proxy-list/main/protocol/https/https.txt',
+      'http'
+    ]
+  ];
+
+  for (const [url, scheme] of sources) {
+    try {
+      const text =
+        await fetchText(url);
+
+      results.push(
+        ...text
+          .split(/\r?\n/)
+          .map(line =>
+            normalizeProxy(
+              line,
+              scheme
+            )
+          )
+          .filter(Boolean)
+      );
+    } catch (error) {
+      console.log(
+        \`[Relayglass] \${scheme} 获取失败：\${error.message}\`
+      );
+    }
+  }
+
+  /*
+   * Relayglass 本身按速度排序。
+   * 这里不 shuffle，优先把较快的候选送去微博实测。
+   */
+  return Array.from(
+    new Set(results)
+  )
+    .slice(
+      0,
+      MAX_CANDIDATES_PER_SOURCE
+    );
+}
+
+
 async function collectSources() {
   const sourceFetchers = [
     ['SCDN', fetchScdnCandidates],
     ['ProxyClean', fetchProxyCleanCandidates],
     ['89ip', fetch89IpCandidates],
     ['ProxyHub-CN', fetchProxyHubCandidates],
-    ['fate0', fetchFate0Candidates]
+    ['fate0', fetchFate0Candidates],
+    ['proxio', fetchProxioCandidates],
+    ['Proxmint', fetchProxmintCandidates],
+    ['Relayglass', fetchRelayglassCandidates]
   ];
 
   const all = [];
@@ -732,7 +889,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[补池] 当前健康代理=${healthySet.size}，开始从5个免费源补充...`
+      `[补池] 当前健康代理=${healthySet.size}，开始从8个免费源补充...`
     );
 
     const candidates =
@@ -842,7 +999,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从5个源补新代理。`
+      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从8个源补新代理。`
     );
   }
 }
