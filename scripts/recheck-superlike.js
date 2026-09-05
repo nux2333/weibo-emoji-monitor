@@ -294,6 +294,17 @@ const LIST_FIRST_RUN_MAX_PAGES =
   )
   || 50;
 
+/*
+ * Mode4 非首次运行不再按“人数增量”限制页数，
+ * 而是一直扫到上次保存的边界 UID。
+ * 仅保留一个极大的安全上限，防止接口异常时无限翻页。
+ */
+const LIST_BOUNDARY_SAFETY_MAX_PAGES =
+  Number(
+    process.env.SUPERLIKE_LIST_BOUNDARY_SAFETY_MAX_PAGES
+  )
+  || 1000;
+
 const LIST_DAY_INTERVAL_MS =
   Number(
     process.env.SUPERLIKE_LIST_DAY_INTERVAL_MS
@@ -4169,8 +4180,8 @@ async function runSuperLikeListRecheck(
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式4 List UID模式（浏览器常驻）');
   console.log(`# 当天首次最多 ${LIST_FIRST_RUN_MAX_PAGES} 页`);
-  console.log(`# 后续最大页数 = 人数增量 / 20 + ${LIST_DELTA_SAFETY_PAGES} 页保险`);
-  console.log('# 同时命中上次 last_uid 可提前停止');
+  console.log('# 后续不再按人数增量限制页数；一直扫描到上次 last_uid 边界');
+  console.log(`# 安全上限：${LIST_BOUNDARY_SAFETY_MAX_PAGES}页（仅防异常无限翻页）`);
   console.log(`# 白天 ${LIST_DAY_INTERVAL_MS / 60000} 分钟一次`);
   console.log(`# 19:00-23:59 ${LIST_NIGHT_INTERVAL_MS / 60000} 分钟一次`);
   console.log('########################################');
@@ -4213,7 +4224,9 @@ async function runSuperLikeListRecheck(
         false;
 
       let maxPages =
-        LIST_FIRST_RUN_MAX_PAGES;
+        sameDay
+          ? LIST_BOUNDARY_SAFETY_MAX_PAGES
+          : LIST_FIRST_RUN_MAX_PAGES;
 
       let firstRun =
         !sameDay;
@@ -4255,12 +4268,12 @@ async function runSuperLikeListRecheck(
             maxPages
         ) {
           completed =
-            true;
+            firstRun;
 
           console.log(
             firstRun
               ? `[模式4] 当天首次运行已成功抓满 ${maxPages} 页。`
-              : `[模式4] 已达到本轮人数增量计算上限 ${maxPages} 页。`
+              : `[模式4] 未命中上次边界，但已达到安全上限 ${maxPages} 页，停止以防无限翻页。`
           );
 
           break;
@@ -4479,58 +4492,21 @@ async function runSuperLikeListRecheck(
           }
 
           if (
-            !firstRun
-            &&
-            Number.isFinite(
-              Number(currentTotal)
-            )
-            &&
-            Number.isFinite(
-              Number(state?.lastTotal)
-            )
-          ) {
-            if (
-              Number(currentTotal)
-              <
-              Number(state.lastTotal)
-            ) {
-              firstRun =
-                true;
-
-              maxPages =
-                LIST_FIRST_RUN_MAX_PAGES;
-
-              console.log(
-                `[模式4] 当前总人数 ${currentTotal} < 上次 ${state.lastTotal}，视为榜单重算，按当天首次 ${maxPages} 页处理。`
-              );
-
-            } else {
-              const delta =
-                Number(currentTotal)
-                -
-                Number(state.lastTotal);
-
-              maxPages =
-                calculateListMaxPages(
-                  currentTotal,
-                  state.lastTotal
-                );
-
-              console.log(
-                `[模式4] 超LIKE总人数：上次=${state.lastTotal} | 当前=${currentTotal} | 增量≈${delta} | 本轮最多=${maxPages}页（含${LIST_DELTA_SAFETY_PAGES}页保险）`
-              );
-            }
-
-          } else if (
             firstRun
           ) {
             console.log(
               `[模式4] 当天首次总人数=${currentTotal ?? '未解析'} | 本轮最多=${maxPages}页`
             );
-
           } else {
+            /*
+             * 后续轮次不再根据人数增量猜需要翻多少页。
+             * 直接从第一页开始一直翻，直到命中上次保存的 last_uid。
+             */
+            maxPages =
+              LIST_BOUNDARY_SAFETY_MAX_PAGES;
+
             console.log(
-              `[模式4] 总人数无法计算增量，回退到 ${maxPages} 页上限 + last_uid 边界。`
+              `[模式4] 后续轮次按边界扫描：一直翻到上次 UID=${previousLastUid || '-'} | 安全上限=${maxPages}页`
             );
           }
         }
@@ -5142,7 +5118,7 @@ function askRecheckMode() {
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
     console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；最久未检查优先；晚19点后暂停）');
-    console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
+    console.log('4 = 超LIKE List UID模式（首次50页；后续一直扫到上次last_uid边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
       rl.close();
