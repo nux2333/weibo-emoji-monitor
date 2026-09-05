@@ -252,6 +252,22 @@ async function loadData(
   }
 
 
+  const hideBlack =
+    document
+      .getElementById(
+        'hideBlack'
+      )
+      ?.checked !== false;
+
+
+  params.set(
+    'hideBlack',
+    hideBlack
+      ? '1'
+      : '0'
+  );
+
+
   const response =
     await fetch(
       '/api/superlike-posts?' +
@@ -946,6 +962,16 @@ function clearSearch() {
 
   currentPage = 1;
 
+
+  loadData(
+    true
+  );
+}
+
+
+function changeHideBlack() {
+
+  currentPage = 1;
 
   loadData(
     true
