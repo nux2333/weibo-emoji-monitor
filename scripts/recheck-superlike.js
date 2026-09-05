@@ -1870,7 +1870,7 @@ function getCommentCheckIntervalMinutes(commentsCount) {
   const count =
     Number(commentsCount) || 0;
 
-  if (count >= 18) return 30;
+  if (count >= 18) return 0.5;
   if (count >= 15) return 1;
   if (count >= 10) return 2;
   if (count >= 5) return 10;
@@ -3286,7 +3286,7 @@ async function runLightCommentRecheck(signal = null) {
   console.log('# 其余 → 只更新 comments_count');
   console.log('# 每30秒启动一轮，只检查 comment_next_check_at 已到期的帖子');
   console.log('# 到期集合内按 comments_count DESC 排序');
-  console.log('# 18-20条≈30分钟；15-17条≈1分钟；10-14条≈2分钟；5-9条≈10分钟；0-4条≈30分钟');
+  console.log('# 18-20条≈30秒；15-17条≈1分钟；10-14条≈2分钟；5-9条≈10分钟；0-4条≈30分钟');
   console.log(`本轮最多=${COMMENT_HOT_BATCH_SIZE} | 实际到期=${posts.length}`);
   console.log('########################################');
 
