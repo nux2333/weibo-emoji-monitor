@@ -2037,6 +2037,14 @@ function isProxyConnectionError(message) {
     ||
     /ERR_NAME_NOT_RESOLVED/i.test(text)
     ||
+    /Timeout\s+\d+ms\s+exceeded/i.test(text)
+    ||
+    /page\.goto:\s*Timeout/i.test(text)
+    ||
+    /navigation.*timeout/i.test(text)
+    ||
+    /ETIMEDOUT/i.test(text)
+    ||
     /407\b/i.test(text)
     ||
     /402\b/i.test(text)
@@ -3053,7 +3061,7 @@ async function getCommentsCountFromDomOnly(
           waitUntil:
             'domcontentloaded',
           timeout:
-            30000
+            15000
         }
       );
 
@@ -3509,7 +3517,7 @@ async function runLightCommentRecheck(
           );
 
           console.log(
-            `[模式2] 当前健康代理连接失败，已从本进程池淘汰：${proxyAssignment.masked}`
+            `[模式2] 当前健康代理连接失败/导航超时，已淘汰并从健康代理文件删除：${proxyAssignment.masked}`
           );
 
           proxyFailureCount++;
