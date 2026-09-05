@@ -86,6 +86,103 @@ function migrateSuperlikePostsIfNeeded() {
   `);
 }
 
+function migrateSuperlikeUsersIfNeeded() {
+  const row = db.prepare(`
+    SELECT sql
+    FROM sqlite_master
+    WHERE type = 'table'
+      AND name = 'superlike_users'
+  `).get();
+
+  if (!row) return;
+
+  const columns =
+    db.prepare('PRAGMA table_info(superlike_users)').all()
+      .map(item => String(item.name));
+
+  const obsoleteColumns = [
+    'first_seen_at',
+    'first_seen_date',
+    'last_seen_date'
+  ];
+
+  if (
+    obsoleteColumns.every(
+      column => !columns.includes(column)
+    )
+  ) {
+    return;
+  }
+
+  console.log(
+    '整理 superlike_users 表结构：移除 first_seen_at / first_seen_date / last_seen_date...'
+  );
+
+  /*
+   * SQLite 删除多列在不同版本兼容性较差，所以重建表。
+   * inserted_at 优先保留现值；旧库没有值时用 first_seen_at 转中国时间。
+   */
+  const insertedExpr =
+    columns.includes('inserted_at')
+      ? `COALESCE(NULLIF(inserted_at, ''), ${
+          columns.includes('first_seen_at')
+            ? "datetime(first_seen_at, '+8 hours')"
+            : "datetime('now', '+8 hours')"
+        })`
+      : (
+          columns.includes('first_seen_at')
+            ? "datetime(first_seen_at, '+8 hours')"
+            : "datetime('now', '+8 hours')"
+        );
+
+  db.exec(`
+    PRAGMA foreign_keys = OFF;
+
+    ALTER TABLE superlike_users
+      RENAME TO superlike_users_old;
+
+    CREATE TABLE superlike_users (
+      monitor_id INTEGER NOT NULL,
+      uid TEXT PRIMARY KEY,
+      scan_date TEXT NOT NULL,
+      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      first_seen_rank INTEGER,
+      last_seen_rank INTEGER,
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
+    INSERT INTO superlike_users(
+      monitor_id,
+      uid,
+      scan_date,
+      inserted_at,
+      last_seen_at,
+      first_seen_rank,
+      last_seen_rank
+    )
+    SELECT
+      monitor_id,
+      uid,
+      scan_date,
+      ${insertedExpr},
+      CASE
+        WHEN last_seen_at IS NOT NULL
+          AND last_seen_at <> ''
+          THEN datetime(last_seen_at, '+8 hours')
+        ELSE datetime('now', '+8 hours')
+      END,
+      first_seen_rank,
+      last_seen_rank
+    FROM superlike_users_old;
+
+    DROP TABLE superlike_users_old;
+
+    PRAGMA foreign_keys = ON;
+  `);
+}
+
+
 function initDatabase() {
   db.exec(`
     PRAGMA foreign_keys = ON;
@@ -191,11 +288,10 @@ function initDatabase() {
       monitor_id INTEGER NOT NULL,
       uid TEXT PRIMARY KEY,
       scan_date TEXT NOT NULL,
-      first_seen_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL,
+      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_rank INTEGER,
       last_seen_rank INTEGER,
-      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
@@ -297,32 +393,19 @@ function initDatabase() {
   ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
 
+  /*
+   * superlike_users 精简：
+   * inserted_at = 第一次入库中国时间（永不更新）
+   * last_seen_at = 最近一次确认中国时间（会更新）
+   * first_seen_at / first_seen_date / last_seen_date 不再保留。
+   */
+  migrateSuperlikeUsersIfNeeded();
+
   ensureColumn('superlike_users', 'scan_date', 'TEXT');
-  ensureColumn('superlike_users', 'first_seen_at', 'TEXT');
+  ensureColumn('superlike_users', 'inserted_at', 'TEXT');
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
-  ensureColumn('superlike_users', 'inserted_at', 'TEXT');
-
-  /*
-   * superlike_users 入库时间：
-   * 新数据由表 DEFAULT 自动记录中国时间（UTC+8）。
-   * 旧数据优先按 first_seen_at 回填；没有 first_seen_at 才使用当前中国时间。
-   */
-  db.exec(`
-    UPDATE superlike_users
-    SET inserted_at = COALESCE(
-      NULLIF(inserted_at, ''),
-      CASE
-        WHEN first_seen_at IS NOT NULL
-          AND first_seen_at <> ''
-          THEN datetime(first_seen_at, '+8 hours')
-        ELSE datetime('now', '+8 hours')
-      END
-    )
-    WHERE inserted_at IS NULL
-       OR inserted_at = ''
-  `);
 
   // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
   // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
@@ -641,18 +724,18 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null) {
       monitor_id,
       uid,
       scan_date,
-      first_seen_at,
+      inserted_at,
       last_seen_at
     )
     VALUES(
       ?, ?, ?,
-      CURRENT_TIMESTAMP,
-      CURRENT_TIMESTAMP
+      datetime('now', '+8 hours'),
+      datetime('now', '+8 hours')
     )
     ON CONFLICT(uid)
     DO UPDATE SET
       scan_date = excluded.scan_date,
-      last_seen_at = CURRENT_TIMESTAMP
+      last_seen_at = datetime('now', '+8 hours')
   `).run(
     normalizedMonitorId,
     normalizedUid,
