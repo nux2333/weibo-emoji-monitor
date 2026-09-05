@@ -47,7 +47,7 @@ const {
  *      max_id
  * 7. 最多 50 页
  * 8. DB 已有 post_id > 10 后结束
- * 9. 评论 < 20 且当前 feed Response 无 chao_like 才入库
+ * 9. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
  * 10. 15 分钟后重新开始
  * ============================================================
  */
@@ -90,7 +90,7 @@ const PAGE_DELAY_MS =
   Number(process.env.SUPERLIKE_PAGE_DELAY_MS)
   || 500;
 
-const MAX_COMMENTS = 20;
+const MAX_COMMENTS = 21;
 
 let running = false;
 
@@ -611,6 +611,65 @@ function saveTargetPost(
     };
   }
 
+  const uid =
+    getUid(post);
+
+  if (!uid) {
+    return {
+      status: 'skip',
+      reason: 'no_uid'
+    };
+  }
+
+  /*
+   * 三级判断 STEP 1：
+   * UID 已经在 superlike_users 中 -> 直接忽略。
+   * 这是纯本地 DB 查询，不产生额外微博请求。
+   */
+  const knownSuperLike =
+    db.prepare(`
+      SELECT 1
+      FROM superlike_users
+      WHERE uid = ?
+      LIMIT 1
+    `).get(
+      String(uid)
+    );
+
+  if (knownSuperLike) {
+    return {
+      status: 'skip',
+      reason: 'uid_in_superlike_users'
+    };
+  }
+
+  /*
+   * 三级判断 STEP 2：
+   * 当前 feed Response 已明确带 chao_like。
+   * 立即保存到 superlike_users，并立即清掉该 UID 已有候选。
+   */
+  if (
+    hasSuperLike(post)
+  ) {
+    saveSuperLikeUser(
+      monitorId,
+      uid
+    );
+
+    deletePostsByUidSet(
+      new Set([uid])
+    );
+
+    return {
+      status: 'skip',
+      reason: 'has_superlike'
+    };
+  }
+
+  /*
+   * 三级判断 STEP 3：
+   * 评论 >= 21 不入库；0-20 才作为候选。
+   */
   const commentsCount =
     getCommentsCount(post);
 
@@ -629,25 +688,6 @@ function saveTargetPost(
     return {
       status: 'skip',
       reason: 'comments_full'
-    };
-  }
-
-  if (
-    hasSuperLike(post)
-  ) {
-    return {
-      status: 'skip',
-      reason: 'has_superlike'
-    };
-  }
-
-  const uid =
-    getUid(post);
-
-  if (!uid) {
-    return {
-      status: 'skip',
-      reason: 'no_uid'
     };
   }
 
@@ -2562,7 +2602,7 @@ async function scanOneSuperLikeMonitor(
           `Post=${pageStats.found}`,
           `同UID重复=${pageStats.duplicateUidInRun}`,
           `DB保留=${pageStats.existingInDb}`,
-          `评论>=20=${pageStats.commentsFull}`,
+          `评论>=21=${pageStats.commentsFull}`,
           `SuperLike=${pageStats.hasSuperLike}`,
           `待删UID=${pageStats.deleteQueued}`,
           `新增=${pageStats.inserted}`,
@@ -2830,7 +2870,7 @@ async function scanOneSuperLikeMonitor(
     );
 
     console.log(
-      '评论>=20：',
+      '评论>=21：',
       total.commentsFull
     );
 
@@ -3087,7 +3127,7 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    '# 评论<20 + feed无chao_like -> 入库（扫描过程不请求Profile）'
+    '# 评论<21 + feed无chao_like -> 入库（扫描过程不请求Profile）'
   );
 
   console.log(
