@@ -885,14 +885,33 @@ async function copyPostLink(cell) {
     textarea.remove();
   }
 
-  const oldTitle = cell.title;
-  cell.title = '已复制';
-  cell.classList.add('copy-success');
+  // 点击位置附近显示一个短暂的 Copied! 小气泡。
+  const oldBubble = document.querySelector('.copy-toast');
+  if (oldBubble) {
+    oldBubble.remove();
+  }
+
+  const bubble = document.createElement('div');
+  bubble.className = 'copy-toast';
+  bubble.textContent = 'Copied!';
+
+  const rect = cell.getBoundingClientRect();
+  bubble.style.left = Math.min(
+    window.innerWidth - 90,
+    Math.max(8, rect.left + rect.width / 2 - 36)
+  ) + 'px';
+  bubble.style.top = Math.max(8, rect.top - 34) + 'px';
+
+  document.body.appendChild(bubble);
+
+  requestAnimationFrame(() => {
+    bubble.classList.add('show');
+  });
 
   setTimeout(() => {
-    cell.title = oldTitle;
-    cell.classList.remove('copy-success');
-  }, 800);
+    bubble.classList.remove('show');
+    setTimeout(() => bubble.remove(), 180);
+  }, 700);
 }
 
 
