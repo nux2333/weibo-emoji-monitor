@@ -340,7 +340,12 @@
 
     @media(max-width:700px) {
       .superlike-container {
-        padding: 14px 8px;
+        padding: 10px 6px;
+      }
+
+      .superlike-title {
+        font-size: 22px;
+        margin-bottom: 12px;
       }
 
       .toolbar input {
@@ -350,6 +355,105 @@
 
       .toolbar {
         align-items: stretch;
+        padding: 10px;
+      }
+
+      /*
+       * 手机端只显示：
+       * 1. 用户名
+       * 2. 帖子内容
+       * 3. 评论数
+       * 4. Link
+       *
+       * 隐藏：
+       * 用户ID / 发帖时间 / 当前Icon
+       */
+      .table-wrap {
+        overflow-x: hidden;
+      }
+
+      table {
+        min-width: 0;
+        width: 100%;
+        table-layout: fixed;
+        font-size: 12px;
+      }
+
+      th,
+      td {
+        padding: 8px 5px;
+        line-height: 1.4;
+      }
+
+      /* 用户ID */
+      th:nth-child(1),
+      td:nth-child(1),
+      /* 发帖时间 */
+      th:nth-child(4),
+      td:nth-child(4),
+      /* 当前Icon */
+      th:nth-child(6),
+      td:nth-child(6) {
+        display: none;
+      }
+
+      /* 用户名 */
+      th:nth-child(2),
+      td:nth-child(2) {
+        width: 20%;
+      }
+
+      /* 帖子内容 */
+      th:nth-child(3),
+      td:nth-child(3) {
+        width: 55%;
+      }
+
+      /* 评论 */
+      th:nth-child(5),
+      td:nth-child(5) {
+        width: 10%;
+        text-align: center;
+      }
+
+      /* Link */
+      th:nth-child(7),
+      td:nth-child(7) {
+        width: 15%;
+        text-align: center;
+      }
+
+      .link-button {
+        padding: 5px 7px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .stats {
+        gap: 8px;
+      }
+
+      .stat-card {
+        flex: 1;
+        min-width: 0;
+        padding: 12px;
+      }
+
+      .stat-value {
+        font-size: 22px;
+      }
+
+      .pagination {
+        padding: 10px;
+      }
+
+      .pagination-buttons {
+        gap: 4px;
+      }
+
+      .pagination button {
+        padding: 6px 8px;
+        font-size: 12px;
       }
     }
   </style>
