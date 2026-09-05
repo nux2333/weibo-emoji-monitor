@@ -39,18 +39,39 @@ function getPlaywrightProxyConfig(rawValue) {
 }
 
 function getModeProxyConfig(mode) {
-  const perMode =
-    mode === '2'
-      ? process.env.SUPERLIKE_MODE2_PROXY
-      : mode === '3'
-        ? process.env.SUPERLIKE_MODE3_PROXY
-        : mode === '4'
-          ? process.env.SUPERLIKE_MODE4_PROXY
-          : process.env.SUPERLIKE_RECHECK_PROXY;
+  /*
+   * 默认分流策略：
+   *
+   * Mode2：允许使用专用代理；未设置时可回退到 WEIBO_PROXY。
+   * Mode3：默认本地 IP。只有显式设置 SUPERLIKE_MODE3_PROXY 才走代理。
+   * Mode4：默认本地 IP。只有显式设置 SUPERLIKE_MODE4_PROXY 才走代理，
+   *        避免影响 Persistent Profile / 登录状态。
+   * Mode1：保持原来的可选代理逻辑。
+   */
+  let rawValue = '';
+
+  if (mode === '2') {
+    rawValue =
+      process.env.SUPERLIKE_MODE2_PROXY
+      || process.env.WEIBO_PROXY
+      || '';
+  } else if (mode === '3') {
+    rawValue =
+      process.env.SUPERLIKE_MODE3_PROXY
+      || '';
+  } else if (mode === '4') {
+    rawValue =
+      process.env.SUPERLIKE_MODE4_PROXY
+      || '';
+  } else {
+    rawValue =
+      process.env.SUPERLIKE_RECHECK_PROXY
+      || process.env.WEIBO_PROXY
+      || '';
+  }
 
   return getPlaywrightProxyConfig(
-    perMode
-    || process.env.WEIBO_PROXY
+    rawValue
   );
 }
 
