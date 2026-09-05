@@ -242,7 +242,7 @@ const MODE3_ROUND_INTERVAL_MS =
  */
 const COMMENT_HOT_BATCH_SIZE =
   Number(process.env.SUPERLIKE_COMMENT_HOT_BATCH_SIZE)
-  || 80;
+  || 60;
 
 /*
  * Mode3 Profile：
@@ -1879,9 +1879,11 @@ function getCommentCheckIntervalMinutes(commentsCount) {
 
 function getHotCandidatePosts(limit = COMMENT_HOT_BATCH_SIZE) {
   /*
-   * 每30秒只捞“已经到检查时间”的帖子。
-   * 在已到期集合里按 comments_count DESC 排序，
-   * 每轮最多80条。
+   * Mode2 每30秒直接扫描整张 superlike_posts：
+   * - 不看 comment_last_checked_at
+   * - 不看 comment_next_check_at
+   * - 只取 comments_count 最大的前60条
+   * - comments_count 越接近21，越优先
    */
   return db.prepare(`
     SELECT
@@ -1898,10 +1900,6 @@ function getHotCandidatePosts(limit = COMMENT_HOT_BATCH_SIZE) {
     WHERE post_id IS NOT NULL
       AND post_id <> ''
       AND comments_count < ?
-      AND (
-        comment_next_check_at IS NULL
-        OR datetime(comment_next_check_at) <= datetime('now')
-      )
       AND NOT EXISTS (
         SELECT 1
         FROM superlike_users su
@@ -1909,7 +1907,6 @@ function getHotCandidatePosts(limit = COMMENT_HOT_BATCH_SIZE) {
       )
     ORDER BY
       comments_count DESC,
-      COALESCE(comment_next_check_at, first_seen_at) ASC,
       id DESC
     LIMIT ?
   `).all(
@@ -3284,9 +3281,9 @@ async function runLightCommentRecheck(signal = null) {
   console.log('# 单个 headless Chromium + 单个 Page + 页面内 buildComments fetch');
   console.log(`# 评论 >= ${LIGHT_COMMENT_DELETE_THRESHOLD} → 删除帖子`);
   console.log('# 其余 → 只更新 comments_count');
-  console.log('# 每30秒启动一轮，只检查 comment_next_check_at 已到期的帖子');
-  console.log('# 到期集合内按 comments_count DESC 排序');
-  console.log('# 18-20条≈30秒；15-17条≈1分钟；10-14条≈2分钟；5-9条≈10分钟；0-4条≈30分钟');
+  console.log('# 每30秒启动一轮，直接从整张 superlike_posts 取评论数最高的60条');
+  console.log('# 不使用 comment_last_checked_at / comment_next_check_at 作为筛选条件');
+  console.log('# ORDER BY comments_count DESC，越接近21条越优先');
   console.log(`本轮最多=${COMMENT_HOT_BATCH_SIZE} | 实际到期=${posts.length}`);
   console.log('########################################');
 
@@ -4652,7 +4649,7 @@ async function runLightModeForever(mode) {
   console.log('');
   console.log(
     mode === '2'
-      ? `[Recheck] 模式2：每 ${roundIntervalMs / 1000} 秒检查一次到期队列，每轮最多${COMMENT_HOT_BATCH_SIZE}条。`
+      ? `[Recheck] 模式2：每 ${roundIntervalMs / 1000} 秒直接检查整表评论数最高的${COMMENT_HOT_BATCH_SIZE}条。`
       : `[Recheck] 模式3：每 ${roundIntervalMs / 60000} 分钟一轮，每轮最多${PROFILE_VERIFY_BATCH_SIZE}个UID，按最久未检查优先；19点后暂停。`
   );
 
@@ -4798,7 +4795,7 @@ function askRecheckMode() {
     console.log('');
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
-    console.log('2 = 评论到期队列（每30秒；按评论数动态分配检查时间；每轮最多80条；>=21删除）');
+    console.log('2 = 评论Top60热队列（每30秒；整表按评论数降序取60条；>=21删除）');
     console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；最久未检查优先；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续扫到上次边界；白天20分钟，19点后5分钟）');
 
