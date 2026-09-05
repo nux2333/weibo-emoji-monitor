@@ -10,7 +10,8 @@ const readline = require('readline');
 
 const {
   db,
-  initDatabase
+  initDatabase,
+  saveSuperLikeUser
 } = require('../src/db');
 
 const {
@@ -2555,6 +2556,16 @@ async function runLightSuperLikeRecheck(signal = null) {
           result.hasSuperLike
         ) {
           stats.hasSuperLike++;
+
+          /*
+           * Profile 已确认是 SuperLike：
+           * 先写入 superlike_users，后续 Scan/Mode4 都能本地直接过滤。
+           */
+          saveSuperLikeUser(
+            monitor.id,
+            uid,
+            getWeiboScanDate()
+          );
 
           const deleted =
             deleteAllPostsByUid(
