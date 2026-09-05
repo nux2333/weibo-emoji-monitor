@@ -18,6 +18,7 @@ const {
   getSuperLikeMonitors,
   superLikePostIdExists,
   getExistingSuperLikeUids,
+  isSuperLikeUser,
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   deletePostsByUidSet,
@@ -627,13 +628,8 @@ function saveTargetPost(
    * 这是纯本地 DB 查询，不产生额外微博请求。
    */
   const knownSuperLike =
-    db.prepare(`
-      SELECT 1
-      FROM superlike_users
-      WHERE uid = ?
-      LIMIT 1
-    `).get(
-      String(uid)
+    isSuperLikeUser(
+      uid
     );
 
   if (knownSuperLike) {
