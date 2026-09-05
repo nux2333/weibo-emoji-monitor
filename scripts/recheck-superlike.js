@@ -1937,6 +1937,12 @@ function isProxyConnectionError(message) {
     ||
     /ERR_NAME_NOT_RESOLVED/i.test(text)
     ||
+    /407\b/i.test(text)
+    ||
+    /402\b/i.test(text)
+    ||
+    /proxy.*authentication/i.test(text)
+    ||
     /proxy.*connection/i.test(text)
   );
 }
@@ -3263,10 +3269,47 @@ async function runLightCommentRecheck(signal = null) {
           );
 
           console.log(
-            '[模式2] 当前轮立即停止；下一轮自动选择下一个可用代理。'
+            '[模式2] 立即停用代理，当前轮改用本地IP继续。'
           );
 
-          break;
+          if (context) {
+            try {
+              await context.close();
+            } catch {
+              // ignore
+            }
+          }
+
+          context =
+            await chromium.launchPersistentContext(
+              profileDir,
+              {
+                headless: true,
+                viewport: {
+                  width: 1280,
+                  height: 900
+                }
+              }
+            );
+
+          page =
+            context.pages()[0]
+            || await context.newPage();
+
+          proxyAssignment = {
+            configured: false,
+            raw: null,
+            proxy: null,
+            masked: 'LOCAL'
+          };
+
+          /*
+           * i-- 后 continue：
+           * 下一次循环会重新处理当前这一条，
+           * 但这次走本地IP。
+           */
+          i--;
+          continue;
         }
 
         await sleep(
