@@ -3080,6 +3080,7 @@ async function runLightCommentRecheck(signal = null) {
 
   let context = null;
   let page = null;
+  let proxyAssignment = null;
 
   const onAbort = () => {
     if (context) {
