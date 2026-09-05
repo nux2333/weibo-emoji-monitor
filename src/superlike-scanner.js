@@ -251,6 +251,35 @@ function isWeibo418Error(error) {
   );
 }
 
+function isProxyConnectionError(error) {
+  const text =
+    String(
+      error?.message
+      || error
+      || ''
+    );
+
+  return (
+    /ERR_TUNNEL_CONNECTION_FAILED/i.test(text)
+    ||
+    /ERR_PROXY_CONNECTION_FAILED/i.test(text)
+    ||
+    /ERR_CONNECTION_RESET/i.test(text)
+    ||
+    /ERR_CONNECTION_CLOSED/i.test(text)
+    ||
+    /ERR_CONNECTION_REFUSED/i.test(text)
+    ||
+    /407\b/i.test(text)
+    ||
+    /402\b/i.test(text)
+    ||
+    /proxy.*authentication/i.test(text)
+    ||
+    /proxy.*connection/i.test(text)
+  );
+}
+
 async function assertPageNot418(page, response = null) {
   if (response && response.status && response.status() === 418) {
     throw new Weibo418Error('微博首页返回 HTTP 418');
@@ -2256,7 +2285,8 @@ async function processPagePosts(
 
 async function scanOneSuperLikeMonitor(
   monitor,
-  deleteUidSet
+  deleteUidSet,
+  forceLocal = false
 ) {
   const config =
     parseTopicHomepage(
@@ -2359,7 +2389,14 @@ async function scanOneSuperLikeMonitor(
 
 
     proxyAssignment =
-      SCAN_PROXY_POOL.acquire();
+      forceLocal
+        ? {
+            configured: false,
+            raw: null,
+            proxy: null,
+            masked: 'LOCAL'
+          }
+        : SCAN_PROXY_POOL.acquire();
 
     if (
       proxyAssignment.allCoolingDown
@@ -2389,7 +2426,9 @@ async function scanOneSuperLikeMonitor(
     console.log(
       proxy
         ? `[SuperLike] 找贴本轮代理：${proxyAssignment.masked}`
-        : '[SuperLike] 找贴本轮使用本地IP'
+        : forceLocal
+          ? '[SuperLike] 代理不可用，本轮已自动切换本地IP'
+          : '[SuperLike] 找贴本轮使用本地IP'
     );
 
     browser =
@@ -2873,6 +2912,32 @@ async function scanOneSuperLikeMonitor(
   } catch (error) {
     stopReason =
       `异常：${error.message}`;
+
+    if (
+      isProxyConnectionError(error)
+      &&
+      proxyAssignment?.raw
+      &&
+      !forceLocal
+    ) {
+      SCAN_PROXY_POOL.markBlocked(
+        proxyAssignment.raw
+      );
+
+      console.log(
+        `[SuperLike] 代理连接失败：${proxyAssignment.masked}`
+      );
+
+      console.log(
+        '[SuperLike] 不等待下一轮，立即改用本地IP重新执行当前Monitor。'
+      );
+
+      return await scanOneSuperLikeMonitor(
+        monitor,
+        deleteUidSet,
+        true
+      );
+    }
 
     if (
       isWeibo418Error(error)
