@@ -43,26 +43,46 @@ function getPlaywrightProxyConfig(rawValue) {
 
 const MODE2_PROXY_POOL =
   new ProxyPool({
-    filePath:
-      process.env.SUPERLIKE_PROXY_POOL_FILE
-      || path.join(
-        __dirname,
-        '..',
-        'data',
-        'webshare-proxies.json'
-      ),
+    dynamicSource:
+      process.env.SUPERLIKE_DISABLE_DYNAMIC_PROXY === '1'
+        ? ''
+        : 'scdn',
+
+    dynamicMinSize:
+      Number(
+        process.env.SUPERLIKE_DYNAMIC_PROXY_MIN_SIZE
+      )
+      || 3,
+
+    dynamicFetchCount:
+      Number(
+        process.env.SUPERLIKE_DYNAMIC_PROXY_FETCH_COUNT
+      )
+      || 20,
+
+    dynamicProtocol:
+      process.env.SUPERLIKE_DYNAMIC_PROXY_PROTOCOL
+      || 'https',
+
+    dynamicCountryCode:
+      process.env.SUPERLIKE_DYNAMIC_PROXY_COUNTRY
+      || '',
+
     rawPool:
       process.env.SUPERLIKE_MODE2_PROXY_POOL
       || '',
+
     fallback:
       process.env.SUPERLIKE_MODE2_PROXY
       || process.env.WEIBO_PROXY
       || '',
+
     cooldownMs:
       Number(
         process.env.SUPERLIKE_PROXY_COOLDOWN_MS
       )
       || 30 * 60 * 1000,
+
     name:
       'mode2'
   });
@@ -3154,7 +3174,7 @@ async function runLightCommentRecheck(signal = null) {
       );
 
     proxyAssignment =
-      MODE2_PROXY_POOL.acquire();
+      await MODE2_PROXY_POOL.acquire();
 
     if (
       proxyAssignment.allCoolingDown
@@ -3260,12 +3280,12 @@ async function runLightCommentRecheck(signal = null) {
           &&
           proxyAssignment?.raw
         ) {
-          MODE2_PROXY_POOL.markBlocked(
+          MODE2_PROXY_POOL.remove(
             proxyAssignment.raw
           );
 
           console.log(
-            `[模式2] 当前代理连接失败，已进入冷却：${proxyAssignment.masked}`
+            `[模式2] 当前代理连接失败，已从动态池淘汰：${proxyAssignment.masked}`
           );
 
           console.log(
