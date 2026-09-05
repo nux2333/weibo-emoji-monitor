@@ -3605,7 +3605,11 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    '# 评论<21 + feed无chao_like -> 入库（扫描过程不请求Profile）'
+    '# 评论<21 + feed无chao_like + UID不在superlike_users -> Profile二次校验后决定是否入库'
+  );
+
+  console.log(
+    `# Scan Profile非SuperLike缓存：${SCAN_PROFILE_CACHE_MINUTES}分钟；同一轮同UID只请求一次`
   );
 
   console.log(
