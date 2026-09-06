@@ -4352,7 +4352,11 @@ module.exports = {
   triggerNextPage,
   buildProfileInPageApiUrl,
   profileHasSuperLike,
-  checkUserSuperLikeByProfile
+  checkUserSuperLikeByProfile,
+  getProfilePosts,
+  pickProfileReplacementPost,
+  getPostCreatedAt,
+  parsePostCreatedAtMs
 };
 
 
