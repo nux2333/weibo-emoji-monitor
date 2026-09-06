@@ -498,65 +498,73 @@ function replacePostsByUidWithProfilePost(
   const rawJson =
     JSON.stringify(post);
 
-  const tx =
-    db.transaction(
-      () => {
-        db.prepare(`
-          DELETE FROM superlike_posts
-          WHERE monitor_id = ?
-            AND uid = ?
-        `).run(
-          monitorId,
-          uid
-        );
+  db.exec('BEGIN');
 
-        db.prepare(`
-          INSERT INTO superlike_posts(
-            monitor_id,
-            post_id,
-            uid,
-            username,
-            post_link,
-            post_text,
-            comments_count,
-            current_has_superlike,
-            icon_summary,
-            experience_7d,
-            post_created_at,
-            first_seen_at,
-            last_seen_at,
-            raw_json,
-            profile_status,
-            profile_last_checked_at
-          )
-          VALUES(
-            ?,?,?,?,?,?,?,
-            0,
-            'Profile替换',
-            NULL,
-            ?,
-            CURRENT_TIMESTAMP,
-            CURRENT_TIMESTAMP,
-            ?,
-            'NO_SUPERLIKE',
-            CURRENT_TIMESTAMP
-          )
-        `).run(
-          monitorId,
-          String(postId),
-          String(uid),
-          username || '',
-          postLink || null,
-          postText || '',
-          Number(commentsCount),
-          postCreatedAt || null,
-          rawJson
-        );
-      }
+  try {
+    db.prepare(`
+      DELETE FROM superlike_posts
+      WHERE monitor_id = ?
+        AND uid = ?
+    `).run(
+      monitorId,
+      uid
     );
 
-  tx();
-  return true;
+    db.prepare(`
+      INSERT INTO superlike_posts(
+        monitor_id,
+        post_id,
+        uid,
+        username,
+        post_link,
+        post_text,
+        comments_count,
+        current_has_superlike,
+        icon_summary,
+        experience_7d,
+        post_created_at,
+        first_seen_at,
+        last_seen_at,
+        raw_json,
+        profile_status,
+        profile_last_checked_at
+      )
+      VALUES(
+        ?,?,?,?,?,?,?,
+        0,
+        'Profile替换',
+        NULL,
+        ?,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP,
+        ?,
+        'NO_SUPERLIKE',
+        CURRENT_TIMESTAMP
+      )
+    `).run(
+      monitorId,
+      String(postId),
+      String(uid),
+      username || '',
+      postLink || null,
+      postText || '',
+      Number(commentsCount),
+      postCreatedAt || null,
+      rawJson
+    );
+
+    db.exec('COMMIT');
+    return true;
+
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback error
+    }
+
+    throw error;
+  }
 }
 
 
