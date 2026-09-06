@@ -188,7 +188,9 @@ const readline = require('readline');
 const {
   db,
   initDatabase,
-  saveSuperLikeUser
+  saveSuperLikeUser,
+  markDailyExcludedUser,
+  isDailyExcludedUser
 } = require('../src/db');
 
 const {
@@ -377,6 +379,13 @@ function getDistinctUsers(
     WHERE monitor_id = ?
       AND uid IS NOT NULL
       AND uid <> ''
+      AND NOT EXISTS (
+        SELECT 1
+        FROM superlike_daily_excluded_users deu
+        WHERE deu.monitor_id = superlike_posts.monitor_id
+          AND deu.uid = superlike_posts.uid
+          AND deu.exclude_date = date('now', '+8 hours')
+      )
 
       -- 只复检最近5天发布的帖子
       AND datetime(first_seen_at) >= datetime('now', '-5 days')
@@ -1791,20 +1800,29 @@ async function recheckOneMonitor(
           MAX_COMMENTS
         ) {
 
-          const deleted =
-            deleteOnePost(
-              monitor.id,
-              post.post_id
-            );
+          markDailyExcludedUser(
+            monitor.id,
+            uid,
+            'COMMENTS_21'
+          );
 
+          const deleted =
+            deleteAllPostsByUid(
+              monitor.id,
+              uid
+            );
 
           stats.deletedByComments +=
             deleted;
 
-
           console.log(
-            `[Recheck][评论删除] Post=${post.post_id} | 评论=${commentsCount}`
+            `[Recheck][评论>=21当天排除] UID=${uid} | Post=${post.post_id} | 评论=${commentsCount} | 删除该UID候选=${deleted}`
           );
+
+          /*
+           * 该 UID 今天已排除，后续帖子不再检查。
+           */
+          break;
 
 
         } else {
@@ -1982,6 +2000,13 @@ function getCommentCandidatePosts(queueType = 'normal') {
         SELECT 1
         FROM superlike_users su
         WHERE su.uid = superlike_posts.uid
+      )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM superlike_daily_excluded_users deu
+        WHERE deu.monitor_id = superlike_posts.monitor_id
+          AND deu.uid = superlike_posts.uid
+          AND deu.exclude_date = date('now', '+8 hours')
       )
     ORDER BY
       comments_count DESC,
@@ -3744,17 +3769,23 @@ async function runLightCommentRecheck(
         commentsCount >=
         LIGHT_COMMENT_DELETE_THRESHOLD
       ) {
+        markDailyExcludedUser(
+          post.monitor_id,
+          post.uid,
+          'COMMENTS_21'
+        );
+
         const deleted =
-          deleteOnePost(
+          deleteAllPostsByUid(
             post.monitor_id,
-            post.post_id
+            post.uid
           );
 
         stats.deleted += deleted;
 
         console.log(
           `[轻量浏览器 ${i + 1}/${posts.length}] ` +
-          `ID=${post.id} | Post=${post.post_id} | 评论=${commentsCount} | 删除`
+          `ID=${post.id} | UID=${post.uid} | Post=${post.post_id} | 评论=${commentsCount} | 当天排除UID | 删除=${deleted}`
         );
 
       } else {
