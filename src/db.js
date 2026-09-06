@@ -12,6 +12,23 @@ console.log('SQLite DB:', DB_FILE);
 
 const db = new DatabaseSync(DB_FILE);
 
+/*
+ * SQLite 并发设置：
+ * - WAL：读写并发更友好，Scanner/Recheck/Web 同时运行时减少互相阻塞。
+ * - busy_timeout：遇到其他 writer 时最多等待 10 秒，不立即抛 SQLITE_BUSY。
+ * - synchronous=NORMAL：WAL 下兼顾可靠性与写入性能。
+ *
+ * 这些是连接级/数据库级设置，每个 Node 进程启动时执行一次即可。
+ */
+db.exec(`
+  PRAGMA busy_timeout = 10000;
+  PRAGMA journal_mode = WAL;
+  PRAGMA synchronous = NORMAL;
+  PRAGMA foreign_keys = ON;
+`);
+
+let databaseInitialized = false;
+
 function tableHasColumn(tableName, columnName) {
   return db.prepare(`PRAGMA table_info(${tableName})`).all()
     .some(row => row.name === columnName);
@@ -278,10 +295,11 @@ function migrateSuperlikeUsersIfNeeded() {
 }
 
 function initDatabase() {
-  db.exec(`
-    PRAGMA foreign_keys = ON;
-    PRAGMA busy_timeout = 10000;
+  if (databaseInitialized) {
+    return;
+  }
 
+  db.exec(`
     CREATE TABLE IF NOT EXISTS monitors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -613,6 +631,15 @@ function initDatabase() {
       keyword
     );
   }
+
+  }
+
+  /*
+   * 只有完整初始化成功后才置为 true。
+   * 上面任意 migration / DDL 失败都会直接抛错，
+   * 下次调用仍会重新尝试初始化。
+   */
+  databaseInitialized = true;
 }
 
 
