@@ -172,11 +172,6 @@
       width: 90px;
     }
 
-    th:nth-child(8),
-    td:nth-child(8) {
-      width: 90px;
-      text-align: center;
-    }
 
     th.sortable {
       cursor: pointer;
@@ -396,7 +391,6 @@
        * 2. 帖子内容
        * 3. 评论数
        * 4. Link
-       * 5. 🐷
        *
        * 隐藏：
        * 用户ID / 发帖时间 / 当前Icon
@@ -433,33 +427,25 @@
       /* 用户名 */
       th:nth-child(2),
       td:nth-child(2) {
-        width: 18%;
+        width: 20%;
       }
 
       /* 帖子内容 */
       th:nth-child(3),
       td:nth-child(3) {
-        width: 47%;
+        width: 55%;
       }
 
       /* 评论 */
       th:nth-child(5),
       td:nth-child(5) {
-        width: 8%;
+        width: 10%;
         text-align: center;
       }
 
-      /* Link */
+      /* Link + 🐷按钮 */
       th:nth-child(7),
       td:nth-child(7) {
-        width: 12%;
-        text-align: center;
-      }
-
-      /* 🐷 */
-      th:nth-child(8),
-      td:nth-child(8) {
-        display: table-cell;
         width: 15%;
         text-align: center;
       }
@@ -517,6 +503,10 @@
     tr.is-moved .post-text {
       text-decoration: line-through;
       text-decoration-color: #bbb;
+    }
+
+    .link-black-fan-actions {
+      margin-top: 10px;
     }
 
     .black-fan-button {
@@ -819,12 +809,6 @@
             <div class="th-sort">
               <span>Link</span>
               <span class="sort-indicator">↕</span>
-            </div>
-          </th>
-
-          <th title="人工标记黑粉">
-            <div class="th-sort">
-              <span>🐷</span>
             </div>
           </th>
 
