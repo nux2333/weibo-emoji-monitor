@@ -184,6 +184,11 @@ const CSV_COLUMNS = [
     defaultChecked: true
   },
   {
+    key: 'moved_flag',
+    label: '已搬运',
+    defaultChecked: true
+  },
+  {
     key: 'post_link',
     label: 'Link',
     defaultChecked: true
@@ -590,6 +595,15 @@ function compareRows(
   }
 
   if (
+    key === 'moved_flag'
+  ) {
+    return Number(row[key]) === 1
+      ? '已搬运'
+      : '未搬运';
+  }
+
+
+  if (
     key === 'post_created_at'
   ) {
     return (
@@ -720,7 +734,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="7"
+          colspan="8"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -853,6 +867,19 @@ function renderTable() {
       </td>
 
 
+      <td class="moved-status-cell">
+        <button
+          type="button"
+          class="moved-toggle ${Number(row.moved_flag) === 1 ? 'is-moved' : ''}"
+          data-post-row-id="${escapeHtml(row.id)}"
+          data-moved="${Number(row.moved_flag) === 1 ? '1' : '0'}"
+          title="点击切换搬运状态"
+        >
+          ${Number(row.moved_flag) === 1 ? '已搬运' : '未搬运'}
+        </button>
+      </td>
+
+
       <td>
 
         ${
@@ -885,6 +912,75 @@ function renderTable() {
     tbody.appendChild(
       tr
     );
+  }
+}
+
+
+async function toggleMovedStatus(button) {
+  if (!button || button.disabled) {
+    return;
+  }
+
+  const id = Number(button.dataset.postRowId);
+  const currentMoved = button.dataset.moved === '1';
+  const nextMoved = !currentMoved;
+
+  if (!id) {
+    return;
+  }
+
+  button.disabled = true;
+
+  try {
+    const response = await fetch(
+      '/api/superlike-post-moved',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          id,
+          moved: nextMoved
+        })
+      }
+    );
+
+    const json = await response.json();
+
+    if (!response.ok || !json.success) {
+      throw new Error(
+        json.message || '更新搬运状态失败'
+      );
+    }
+
+    const row = allRows.find(
+      item => Number(item.id) === id
+    );
+
+    if (row) {
+      row.moved_flag = json.moved_flag;
+    }
+
+    button.dataset.moved =
+      json.moved_flag === 1 ? '1' : '0';
+
+    button.textContent =
+      json.moved_flag === 1
+        ? '已搬运'
+        : '未搬运';
+
+    button.classList.toggle(
+      'is-moved',
+      json.moved_flag === 1
+    );
+  } catch (error) {
+    alert(
+      '更新失败：' +
+      error.message
+    );
+  } finally {
+    button.disabled = false;
   }
 }
 
@@ -1825,6 +1921,16 @@ function downloadCsv() {
 document
   .getElementById('tbody')
   .addEventListener('click', event => {
+    const movedButton =
+      event.target.closest('.moved-toggle');
+
+    if (movedButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      toggleMovedStatus(movedButton);
+      return;
+    }
+
     const cell = event.target.closest('.copy-post-link');
 
     if (cell) {
