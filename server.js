@@ -242,7 +242,7 @@ app.get('/api/superlike-posts', (req, res) => {
 
     /*
      * 默认只显示今天入库的数据。
-     * inserted_at 在库里按中国时间（UTC+8）保存。
+     * 按 first_seen_at 判断帖子首次入库日期。
      */
     const todayOnly =
       String(
@@ -268,7 +268,7 @@ app.get('/api/superlike-posts', (req, res) => {
 
     if (todayOnly) {
       where.push(
-        "date(sp.inserted_at) = date('now', '+8 hours')"
+        "date(sp.first_seen_at) = date('now', '+8 hours')"
       );
     }
 
