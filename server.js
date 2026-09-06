@@ -12,7 +12,9 @@ const {
   getMonitorResult,
   getDailyStats,
   getComments,
-  getApiResponseById
+  getApiResponseById,
+  saveSuperLikeUser,
+  deletePostsByUidSet
 } = require('./src/db');
 
 const { syncMonitorsFromConfig } = require('./src/config');
@@ -72,6 +74,7 @@ app.use((req, res, next) => {
     '/superlike.js',
     '/style.css',
     '/api/superlike-posts',
+    '/api/superlike-mark-user',
     '/favicon.ico'
   ]);
 
@@ -355,6 +358,73 @@ app.get('/api/superlike-posts', (req, res) => {
     });
   }
 });
+
+/*
+ * 手工确认某个候选用户已经是 SuperLike：
+ * - 写入 superlike_users
+ * - 删除该 UID 在 superlike_posts 的全部候选
+ *
+ * 这个接口只需要 UID / monitor_id，不接受任意 SQL 或路径。
+ */
+app.post('/api/superlike-mark-user', (req, res) => {
+  try {
+    const monitorId =
+      Number(req.body?.monitorId);
+
+    const uid =
+      String(
+        req.body?.uid
+        || ''
+      ).trim();
+
+    if (
+      !Number.isFinite(monitorId)
+      || monitorId <= 0
+      || !/^\d+$/.test(uid)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: 'monitorId 或 UID 无效'
+      });
+    }
+
+    const inserted =
+      saveSuperLikeUser(
+        monitorId,
+        uid
+      );
+
+    const deleted =
+      deletePostsByUidSet(
+        new Set([uid])
+      );
+
+    console.log(
+      `[SuperLike][人工确认] UID=${uid} 已标记SuperLike | ` +
+      `${inserted ? '新增用户' : '用户已存在'} | 删除候选=${deleted}`
+    );
+
+    res.json({
+      success: true,
+      uid,
+      inserted,
+      deleted
+    });
+
+  } catch (error) {
+    console.error(
+      '[SuperLike][人工确认] 失败：',
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      message:
+        error.message
+    });
+  }
+});
+
 
 /* 评论看板 */
 app.get('/api/comments-dashboard', (req, res) => {
