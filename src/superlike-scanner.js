@@ -1934,29 +1934,110 @@ function profileHasSuperLike(
 }
 
 /*
- * 从 profile_inpage JSON 中提取这个用户在当前超话主页展示的帖子。
- * 只保留属于目标 UID 的微博，避免把页面上的推荐/其他卡片误当成用户帖子。
+ * 从 profile_inpage JSON 中提取“TA发布的”顶层帖子。
+ *
+ * 真实 Response 结构：
+ * data.cards[].card_group[].mblog
+ *
+ * 这里故意只取顶层 mblog，不递归进入 retweeted_status，
+ * 避免把转发原文当成该用户自己的超话帖子。
  */
-function getProfilePosts(profileData, uid) {
-  return findPosts(profileData)
-    .filter(post => String(getUid(post) || '') === String(uid || ''));
+function getProfilePosts(
+  profileData,
+  uid
+) {
+  const cards =
+    Array.isArray(
+      profileData?.data?.cards
+    )
+      ? profileData.data.cards
+      : [];
+
+  const posts = [];
+
+  for (
+    const card
+    of cards
+  ) {
+    const groups =
+      Array.isArray(
+        card?.card_group
+      )
+        ? card.card_group
+        : [];
+
+    for (
+      const item
+      of groups
+    ) {
+      const post =
+        item?.mblog;
+
+      if (
+        !post
+        ||
+        typeof post !== 'object'
+      ) {
+        continue;
+      }
+
+      const postUid =
+        getUid(
+          post
+        );
+
+      if (
+        String(postUid || '')
+        !==
+        String(uid || '')
+      ) {
+        continue;
+      }
+
+      posts.push(
+        post
+      );
+    }
+  }
+
+  return posts;
 }
 
 function pickProfileReplacementPost(profilePosts) {
-  const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const oneMonthAgo =
+    Date.now()
+    - 30 * 24 * 60 * 60 * 1000;
 
-  return profilePosts.find(post => {
-    const comments = getCommentsCount(post);
-    const createdAtMs = parsePostCreatedAtMs(post);
+  return profilePosts.find(
+    post => {
+      const comments =
+        getCommentsCount(
+          post
+        );
 
-    return (
-      comments !== null
-      && comments < 4
-      && Number.isFinite(Number(createdAtMs))
-      && Number(createdAtMs) >= oneMonthAgo
-      && Number(createdAtMs) <= Date.now()
-    );
-  }) || null;
+      const createdAtMs =
+        parsePostCreatedAtMs(
+          post
+        );
+
+      return (
+        comments !== null
+        &&
+        comments < 4
+        &&
+        Number.isFinite(
+          Number(createdAtMs)
+        )
+        &&
+        Number(createdAtMs) >=
+          oneMonthAgo
+        &&
+        Number(createdAtMs) <=
+          Date.now()
+      );
+    }
+  )
+  || null;
 }
 
 
@@ -2164,6 +2245,34 @@ async function checkUserSuperLikeByProfile(
         json,
         uid
       );
+
+    console.log(
+      `[SuperLike][Profile帖子] UID=${uid} 提取到=${profilePosts.length}条`
+    );
+
+    if (
+      profilePosts.length > 0
+    ) {
+      const preview =
+        profilePosts
+          .slice(
+            0,
+            5
+          )
+          .map(
+            (post, index) =>
+              `#${index + 1} Post=${getPostId(post) || '-'} 评论=${getCommentsCount(post) ?? '-'} 时间=${getPostCreatedAt(post) || '-'}`
+          );
+
+      for (
+        const line
+        of preview
+      ) {
+        console.log(
+          `[SuperLike][Profile帖子] ${line}`
+        );
+      }
+    }
 
     return {
       ok: true,
@@ -2640,9 +2749,20 @@ async function processPagePosts(
       const originalOnProfile =
         profilePosts.some(
           profilePost =>
-            String(getPostId(profilePost)) ===
-            String(postId)
+            String(
+              getPostId(
+                profilePost
+              )
+            )
+            ===
+            String(
+              postId
+            )
         );
+
+      console.log(
+        `[SuperLike][Profile原帖检查] UID=${uid} FeedPost=${postId} | ${originalOnProfile ? 'FOUND' : 'NOT_FOUND'}`
+      );
 
       if (!originalOnProfile) {
         const replacementPost =
