@@ -877,9 +877,9 @@ function renderTable() {
 
 
       <td
-        class="post-text copy-post-link"
+        class="post-text copy-post-link moved-longpress"
         data-post-link="${escapeHtml(row.post_link || '')}"
-        title="点击复制帖子链接"
+        title="点击复制帖子链接；长按切换已搬运"
       >
         ${escapeHtml(
           row.post_text || ''
@@ -897,8 +897,7 @@ function renderTable() {
 
 
       <td
-        class="comment-low moved-longpress"
-        title="长按评论数：切换已搬运"
+        class="comment-low"
       >
         ${escapeHtml(
           row.comments_count
@@ -1094,7 +1093,7 @@ async function copyPostLink(cell) {
 
 function initCellLongPress(tr) {
   const usernameCell = tr.querySelector('.username-cell');
-  const commentCell = tr.querySelector('.moved-longpress');
+  const postTextCell = tr.querySelector('.moved-longpress');
 
   function bindLongPress(element, action) {
     if (!element) return;
@@ -1191,7 +1190,7 @@ function initCellLongPress(tr) {
   );
 
   bindLongPress(
-    commentCell,
+    postTextCell,
     async () => {
       await toggleMovedRow(tr);
     }
