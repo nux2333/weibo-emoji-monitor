@@ -27,6 +27,8 @@ const {
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   deletePostsByUidSet,
+  markDailyExcludedUser,
+  isDailyExcludedUser,
   cleanupSuperLikePostsByUsersTable,
   getScanCheckpoint,
   saveScanCheckpoint,
@@ -2281,6 +2283,26 @@ async function processPagePosts(
 
 
     /*
+     * 当天排除：
+     * 某 UID 今天任意候选帖已经达到 21 评论后，
+     * 今天剩余时间 scanner 不再抓取该 UID 的任何帖子。
+     */
+    if (
+      uid
+      &&
+      isDailyExcludedUser(
+        monitorId,
+        uid
+      )
+    ) {
+      console.log(
+        `[SuperLike][当天排除] UID=${uid} 今天已有帖子达到21评论，跳过所有帖子`
+      );
+      continue;
+    }
+
+
+    /*
      * 第一层：superlike_users 是最高优先级本地黑名单。
      * 已确认 SuperLike 的 UID 不需要再看 feed icon / Profile。
      */
@@ -2379,6 +2401,24 @@ async function processPagePosts(
       MAX_COMMENTS
     ) {
       stats.commentsFull++;
+
+      if (uid) {
+        markDailyExcludedUser(
+          monitorId,
+          uid,
+          'COMMENTS_21'
+        );
+
+        const deletedNow =
+          deletePostsByUidSet(
+            new Set([uid])
+          );
+
+        console.log(
+          `[SuperLike][评论>=21当天排除] UID=${uid} | Post=${postId} | 评论=${commentsCount} | 清理旧候选=${deletedNow}`
+        );
+      }
+
       continue;
     }
 
