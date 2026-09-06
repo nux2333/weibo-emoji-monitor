@@ -225,6 +225,20 @@ app.get('/api/superlike-posts', (req, res) => {
       ? Number(req.query.monitorId)
       : null;
 
+    const movedFilter =
+      ['all', 'moved', 'unmoved']
+        .includes(
+          String(
+            req.query.moved
+            || 'unmoved'
+          )
+        )
+        ? String(
+            req.query.moved
+            || 'unmoved'
+          )
+        : 'unmoved';
+
     /*
      * 默认隐藏命中黑粉关键词的帖子。
      * hideBlack=0 时显示全部。
@@ -240,6 +254,18 @@ app.get('/api/superlike-posts', (req, res) => {
       'sp.comments_count < 22'
     ];
     const params = [];
+
+    if (movedFilter === 'moved') {
+      where.push(
+        'COALESCE(sp.moved_flag, 0) = 1'
+      );
+    } else if (
+      movedFilter === 'unmoved'
+    ) {
+      where.push(
+        'COALESCE(sp.moved_flag, 0) = 0'
+      );
+    }
 
     if (monitorId) {
       where.push('sp.monitor_id = ?');
@@ -364,6 +390,7 @@ app.get('/api/superlike-posts', (req, res) => {
       },
       filters: {
         hideBlack,
+        moved: movedFilter,
         blackKeywords
       },
       monitors,
