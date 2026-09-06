@@ -768,7 +768,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="8"
+          colspan="7"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -821,6 +821,17 @@ function renderTable() {
 
     tr.dataset.username =
       String(row.username || '');
+
+    tr.classList.toggle(
+      'is-moved',
+      Number(row.moved_flag) === 1
+    );
+
+    tr.dataset.postRowId =
+      String(row.id || '');
+
+    tr.dataset.moved =
+      Number(row.moved_flag) === 1 ? '1' : '0';
 
 
     const icon =
@@ -898,19 +909,6 @@ function renderTable() {
 
       <td>
         ${icon}
-      </td>
-
-
-      <td class="moved-status-cell">
-        <button
-          type="button"
-          class="moved-toggle ${Number(row.moved_flag) === 1 ? 'is-moved' : ''}"
-          data-post-row-id="${escapeHtml(row.id)}"
-          data-moved="${Number(row.moved_flag) === 1 ? '1' : '0'}"
-          title="点击切换搬运状态"
-        >
-          ${Number(row.moved_flag) === 1 ? '已搬运' : '未搬运'}
-        </button>
       </td>
 
 
@@ -1005,6 +1003,11 @@ async function toggleMovedStatus(button) {
         : '未搬运';
 
     button.classList.toggle(
+      'is-moved',
+      json.moved_flag === 1
+    );
+
+    button.closest('tr')?.classList.toggle(
       'is-moved',
       json.moved_flag === 1
     );
