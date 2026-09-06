@@ -25,6 +25,11 @@ function saveSearchState() {
             .getElementById('hideBlack')
             ?.checked
             !== false,
+        todayOnly:
+          document
+            .getElementById('todayOnly')
+            ?.checked
+            !== false,
         movedFilter:
           document
             .getElementById('movedFilter')
@@ -82,6 +87,21 @@ function restoreSearchState() {
     ) {
       hideBlackInput.checked =
         state.hideBlack;
+    }
+
+    const todayOnlyInput =
+      document.getElementById(
+        'todayOnly'
+      );
+
+    if (
+      todayOnlyInput
+      &&
+      typeof state.todayOnly
+        === 'boolean'
+    ) {
+      todayOnlyInput.checked =
+        state.todayOnly;
     }
 
     const movedFilterInput =
@@ -443,6 +463,20 @@ async function loadData(
   params.set(
     'moved',
     movedFilter
+  );
+
+  const todayOnly =
+    document
+      .getElementById(
+        'todayOnly'
+      )
+      ?.checked !== false;
+
+  params.set(
+    'todayOnly',
+    todayOnly
+      ? '1'
+      : '0'
   );
 
 
@@ -1668,6 +1702,16 @@ function clearSearch() {
 
 
 function changeHideBlack() {
+
+  currentPage = 1;
+
+  loadData(
+    true
+  );
+}
+
+
+function changeTodayOnly() {
 
   currentPage = 1;
 
