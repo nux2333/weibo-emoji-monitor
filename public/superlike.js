@@ -904,7 +904,7 @@ async function copyPostLink(cell) {
 
   const bubble = document.createElement('div');
   bubble.className = 'copy-toast';
-  bubble.textContent = 'Copied!';
+  bubble.textContent = '已复制';
 
   const rect = cell.getBoundingClientRect();
   bubble.style.left = Math.min(
