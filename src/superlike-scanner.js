@@ -149,6 +149,65 @@ const SCAN_PROXY_POOL =
   });
 
 
+async function acquireScanProxyWaiting() {
+  while (true) {
+    const assignment =
+      await SCAN_PROXY_POOL.acquire();
+
+    if (
+      assignment?.proxy
+      &&
+      !assignment.allCoolingDown
+    ) {
+      return assignment;
+    }
+
+    /*
+     * 和 Mode2 一样：
+     * 有代理，只是全部处于418冷却时，不切本地，等待最近一个恢复。
+     */
+    if (
+      assignment?.allCoolingDown
+      &&
+      Number.isFinite(
+        Number(assignment.nextReadyAt)
+      )
+    ) {
+      const waitMs =
+        Math.max(
+          1000,
+          Number(assignment.nextReadyAt)
+            - Date.now()
+        );
+
+      console.log(
+        `[SuperLike] 健康代理全部冷却，等待最近代理恢复：约${Math.ceil(waitMs / 1000)}秒。`
+      );
+
+      await new Promise(
+        resolve =>
+          setTimeout(
+            resolve,
+            waitMs
+          )
+      );
+
+      continue;
+    }
+
+    /*
+     * 健康代理池真的为空时，才允许本地兜底。
+     */
+    return {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
+  }
+}
+
+
 /* ============================================================
  * DB
  * ============================================================ */
@@ -3053,35 +3112,7 @@ async function scanOneSuperLikeMonitor(
             proxy: null,
             masked: 'LOCAL'
           }
-        : await SCAN_PROXY_POOL.acquire();
-
-    if (
-      proxyAssignment.allCoolingDown
-    ) {
-      const waitMinutes =
-        Math.max(
-          1,
-          Math.ceil(
-            (
-              proxyAssignment.nextReadyAt
-              - Date.now()
-            )
-            / 60000
-          )
-        );
-
-      console.log(
-        `[SuperLike] 找贴代理池全部处于418冷却中；最早约${waitMinutes}分钟后可用。`
-      );
-
-      if (
-        local418FallbackError
-      ) {
-        throw local418FallbackError;
-      }
-
-      return;
-    }
+        : await acquireScanProxyWaiting();
 
     const proxy =
       proxyAssignment.proxy;
@@ -3769,30 +3800,14 @@ async function scanOneSuperLikeMonitor(
       delegatedToLocal =
         true;
 
-      if (
-        nextFailureCount < 5
-      ) {
-        console.log(
-          `[SuperLike] 代理失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
-        );
-
-        return await scanOneSuperLikeMonitor(
-          monitor,
-          deleteUidSet,
-          false,
-          nextFailureCount,
-          local418FallbackError
-        );
-      }
-
       console.log(
-        '[SuperLike] 连续5个健康代理均失败，本轮立即切回本地IP。'
+        `[SuperLike] 健康代理连接失败累计=${nextFailureCount}，继续从健康代理池获取下一个代理重试当前Monitor。`
       );
 
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
-        true,
+        false,
         nextFailureCount,
         local418FallbackError
       );
@@ -3851,30 +3866,14 @@ async function scanOneSuperLikeMonitor(
       delegatedToLocal =
         true;
 
-      if (
-        nextFailureCount < 5
-      ) {
-        console.log(
-          `[SuperLike] 418代理失败 ${nextFailureCount}/5，立即换下一个代理重试当前Monitor。`
-        );
-
-        return await scanOneSuperLikeMonitor(
-          monitor,
-          deleteUidSet,
-          false,
-          nextFailureCount,
-          local418FallbackError || error
-        );
-      }
-
       console.log(
-        '[SuperLike] 连续5个代理均命中418/失败，本轮切回本地IP重试当前Monitor。'
+        `[SuperLike] 代理418/失败累计=${nextFailureCount}，继续从健康代理池获取下一个代理重试当前Monitor。`
       );
 
       return await scanOneSuperLikeMonitor(
         monitor,
         deleteUidSet,
-        true,
+        false,
         nextFailureCount,
         local418FallbackError || error
       );
