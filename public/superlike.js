@@ -1075,9 +1075,7 @@ async function markBlackFan(button) {
 
   const confirmed =
     window.confirm(
-      '确认把「' +
-      (username || uid) +
-      '」标记为黑粉吗？'
+      '确定他是🐷吗？'
     );
 
   if (!confirmed) {
