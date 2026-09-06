@@ -3850,7 +3850,7 @@ async function scanOneSuperLikeMonitor(
         proxyFailureCount + 1;
 
       console.log(
-        `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}（${nextFailureCount}/5）`
+        `[SuperLike] 当前代理命中418，已进入冷却：${proxyAssignment.masked}（累计失败=${nextFailureCount}）`
       );
 
       if (browser) {
