@@ -2492,6 +2492,7 @@ async function processPagePosts(
     profileFailed: 0,
     checkpointReached: false,
     pageFullyAtOrBeforeCheckpoint: false,
+    pageHasNoPosts: false,
     newestSeen: null
   };
 
@@ -2506,6 +2507,9 @@ async function processPagePosts(
     getNewestPostInfo(
       posts
     );
+
+  stats.pageHasNoPosts =
+    posts.length === 0;
 
 
   /*
@@ -3531,7 +3535,7 @@ async function scanOneSuperLikeMonitor(
         resumeParams.page;
     }
 
-    // 第二重兜底：连续 3 个完整旧页才按时间边界停止。
+    // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
     const CHECKPOINT_OLD_PAGE_THRESHOLD = 3;
     let consecutiveOldCheckpointPages = 0;
 
@@ -3631,16 +3635,22 @@ async function scanOneSuperLikeMonitor(
 
 
       if (checkpoint) {
-        if (pageStats.pageFullyAtOrBeforeCheckpoint) {
+        const safeOldBoundaryPage =
+          pageStats.pageFullyAtOrBeforeCheckpoint
+          || pageStats.pageHasNoPosts;
+
+        if (safeOldBoundaryPage) {
           consecutiveOldCheckpointPages++;
 
           console.log(
-            `[SuperLike][Checkpoint] 第二重兜底：第${pageNumber}页整页时间 <= checkpoint，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
+            pageStats.pageHasNoPosts
+              ? `[SuperLike][Checkpoint] 第二重兜底：第${pageNumber}页为空页，连续安全旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
+              : `[SuperLike][Checkpoint] 第二重兜底：第${pageNumber}页整页时间 <= checkpoint，连续安全旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
           );
         } else {
           if (consecutiveOldCheckpointPages > 0) {
             console.log(
-              `[SuperLike][Checkpoint] 第${pageNumber}页不满足整页旧时间条件，连续旧页计数 ${consecutiveOldCheckpointPages} -> 0`
+              `[SuperLike][Checkpoint] 第${pageNumber}页仍出现 checkpoint 之后的数据，连续安全旧页计数 ${consecutiveOldCheckpointPages} -> 0`
             );
           }
 
@@ -3652,7 +3662,7 @@ async function scanOneSuperLikeMonitor(
           CHECKPOINT_OLD_PAGE_THRESHOLD
         ) {
           stopReason =
-            `未找到 latest_post_id，但连续 ${CHECKPOINT_OLD_PAGE_THRESHOLD} 个完整页面全部 <= checkpoint 时间`;
+            `未找到 latest_post_id，但连续 ${CHECKPOINT_OLD_PAGE_THRESHOLD} 页均为空页或整页 <= checkpoint 时间`;
 
           console.log(
             `[SuperLike][Checkpoint] 第二重兜底命中：${stopReason}，停止请求下一页。`
