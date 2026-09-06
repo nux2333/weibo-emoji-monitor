@@ -2151,7 +2151,9 @@ function pickProfileReplacementPost(profilePosts) {
  * }
  * ============================================================
  */
-async function checkUserSuperLikeByProfile(
+const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
+
+async function checkUserSuperLikeByProfileInner(
   context,
   config,
   uid
@@ -2403,6 +2405,57 @@ async function checkUserSuperLikeByProfile(
     }
   }
 }
+
+
+async function checkUserSuperLikeByProfile(
+  context,
+  config,
+  uid
+) {
+  let timer = null;
+
+  const hardTimeout =
+    new Promise(resolve => {
+      timer =
+        setTimeout(
+          () => {
+            console.log(
+              `[SuperLike][Profile硬超时] UID=${uid} 超过${SCAN_PROFILE_HARD_TIMEOUT_MS / 1000}秒，立即fail-open，继续Scan。`
+            );
+
+            resolve({
+              ok: false,
+              hasSuperLike: null,
+              status: null,
+              url:
+                buildProfileInPageApiUrl(
+                  config,
+                  uid
+                ),
+              message:
+                `Profile hard timeout ${SCAN_PROFILE_HARD_TIMEOUT_MS}ms`
+            });
+          },
+          SCAN_PROFILE_HARD_TIMEOUT_MS
+        );
+    });
+
+  try {
+    return await Promise.race([
+      checkUserSuperLikeByProfileInner(
+        context,
+        config,
+        uid
+      ),
+      hardTimeout
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 
 /**
  * ============================================================
@@ -2817,7 +2870,7 @@ async function processPagePosts(
       stats.profileFailed++;
 
       console.log(
-        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | 已连续重试最多3次；为避免漏帖仍按候选入库，后续交给复检/删除Batch清理`
+        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | Profile最多2次、单次5秒，整体最多15秒；失败后fail-open入库，后续交给Mode3/删除Batch清理`
       );
     }
 
