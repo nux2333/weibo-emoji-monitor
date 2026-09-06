@@ -25,6 +25,11 @@ function saveSearchState() {
             .getElementById('hideBlack')
             ?.checked
             !== false,
+        movedFilter:
+          document
+            .getElementById('movedFilter')
+            ?.value
+            || 'unmoved',
         pageSize,
         currentPage,
         sortKey,
@@ -79,6 +84,26 @@ function restoreSearchState() {
         state.hideBlack;
     }
 
+    const movedFilterInput =
+      document.getElementById(
+        'movedFilter'
+      );
+
+    if (
+      movedFilterInput
+      &&
+      ['all', 'moved', 'unmoved']
+        .includes(
+          String(
+            state.movedFilter
+            || ''
+          )
+        )
+    ) {
+      movedFilterInput.value =
+        String(state.movedFilter);
+    }
+
     const restoredPageSize =
       Number(state.pageSize);
 
@@ -117,8 +142,7 @@ function restoreSearchState() {
         'post_created_at',
         'comments_count',
         'uid',
-        'username',
-        'moved_flag'
+        'username'
       ].includes(
         state.sortKey
       )
@@ -408,6 +432,19 @@ async function loadData(
       : '0'
   );
 
+  const movedFilter =
+    document
+      .getElementById(
+        'movedFilter'
+      )
+      ?.value
+      || 'unmoved';
+
+  params.set(
+    'moved',
+    movedFilter
+  );
+
 
   const response =
     await fetch(
@@ -592,15 +629,6 @@ function compareRows(
       Number(b?.[key] ?? 0)
     );
   }
-
-  if (
-    key === 'moved_flag'
-  ) {
-    return Number(row[key]) === 1
-      ? '已搬运'
-      : '未搬运';
-  }
-
 
   if (
     key === 'post_created_at'
@@ -1568,6 +1596,16 @@ function clearSearch() {
 
 
 function changeHideBlack() {
+
+  currentPage = 1;
+
+  loadData(
+    true
+  );
+}
+
+
+function changeMovedFilter() {
 
   currentPage = 1;
 
