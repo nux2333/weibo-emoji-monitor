@@ -195,7 +195,14 @@ const {
 
 const {
   parseTopicHomepage,
-  checkUserSuperLikeByProfile
+  checkUserSuperLikeByProfile,
+  pickProfileReplacementPost,
+  getPostId,
+  getPostLink,
+  getPostText,
+  getCommentsCount,
+  getPostCreatedAt,
+  parsePostCreatedAtMs
 } = require('../src/superlike-scanner');
 
 
@@ -456,6 +463,100 @@ function deleteAllPostsByUid(
 
 
   return result.changes;
+}
+
+
+/*
+ * Mode1：原候选帖已经不在用户超话主页时，
+ * 用主页第一条“30天内 + 评论<4”的帖子完整替换该 UID 当前候选。
+ */
+function replacePostsByUidWithProfilePost(
+  monitorId,
+  uid,
+  username,
+  post
+) {
+  const postId =
+    getPostId(post);
+
+  if (!postId) {
+    return false;
+  }
+
+  const postLink =
+    getPostLink(post);
+
+  const postText =
+    getPostText(post);
+
+  const commentsCount =
+    getCommentsCount(post);
+
+  const postCreatedAt =
+    getPostCreatedAt(post);
+
+  const rawJson =
+    JSON.stringify(post);
+
+  const tx =
+    db.transaction(
+      () => {
+        db.prepare(`
+          DELETE FROM superlike_posts
+          WHERE monitor_id = ?
+            AND uid = ?
+        `).run(
+          monitorId,
+          uid
+        );
+
+        db.prepare(`
+          INSERT INTO superlike_posts(
+            monitor_id,
+            post_id,
+            uid,
+            username,
+            post_link,
+            post_text,
+            comments_count,
+            current_has_superlike,
+            icon_summary,
+            experience_7d,
+            post_created_at,
+            first_seen_at,
+            last_seen_at,
+            raw_json,
+            profile_status,
+            profile_last_checked_at
+          )
+          VALUES(
+            ?,?,?,?,?,?,?,
+            0,
+            'Profile替换',
+            NULL,
+            ?,
+            CURRENT_TIMESTAMP,
+            CURRENT_TIMESTAMP,
+            ?,
+            'NO_SUPERLIKE',
+            CURRENT_TIMESTAMP
+          )
+        `).run(
+          monitorId,
+          String(postId),
+          String(uid),
+          username || '',
+          postLink || null,
+          postText || '',
+          Number(commentsCount),
+          postCreatedAt || null,
+          rawJson
+        );
+      }
+    );
+
+  tx();
+  return true;
 }
 
 
@@ -1748,17 +1849,115 @@ async function recheckOneMonitor(
        * ======================================================
        * STEP 3
        *
-       * 当前没有超LIKE
+       * 校验数据库候选帖是否仍存在于用户当前超话主页。
        *
-       * 检查该用户每一条候选帖子。
+       * - 任意一个当前候选 post_id 仍在主页：保持原候选。
+       * - 全部不在主页：找主页第一条“30天内 + 评论<4”的帖子替换。
+       * - 找不到替代帖：删除这个 UID 的全部候选。
        * ======================================================
        */
+      const profilePosts =
+        Array.isArray(
+          profileResult.profilePosts
+        )
+          ? profileResult.profilePosts
+          : [];
 
-      const posts =
+      let posts =
         getPostsByUid(
           monitor.id,
           uid
         );
+
+      const profilePostIds =
+        new Set(
+          profilePosts
+            .map(
+              profilePost =>
+                String(
+                  getPostId(
+                    profilePost
+                  )
+                  || ''
+                )
+            )
+            .filter(Boolean)
+        );
+
+      const originalOnProfile =
+        posts.some(
+          post =>
+            profilePostIds.has(
+              String(
+                post.post_id
+              )
+            )
+        );
+
+      console.log(
+        `[Recheck][主页原帖检查] UID=${uid} | DB候选=${posts.map(p => p.post_id).join(',') || '-'} | Profile帖子=${profilePosts.length} | ${originalOnProfile ? 'FOUND' : 'NOT_FOUND'}`
+      );
+
+      if (
+        !originalOnProfile
+      ) {
+        const replacement =
+          pickProfileReplacementPost(
+            profilePosts
+          );
+
+        if (
+          !replacement
+        ) {
+          const deleted =
+            deleteAllPostsByUid(
+              monitor.id,
+              uid
+            );
+
+          console.log(
+            `[Recheck][主页无可用帖删除] UID=${uid} | 原帖均不在主页 | 30天内无评论<4帖子 | 删除=${deleted}`
+          );
+
+          continue;
+        }
+
+        const replacementId =
+          getPostId(
+            replacement
+          );
+
+        replacePostsByUidWithProfilePost(
+          monitor.id,
+          uid,
+          user.username,
+          replacement
+        );
+
+        console.log(
+          `[Recheck][主页替换] UID=${uid} | 原帖均不在主页 -> Post=${replacementId} | 评论=${getCommentsCount(replacement)} | 时间=${getPostCreatedAt(replacement) || '-'}`
+        );
+
+        /*
+         * 替换后继续 Mode1 的评论复检，
+         * 使用数据库中的新帖子。
+         */
+        posts =
+          getPostsByUid(
+            monitor.id,
+            uid
+          );
+      }
+
+
+      /**
+       * ======================================================
+       * STEP 4
+       *
+       * 当前没有超LIKE且主页候选有效，
+       * 检查该用户每一条候选帖子评论数。
+       * ======================================================
+       */
 
 
       for (
