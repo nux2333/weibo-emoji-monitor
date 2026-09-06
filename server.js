@@ -82,6 +82,7 @@ app.use((req, res, next) => {
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
     '/api/superlike-posts-moved',
+    '/api/black-fan-user',
     '/api/environment',
     '/favicon.ico'
   ]);
@@ -467,6 +468,76 @@ app.post('/api/superlike-mark-user', (req, res) => {
       success: false,
       message:
         error.message
+    });
+  }
+});
+
+
+/*
+ * 人工标记黑粉用户。
+ * UID 唯一；重复点击时更新用户名和主页链接，不重复插入。
+ */
+app.post('/api/black-fan-user', (req, res) => {
+  try {
+    const uid =
+      String(
+        req.body?.uid
+        || ''
+      ).trim();
+
+    const username =
+      String(
+        req.body?.username
+        || ''
+      ).trim();
+
+    if (!/^\d+$/.test(uid)) {
+      return res.status(400).json({
+        success: false,
+        message: 'UID 无效'
+      });
+    }
+
+    const profileLink =
+      'https://m.weibo.cn/u/'
+      + encodeURIComponent(uid);
+
+    const result =
+      db.prepare(`
+        INSERT INTO black_fan_users(
+          uid,
+          username,
+          profile_link
+        )
+        VALUES(?,?,?)
+        ON CONFLICT(uid) DO UPDATE SET
+          username = excluded.username,
+          profile_link = excluded.profile_link
+      `).run(
+        uid,
+        username || null,
+        profileLink
+      );
+
+    console.log(
+      `[BlackFan][人工标记] UID=${uid} | 用户=${username || '-'}`
+    );
+
+    res.json({
+      success: true,
+      uid,
+      inserted:
+        Number(result.changes || 0) > 0
+    });
+  } catch (error) {
+    console.error(
+      '[BlackFan][人工标记] 失败：',
+      error
+    );
+
+    res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 });
