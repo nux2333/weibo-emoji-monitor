@@ -3,7 +3,9 @@ const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_FILE = path.join(DATA_DIR, 'monitor.db');
+const DB_FILE = process.env.DB_FILE
+  ? path.resolve(process.env.DB_FILE)
+  : path.join(DATA_DIR, 'monitor.db');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 console.log('SQLite DB:', DB_FILE);
