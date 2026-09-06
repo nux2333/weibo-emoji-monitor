@@ -241,6 +241,16 @@ app.get('/api/superlike-posts', (req, res) => {
         : 'unmoved';
 
     /*
+     * 默认只显示今天入库的数据。
+     * inserted_at 在库里按中国时间（UTC+8）保存。
+     */
+    const todayOnly =
+      String(
+        req.query.todayOnly
+        ?? '1'
+      ) !== '0';
+
+    /*
      * 默认隐藏命中黑粉关键词的帖子。
      * hideBlack=0 时显示全部。
      */
@@ -255,6 +265,12 @@ app.get('/api/superlike-posts', (req, res) => {
       'sp.comments_count < 22'
     ];
     const params = [];
+
+    if (todayOnly) {
+      where.push(
+        "date(sp.inserted_at) = date('now', '+8 hours')"
+      );
+    }
 
     if (movedFilter === 'moved') {
       where.push(
@@ -334,6 +350,7 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.icon_summary,
         sp.experience_7d,
         sp.post_created_at,
+        sp.inserted_at,
         sp.first_seen_at,
         sp.last_seen_at
       FROM superlike_posts sp
@@ -391,6 +408,7 @@ app.get('/api/superlike-posts', (req, res) => {
       },
       filters: {
         hideBlack,
+        todayOnly,
         moved: movedFilter,
         blackKeywords
       },
