@@ -855,7 +855,10 @@ function renderTable() {
       </td>
 
 
-      <td>
+      <td
+        class="username-cell"
+        title="长按用户名：标记 SuperLike 并删除候选"
+      >
         ${
           row.uid
             ? `
@@ -893,7 +896,10 @@ function renderTable() {
       </td>
 
 
-      <td class="comment-low">
+      <td
+        class="comment-low moved-longpress"
+        title="长按评论数：切换已搬运"
+      >
         ${escapeHtml(
           row.comments_count
         )}
@@ -930,7 +936,7 @@ function renderTable() {
     `;
 
 
-    initRowLongPress(
+    initCellLongPress(
       tr
     );
 
@@ -1086,212 +1092,109 @@ async function copyPostLink(cell) {
 }
 
 
-function initRowLongPress(tr) {
-  let timer = null;
-  let startX = 0;
-  let startY = 0;
-  let lastX = 0;
-  let lastY = 0;
-  let triggered = false;
-  let swiping = false;
+function initCellLongPress(tr) {
+  const usernameCell = tr.querySelector('.username-cell');
+  const commentCell = tr.querySelector('.moved-longpress');
 
-  const SWIPE_THRESHOLD = 70;
+  function bindLongPress(element, action) {
+    if (!element) return;
 
-  const clear = () => {
-    if (timer) {
-      clearTimeout(timer);
-      timer = null;
-    }
-  };
+    let timer = null;
+    let startX = 0;
+    let startY = 0;
+    let triggered = false;
 
-  const start = event => {
-    triggered = false;
-    swiping = false;
+    const clear = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
 
-    const point =
-      event.touches?.[0]
-      || event;
-
-    startX = Number(point.clientX || 0);
-    startY = Number(point.clientY || 0);
-    lastX = startX;
-    lastY = startY;
-
-    clear();
-
-    timer =
-      setTimeout(
-        async () => {
-          triggered = true;
-          clear();
-
-          const uid = tr.dataset.uid;
-          const monitorId =
-            Number(tr.dataset.monitorId);
-          const username =
-            tr.dataset.username || uid;
-
-          if (!uid || !monitorId) {
-            return;
-          }
-
-          const confirmed =
-            window.confirm(
-              `确认把「${username}」标记为 SuperLike 并从候选池删除吗？`
-            );
-
-          if (!confirmed) {
-            return;
-          }
-
-          try {
-            const response =
-              await fetch(
-                '/api/superlike-mark-user',
-                {
-                  method: 'POST',
-                  headers: {
-                    'Content-Type':
-                      'application/json'
-                  },
-                  body:
-                    JSON.stringify({
-                      monitorId,
-                      uid
-                    })
-                }
-              );
-
-            const json =
-              await response.json();
-
-            if (!json.success) {
-              throw new Error(
-                json.message || '操作失败'
-              );
-            }
-
-            await loadData(false);
-          } catch (error) {
-            alert(
-              '操作失败：' +
-              error.message
-            );
-          }
-        },
-        700
-      );
-  };
-
-  const move = event => {
-    const point =
-      event.touches?.[0]
-      || event;
-
-    lastX = Number(point.clientX || 0);
-    lastY = Number(point.clientY || 0);
-
-    const dx = lastX - startX;
-    const dy = lastY - startY;
-
-    if (
-      Math.abs(dx) > 10
-      || Math.abs(dy) > 10
-    ) {
+    const start = event => {
+      triggered = false;
+      const point = event.touches?.[0] || event;
+      startX = Number(point.clientX || 0);
+      startY = Number(point.clientY || 0);
       clear();
-    }
 
-    /*
-     * 只有触摸设备启用右滑搬运。
-     * 鼠标拖动不会触发，电脑版没有单条搬运操作。
-     */
-    if (
-      event.touches
-      &&
-      dx > 18
-      &&
-      Math.abs(dx) > Math.abs(dy) * 1.3
-    ) {
-      swiping = true;
-    }
-  };
+      timer = setTimeout(async () => {
+        triggered = true;
+        clear();
+        try {
+          await action();
+        } catch (error) {
+          alert('操作失败：' + error.message);
+        }
+      }, 700);
+    };
 
-  const touchEnd = event => {
-    clear();
+    const move = event => {
+      const point = event.touches?.[0] || event;
+      const dx = Math.abs(Number(point.clientX || 0) - startX);
+      const dy = Math.abs(Number(point.clientY || 0) - startY);
+      if (dx > 10 || dy > 10) clear();
+    };
 
-    const dx = lastX - startX;
-    const dy = lastY - startY;
+    const end = () => clear();
 
-    if (
-      swiping
-      &&
-      dx >= SWIPE_THRESHOLD
-      &&
-      Math.abs(dx) > Math.abs(dy) * 1.3
-    ) {
-      triggered = true;
-      toggleMovedRow(tr);
-    }
+    element.addEventListener('touchstart', start, { passive: true });
+    element.addEventListener('touchmove', move, { passive: true });
+    element.addEventListener('touchend', end);
+    element.addEventListener('touchcancel', end);
+    element.addEventListener('mousedown', start);
+    element.addEventListener('mousemove', move);
+    element.addEventListener('mouseup', end);
+    element.addEventListener('mouseleave', end);
 
-    swiping = false;
-  };
-
-  tr.addEventListener(
-    'touchstart',
-    start,
-    { passive: true }
-  );
-
-  tr.addEventListener(
-    'touchmove',
-    move,
-    { passive: true }
-  );
-
-  tr.addEventListener(
-    'touchend',
-    touchEnd
-  );
-
-  tr.addEventListener(
-    'touchcancel',
-    clear
-  );
-
-  /*
-   * 电脑版仍保留鼠标长按 = 标记 SuperLike / 删除候选。
-   * 不提供鼠标滑动“已搬运”。
-   */
-  tr.addEventListener(
-    'mousedown',
-    start
-  );
-
-  tr.addEventListener(
-    'mousemove',
-    move
-  );
-
-  tr.addEventListener(
-    'mouseup',
-    clear
-  );
-
-  tr.addEventListener(
-    'mouseleave',
-    clear
-  );
-
-  tr.addEventListener(
-    'click',
-    event => {
+    element.addEventListener('click', event => {
       if (triggered) {
         event.preventDefault();
         event.stopPropagation();
         triggered = false;
       }
-    },
-    true
+    }, true);
+  }
+
+  bindLongPress(
+    usernameCell,
+    async () => {
+      const uid = tr.dataset.uid;
+      const monitorId = Number(tr.dataset.monitorId);
+      const username = tr.dataset.username || uid;
+
+      if (!uid || !monitorId) return;
+
+      const confirmed = window.confirm(
+        '确认把「' + username + '」标记为 SuperLike 并从候选池删除吗？'
+      );
+
+      if (!confirmed) return;
+
+      const response = await fetch(
+        '/api/superlike-mark-user',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ monitorId, uid })
+        }
+      );
+
+      const json = await response.json();
+
+      if (!response.ok || !json.success) {
+        throw new Error(json.message || '操作失败');
+      }
+
+      await loadData(false);
+    }
+  );
+
+  bindLongPress(
+    commentCell,
+    async () => {
+      await toggleMovedRow(tr);
+    }
   );
 }
 
