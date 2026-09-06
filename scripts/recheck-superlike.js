@@ -374,6 +374,7 @@ function getDistinctUsers(
       uid,
       MAX(username) AS username,
       COUNT(*) AS post_count,
+      MAX(datetime(post_created_at)) AS latest_post_created_at,
       MIN(id) AS first_id
     FROM superlike_posts
     WHERE monitor_id = ?
@@ -391,7 +392,13 @@ function getDistinctUsers(
       AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     GROUP BY uid
-    ORDER BY first_id ASC
+    ORDER BY
+      CASE
+        WHEN latest_post_created_at IS NULL THEN 1
+        ELSE 0
+      END ASC,
+      latest_post_created_at DESC,
+      first_id DESC
   `).all(
     monitorId
   );
