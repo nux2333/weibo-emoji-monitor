@@ -2437,26 +2437,13 @@ async function processPagePosts(
 
 
     /*
-     * 每个用户只处理这一轮里遇到的第一条帖子。
-     * sort_time 是从新到旧，所以第一条就是该用户本轮最新帖。
+     * 先检查评论数，再做“同 UID 本轮只保留一条”的去重。
+     *
+     * 原因：
+     * 即使这个 UID 较新的帖子已经被处理过，
+     * 后面又遇到他的另一条帖子只要评论 >=21，
+     * 也必须立刻把该 UID 加入当天排除并删除已有候选。
      */
-    if (
-      uid
-      &&
-      seenUidThisRun.has(
-        uid
-      )
-    ) {
-      stats.duplicateUidInRun++;
-      continue;
-    }
-
-
-    if (uid) {
-      seenUidThisRun.add(uid);
-    }
-
-
     const commentsCount =
       getCommentsCount(
         post
@@ -2495,6 +2482,27 @@ async function processPagePosts(
       }
 
       continue;
+    }
+
+
+    /*
+     * 每个用户只处理这一轮里遇到的第一条“未满21评论”的帖子。
+     * 但其它帖子仍会经过上面的 >=21 检查，确保不会漏掉当天排除条件。
+     */
+    if (
+      uid
+      &&
+      seenUidThisRun.has(
+        uid
+      )
+    ) {
+      stats.duplicateUidInRun++;
+      continue;
+    }
+
+
+    if (uid) {
+      seenUidThisRun.add(uid);
     }
 
 
