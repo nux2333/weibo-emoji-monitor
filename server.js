@@ -30,6 +30,9 @@ const {
 const app = express();
 const PORT = process.env.PORT || 3000;
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me';
+const APP_ENV = String(process.env.APP_ENV || process.env.NODE_ENV || 'production')
+  .trim()
+  .toLowerCase();
 
 app.use(express.json({ limit: '2mb' }));
 
@@ -79,6 +82,7 @@ app.use((req, res, next) => {
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
     '/api/superlike-posts-moved',
+    '/api/environment',
     '/favicon.ico'
   ]);
 
@@ -202,6 +206,16 @@ app.get('/api/monitors/:id/comments', (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
+
+app.get('/api/environment', (req, res) => {
+  res.json({
+    success: true,
+    environment: APP_ENV,
+    isTest: APP_ENV === 'test',
+    port: Number(PORT)
+  });
+});
+
 
 /* SuperLike 候选页面 API */
 app.get('/api/superlike-posts', (req, res) => {
@@ -992,6 +1006,7 @@ async function start() {
   app.listen(PORT, () => {
     console.log('====================================');
     console.log('Weibo Emoji Monitor');
+    console.log(`Environment: ${APP_ENV.toUpperCase()}`);
     console.log(`http://localhost:${PORT}`);
     console.log(`http://localhost:${PORT}/admin`);
     console.log(`http://localhost:${PORT}/api-responses`);
