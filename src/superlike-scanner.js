@@ -3816,10 +3816,10 @@ async function scanOneSuperLikeMonitor(
     if (
       isWeibo418Error(error)
       &&
-      forceLocal
+      !proxyAssignment?.raw
     ) {
       console.log(
-        '[SuperLike] 本地IP命中418。'
+        '[SuperLike] 本地IP命中418，立即重新检查健康代理池。'
       );
 
       if (browser) {
@@ -3831,6 +3831,29 @@ async function scanOneSuperLikeMonitor(
 
         browser = null;
       }
+
+      const next =
+        await acquireScanProxyWaiting();
+
+      if (next?.proxy) {
+        delegatedToLocal = true;
+
+        console.log(
+          `[SuperLike] 本地IP 418 → 切换健康代理：${next.masked}，重试当前Monitor。`
+        );
+
+        return await scanOneSuperLikeMonitor(
+          monitor,
+          deleteUidSet,
+          false,
+          proxyFailureCount,
+          error
+        );
+      }
+
+      console.log(
+        '[SuperLike] 本地IP 418，但健康代理池确实为空；本轮无法切换代理。'
+      );
 
       throw error;
     }
