@@ -15,6 +15,7 @@ const {
   getApiResponseById,
   saveSuperLikeUser,
   setSuperLikePostMoved,
+  setSuperLikePostsMoved,
   deletePostsByUidSet
 } = require('./src/db');
 
@@ -77,6 +78,7 @@ app.use((req, res, next) => {
     '/api/superlike-posts',
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
+    '/api/superlike-posts-moved',
     '/favicon.ico'
   ]);
 
@@ -462,6 +464,59 @@ app.post('/api/superlike-post-moved', (req, res) => {
     });
   } catch (error) {
     console.error('[SuperLike][搬运状态] 更新失败：', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+
+/*
+ * 批量标记搬运状态。
+ * 主要用于“下载当前搜索结果 CSV”后，把本次导出的帖子一起标为已搬运。
+ */
+app.post('/api/superlike-posts-moved', (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids)
+      ? req.body.ids
+      : [];
+
+    const normalizedIds = Array.from(
+      new Set(
+        ids
+          .map(id => Number(id))
+          .filter(id => Number.isFinite(id) && id > 0)
+      )
+    );
+
+    if (normalizedIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: '没有有效的帖子ID'
+      });
+    }
+
+    if (normalizedIds.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: '一次最多处理2000条帖子'
+      });
+    }
+
+    const changed =
+      setSuperLikePostsMoved(
+        normalizedIds,
+        true
+      );
+
+    res.json({
+      success: true,
+      changed,
+      moved_flag: 1
+    });
+  } catch (error) {
+    console.error('[SuperLike][批量搬运状态] 更新失败：', error);
     res.status(500).json({
       success: false,
       message: error.message
