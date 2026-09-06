@@ -2606,10 +2606,8 @@ async function processPagePosts(
       stats.profileFailed++;
 
       console.log(
-        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | 已连续重试最多3次，本轮跳过，不入库`
+        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | 已连续重试最多3次；为避免漏帖仍按候选入库，后续交给复检/删除Batch清理`
       );
-
-      continue;
     }
 
 
