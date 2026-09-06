@@ -1499,7 +1499,8 @@ async function fetchJsonInPageWithRetry(
         'application/json, text/plain, */*'
     },
     maxAttempts = 3,
-    retryDelaysMs = [500, 1000]
+    retryDelaysMs = [500, 1000],
+    timeoutMs = 8000
   } = {}
 ) {
   let lastResult = null;
@@ -1516,8 +1517,25 @@ async function fetchJsonInPageWithRetry(
       await page.evaluate(
         async ({
           requestUrl,
-          requestHeaders
+          requestHeaders,
+          requestTimeoutMs
         }) => {
+          const controller =
+            new AbortController();
+
+          const timer =
+            setTimeout(
+              () =>
+                controller.abort(),
+              Math.max(
+                1000,
+                Number(
+                  requestTimeoutMs
+                  || 8000
+                )
+              )
+            );
+
           try {
             const response =
               await fetch(
@@ -1530,7 +1548,10 @@ async function fetchJsonInPageWithRetry(
                     'include',
 
                   headers:
-                    requestHeaders
+                    requestHeaders,
+
+                  signal:
+                    controller.signal
                 }
               );
 
@@ -1547,6 +1568,10 @@ async function fetchJsonInPageWithRetry(
             } catch {
               // 非 JSON 保留原始文本，由调用方判断。
             }
+
+            clearTimeout(
+              timer
+            );
 
             return {
               httpStatus:
@@ -1567,6 +1592,10 @@ async function fetchJsonInPageWithRetry(
             };
 
           } catch (error) {
+            clearTimeout(
+              timer
+            );
+
             return {
               httpStatus:
                 null,
@@ -1595,7 +1624,10 @@ async function fetchJsonInPageWithRetry(
             url,
 
           requestHeaders:
-            headers
+            headers,
+
+          requestTimeoutMs:
+            timeoutMs
         }
       );
 
@@ -2161,7 +2193,8 @@ async function checkUserSuperLikeByProfile(
 
     /*
      * 统一使用页面内 fetch 共通方法：
-     * 网络失败 / 429 / 5xx 最多请求3次；
+     * Scan 不能被单个 Profile 长时间卡住：
+     * 网络失败 / 429 / 5xx 最多2次，每次最多5秒；
      * 418 不在这里重复撞，交给上层代理/退避逻辑。
      */
     const fetchResult =
@@ -2170,9 +2203,11 @@ async function checkUserSuperLikeByProfile(
         url,
         {
           maxAttempts:
-            3,
+            2,
           retryDelaysMs:
-            [500, 1000]
+            [500],
+          timeoutMs:
+            5000
         }
       );
 
@@ -2183,7 +2218,7 @@ async function checkUserSuperLikeByProfile(
     };
 
     console.log(
-      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} attempt=${result.attempt || 1}/3 elapsed=${result.elapsedMs || 0}ms url=${result.finalUrl}`
+      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} attempt=${result.attempt || 1}/2 elapsed=${result.elapsedMs || 0}ms url=${result.finalUrl}`
     );
 
     if (
