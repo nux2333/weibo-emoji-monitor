@@ -2953,7 +2953,7 @@ async function runLightSuperLikeRecheck(signal = null) {
      * 这样可以复用已经建立好的微博 visitor/session。
      */
     proxyAssignment =
-      await MODE3_PROXY_POOL.acquire();
+      await acquireMode3ProxyWaiting(signal);
 
     let proxy =
       proxyAssignment.proxy;
@@ -3119,49 +3119,26 @@ async function runLightSuperLikeRecheck(signal = null) {
             proxyFailureCount++;
 
             console.log(
-              `[模式3] 健康代理连接失败 ${proxyFailureCount}/5，已淘汰：${proxyAssignment.masked}`
+              `[模式3] 健康代理连接失败累计=${proxyFailureCount}，已淘汰：${proxyAssignment.masked}`
             );
 
-            if (
-              proxyFailureCount < 5
-            ) {
-              proxyAssignment =
-                await MODE3_PROXY_POOL.acquire();
+            proxyAssignment =
+              await acquireMode3ProxyWaiting(
+                signal
+              );
 
-              if (
-                proxyAssignment.proxy
-              ) {
-                proxy =
-                  proxyAssignment.proxy;
-
-                console.log(
-                  `[模式3] 立即切换下一个健康代理：${proxyAssignment.masked}`
-                );
-
-                await relaunchContext(
-                  proxy
-                );
-
-                i--;
-                continue;
-              }
-            }
+            proxy =
+              proxyAssignment.proxy
+              || null;
 
             console.log(
-              '[模式3] 连续最多5个健康代理失败/无可用代理，本轮切回本地IP。'
+              proxy
+                ? `[模式3] 继续切换下一个健康代理：${proxyAssignment.masked}`
+                : '[模式3] 健康代理池确实为空，才使用本地IP。'
             );
 
-            proxyAssignment = {
-              configured: false,
-              raw: null,
-              proxy: null,
-              masked: 'LOCAL'
-            };
-
-            proxy = null;
-
             await relaunchContext(
-              null
+              proxy
             );
 
             i--;
@@ -3178,20 +3155,26 @@ async function runLightSuperLikeRecheck(signal = null) {
             );
 
             console.log(
-              `[模式3] 当前代理命中418，进入冷却并切回本地IP：${proxyAssignment.masked}`
+              `[模式3] 当前代理命中418，进入冷却：${proxyAssignment.masked}`
             );
 
-            proxyAssignment = {
-              configured: false,
-              raw: null,
-              proxy: null,
-              masked: 'LOCAL'
-            };
+            proxyAssignment =
+              await acquireMode3ProxyWaiting(
+                signal
+              );
 
-            proxy = null;
+            proxy =
+              proxyAssignment.proxy
+              || null;
+
+            console.log(
+              proxy
+                ? `[模式3] 418后继续切换健康代理：${proxyAssignment.masked}`
+                : '[模式3] 健康代理池确实为空，才使用本地IP。'
+            );
 
             await relaunchContext(
-              null
+              proxy
             );
 
             i--;
@@ -3615,6 +3598,83 @@ async function getCommentsCountFromDomOnly(
     };
   }
 }
+
+async function acquireProxyWaitingLikeMode2(
+  pool,
+  label,
+  signal = null
+) {
+  while (true) {
+    throwIfAborted(signal);
+
+    const assignment =
+      await pool.acquire();
+
+    if (
+      assignment?.proxy
+      &&
+      !assignment.allCoolingDown
+    ) {
+      return assignment;
+    }
+
+    if (
+      assignment?.allCoolingDown
+      &&
+      Number.isFinite(
+        Number(assignment.nextReadyAt)
+      )
+    ) {
+      const waitMs =
+        Math.max(
+          1000,
+          Number(assignment.nextReadyAt)
+            - Date.now()
+        );
+
+      console.log(
+        `[${label}] 健康代理全部冷却，等待最近代理恢复：约${Math.ceil(waitMs / 1000)}秒。`
+      );
+
+      await sleep(
+        waitMs,
+        signal
+      );
+
+      continue;
+    }
+
+    return {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
+  }
+}
+
+
+async function acquireMode1ProxyWaiting(
+  signal = null
+) {
+  return acquireProxyWaitingLikeMode2(
+    MODE1_PROXY_POOL,
+    '模式1',
+    signal
+  );
+}
+
+
+async function acquireMode3ProxyWaiting(
+  signal = null
+) {
+  return acquireProxyWaitingLikeMode2(
+    MODE3_PROXY_POOL,
+    '模式3',
+    signal
+  );
+}
+
 
 async function acquireMode2ProxyWaiting(
   queueLabel,
@@ -5536,7 +5596,7 @@ async function main() {
 
   try {
     mode1ProxyAssignment =
-      await MODE1_PROXY_POOL.acquire();
+      await acquireMode1ProxyWaiting();
 
     let proxy =
       mode1ProxyAssignment?.proxy
@@ -5658,42 +5718,22 @@ async function main() {
 
             mode1ProxyFailureCount++;
 
-            if (
-              mode1ProxyFailureCount
-              < 5
-            ) {
-              const next =
-                await MODE1_PROXY_POOL.acquire();
-
-              if (
-                next?.proxy
-                &&
-                !next.allCoolingDown
-              ) {
-                mode1ProxyAssignment =
-                  next;
-
-                console.log(
-                  `[模式1] 切换健康代理：${next.masked}（失败${mode1ProxyFailureCount}/5）`
-                );
-
-                await launchMode1Context(
-                  next.proxy
-                );
-
-                continue;
-              }
-            }
-
-            console.log(
-              '[模式1] 连续代理失败或当前无可用代理，切回本地IP继续。'
-            );
+            const next =
+              await acquireMode1ProxyWaiting();
 
             mode1ProxyAssignment =
-              null;
+              next?.proxy
+                ? next
+                : null;
+
+            console.log(
+              next?.proxy
+                ? `[模式1] 代理失败累计=${mode1ProxyFailureCount}，继续切换健康代理：${next.masked}`
+                : '[模式1] 健康代理池确实为空，才使用本地IP继续。'
+            );
 
             await launchMode1Context(
-              null
+              next?.proxy || null
             );
 
             continue;
