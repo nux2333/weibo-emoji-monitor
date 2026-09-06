@@ -381,7 +381,7 @@ function getDistinctUsers(
       uid,
       MAX(username) AS username,
       COUNT(*) AS post_count,
-      MAX(datetime(post_created_at)) AS latest_post_created_at,
+      MIN(datetime(first_seen_at)) AS oldest_first_seen_at,
       MIN(id) AS first_id
     FROM superlike_posts
     WHERE monitor_id = ?
@@ -395,17 +395,17 @@ function getDistinctUsers(
           AND deu.exclude_date = date('now', '+8 hours')
       )
 
-      -- 只复检最近5天发布的帖子
+      -- 只复检最近5天进入候选池的数据
       AND datetime(first_seen_at) >= datetime('now', '-5 days')
 
     GROUP BY uid
     ORDER BY
       CASE
-        WHEN latest_post_created_at IS NULL THEN 1
+        WHEN oldest_first_seen_at IS NULL THEN 1
         ELSE 0
       END ASC,
-      latest_post_created_at DESC,
-      first_id DESC
+      oldest_first_seen_at ASC,
+      first_id ASC
   `).all(
     monitorId
   );
