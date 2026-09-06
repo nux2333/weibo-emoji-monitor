@@ -649,6 +649,20 @@
 
     <label
       style="display:flex;align-items:center;gap:6px;padding:0 6px;cursor:pointer;"
+      title="勾选后只显示今天入库的帖子"
+    >
+      <input
+        id="todayOnly"
+        type="checkbox"
+        checked
+        onchange="changeTodayOnly()"
+        style="width:auto;max-width:none;"
+      >
+      只看当天
+    </label>
+
+    <label
+      style="display:flex;align-items:center;gap:6px;padding:0 6px;cursor:pointer;"
       title="勾选后隐藏用户名、帖子内容或Icon命中黑粉关键词的数据"
     >
       <input
