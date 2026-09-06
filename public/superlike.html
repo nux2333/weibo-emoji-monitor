@@ -572,6 +572,27 @@
     </button>
 
     <select
+      id="movedFilter"
+      onchange="changeMovedFilter()"
+      title="搬运状态"
+    >
+      <option value="all">
+        全部
+      </option>
+
+      <option value="moved">
+        已搬运
+      </option>
+
+      <option
+        value="unmoved"
+        selected
+      >
+        未搬运
+      </option>
+    </select>
+
+    <select
       id="pageSize"
       onchange="changePageSize()"
       title="每页条数"
