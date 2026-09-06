@@ -1824,6 +1824,34 @@ function profileHasSuperLike(
     profileText.includes('superlike') 
   );
 }
+
+/*
+ * 从 profile_inpage JSON 中提取这个用户在当前超话主页展示的帖子。
+ * 只保留属于目标 UID 的微博，避免把页面上的推荐/其他卡片误当成用户帖子。
+ */
+function getProfilePosts(profileData, uid) {
+  return findPosts(profileData)
+    .filter(post => String(getUid(post) || '') === String(uid || ''));
+}
+
+function pickProfileReplacementPost(profilePosts) {
+  const oneMonthAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+  return profilePosts.find(post => {
+    const comments = getCommentsCount(post);
+    const createdAtMs = parsePostCreatedAtMs(post);
+
+    return (
+      comments !== null
+      && comments < 4
+      && Number.isFinite(Number(createdAtMs))
+      && Number(createdAtMs) >= oneMonthAgo
+      && Number(createdAtMs) <= Date.now()
+    );
+  }) || null;
+}
+
+
 /**
  * ============================================================
  * 请求用户 profile_inpage 并判断当前是否有超LIKE
@@ -2054,9 +2082,16 @@ async function checkUserSuperLikeByProfile(
       `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
     );
 
+    const profilePosts =
+      getProfilePosts(
+        json,
+        uid
+      );
+
     return {
       ok: true,
       hasSuperLike,
+      profilePosts,
       status:
         result.status,
 
@@ -2384,21 +2419,13 @@ async function processPagePosts(
         String(recent.status).toUpperCase()
           === 'NO_SUPERLIKE'
       ) {
-        profileResult = {
-          ok: true,
-          hasSuperLike: false,
-          cached: true
-        };
-
-        profileCache.set(
-          uid,
-          profileResult
-        );
-
-        stats.profileCached++;
-
+        /*
+         * 以前这里会直接复用 NO_SUPERLIKE 缓存。
+         * 现在还需要核对“原 post 是否仍在用户超话主页”并寻找替代帖，
+         * 所以 scanner 必须拿到本轮真实 profile JSON，不能只靠状态缓存。
+         */
         console.log(
-          `[SuperLike][Profile缓存] UID=${uid} 最近${SCAN_PROFILE_CACHE_MINUTES}分钟已确认非SuperLike，跳过请求`
+          `[SuperLike][Profile缓存仅状态] UID=${uid} 最近已确认非SuperLike，但本轮仍请求主页用于帖子核对`
         );
       }
     }
@@ -2469,6 +2496,63 @@ async function processPagePosts(
     }
 
 
+    /*
+     * 新逻辑：候选必须在该用户当前超话主页里有可用落点。
+     *
+     * - 原 post_id 仍在主页：保留原帖。
+     * - 原 post_id 不在主页：换成主页从上往下第一条“30天内 + 评论0~3”的帖子。
+     * - 主页请求成功，但两者都没有：这个 UID 不保留候选，并删除 DB 中该 UID 旧候选。
+     * - Profile 请求失败：仍 fail-open，保留原帖，避免网络失败误删用户。
+     */
+    let targetPost = post;
+
+    if (
+      profileResult?.ok
+      &&
+      Array.isArray(profileResult.profilePosts)
+    ) {
+      const profilePosts =
+        profileResult.profilePosts;
+
+      const originalOnProfile =
+        profilePosts.some(
+          profilePost =>
+            String(getPostId(profilePost)) ===
+            String(postId)
+        );
+
+      if (!originalOnProfile) {
+        const replacementPost =
+          pickProfileReplacementPost(
+            profilePosts
+          );
+
+        if (replacementPost) {
+          targetPost =
+            replacementPost;
+
+          console.log(
+            `[SuperLike][主页替换] UID=${uid} 原Post=${postId} 不在主页 -> 替换为 Post=${getPostId(replacementPost)} 评论=${getCommentsCount(replacementPost)} 时间=${getPostCreatedAt(replacementPost) || '-'}`
+          );
+        } else {
+          const deletedNow =
+            deletePostsByUidSet(
+              new Set([uid])
+            );
+
+          console.log(
+            `[SuperLike][主页无可用帖] UID=${uid} 原Post=${postId} 不在主页，且30天内没有评论<4的帖子；不保留该用户，清理旧候选=${deletedNow}`
+          );
+
+          continue;
+        }
+      } else {
+        console.log(
+          `[SuperLike][主页命中原帖] UID=${uid} Post=${postId} 仍在超话主页，保持原帖`
+        );
+      }
+    }
+
     stats.target++;
 
 
@@ -2476,7 +2560,7 @@ async function processPagePosts(
       const saved =
         saveTargetPost(
           monitorId,
-          post
+          targetPost
         );
 
 
