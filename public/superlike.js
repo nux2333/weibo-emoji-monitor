@@ -857,7 +857,7 @@ function renderTable() {
 
       <td
         class="username-cell"
-        title="长按用户名：标记 SuperLike 并删除候选"
+        title="长按用户名：标记超来客并删除候选"
       >
         ${
           row.uid
@@ -1166,7 +1166,7 @@ function initCellLongPress(tr) {
       if (!uid || !monitorId) return;
 
       const confirmed = window.confirm(
-        '确认把「' + username + '」标记为 SuperLike 并从候选池删除吗？'
+        '确认把「' + username + '」标记为超来客并从候选池删除吗？'
       );
 
       if (!confirmed) return;
