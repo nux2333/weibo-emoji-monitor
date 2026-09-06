@@ -443,8 +443,8 @@
       }
 
       /* Link */
-      th:nth-child(8),
-      td:nth-child(8) {
+      th:nth-child(7),
+      td:nth-child(7) {
         width: 15%;
         text-align: center;
       }
@@ -482,31 +482,20 @@
         font-size: 12px;
       }
     }
-    .moved-status-cell {
-      text-align: center;
-      white-space: nowrap;
+    tr.is-moved td {
+      background: #f2f2f2;
+      color: #999;
     }
 
-    .moved-toggle {
-      border: 1px solid #d0d7de;
-      background: #fff;
-      border-radius: 999px;
-      padding: 5px 10px;
-      cursor: pointer;
-      font-size: 12px;
-      color: #57606a;
-    }
-
-    .moved-toggle.is-moved {
-      border-color: #1a7f37;
-      background: #dafbe1;
-      color: #116329;
-      font-weight: 600;
-    }
-
-    .moved-toggle:disabled {
+    tr.is-moved a,
+    tr.is-moved .icon-tag,
+    tr.is-moved .no-icon {
       opacity: .55;
-      cursor: wait;
+    }
+
+    tr.is-moved .post-text {
+      text-decoration: line-through;
+      text-decoration-color: #bbb;
     }
 
   </style>
@@ -756,18 +745,6 @@
           >
             <div class="th-sort">
               <span>当前Icon</span>
-              <span class="sort-indicator">↕</span>
-            </div>
-          </th>
-
-          <th
-            class="sortable"
-            data-sort-key="moved_flag"
-            onclick="sortBy('moved_flag')"
-            title="点击切换排序"
-          >
-            <div class="th-sort">
-              <span>搬运状态</span>
               <span class="sort-indicator">↕</span>
             </div>
           </th>
