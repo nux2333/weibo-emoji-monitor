@@ -1703,6 +1703,15 @@ function csvValue(
 ) {
 
   if (
+    key === 'moved_flag'
+  ) {
+    return Number(row[key]) === 1
+      ? '已搬运'
+      : '未搬运';
+  }
+
+
+  if (
     key === 'post_created_at'
   ) {
 
