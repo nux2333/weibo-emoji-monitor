@@ -765,6 +765,15 @@ function renderTable() {
         'tr'
       );
 
+    tr.dataset.uid =
+      String(row.uid || '');
+
+    tr.dataset.monitorId =
+      String(row.monitor_id || '');
+
+    tr.dataset.username =
+      String(row.username || '');
+
 
     const icon =
       row.icon_summary &&
@@ -869,6 +878,10 @@ function renderTable() {
     `;
 
 
+    initRowLongPress(
+      tr
+    );
+
     tbody.appendChild(
       tr
     );
@@ -923,6 +936,198 @@ async function copyPostLink(cell) {
     bubble.classList.remove('show');
     setTimeout(() => bubble.remove(), 180);
   }, 700);
+}
+
+
+function initRowLongPress(tr) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  let triggered = false;
+
+  const clear = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const start = event => {
+    triggered = false;
+
+    const point =
+      event.touches?.[0]
+      || event;
+
+    startX =
+      Number(point.clientX || 0);
+
+    startY =
+      Number(point.clientY || 0);
+
+    clear();
+
+    timer =
+      setTimeout(
+        async () => {
+          triggered = true;
+          clear();
+
+          const uid =
+            tr.dataset.uid;
+
+          const monitorId =
+            Number(
+              tr.dataset.monitorId
+            );
+
+          const username =
+            tr.dataset.username
+            || uid;
+
+          if (
+            !uid
+            || !monitorId
+          ) {
+            return;
+          }
+
+          const confirmed =
+            window.confirm(
+              `确认「${username}」已经是超Like吗？\n\n确认后会删除这个UID的全部候选帖子，并加入 superlike_users。`
+            );
+
+          if (!confirmed) {
+            return;
+          }
+
+          try {
+            const response =
+              await fetch(
+                '/api/superlike-mark-user',
+                {
+                  method:
+                    'POST',
+
+                  headers: {
+                    'Content-Type':
+                      'application/json'
+                  },
+
+                  body:
+                    JSON.stringify({
+                      monitorId,
+                      uid
+                    })
+                }
+              );
+
+            const json =
+              await response.json();
+
+            if (!json.success) {
+              throw new Error(
+                json.message
+                || '操作失败'
+              );
+            }
+
+            await loadData(false);
+
+          } catch (error) {
+            alert(
+              '操作失败：'
+              +
+              error.message
+            );
+          }
+        },
+        700
+      );
+  };
+
+  const move = event => {
+    const point =
+      event.touches?.[0]
+      || event;
+
+    const dx =
+      Math.abs(
+        Number(point.clientX || 0)
+        - startX
+      );
+
+    const dy =
+      Math.abs(
+        Number(point.clientY || 0)
+        - startY
+      );
+
+    if (
+      dx > 10
+      || dy > 10
+    ) {
+      clear();
+    }
+  };
+
+  tr.addEventListener(
+    'touchstart',
+    start,
+    { passive: true }
+  );
+
+  tr.addEventListener(
+    'touchmove',
+    move,
+    { passive: true }
+  );
+
+  tr.addEventListener(
+    'touchend',
+    clear
+  );
+
+  tr.addEventListener(
+    'touchcancel',
+    clear
+  );
+
+  tr.addEventListener(
+    'mousedown',
+    start
+  );
+
+  tr.addEventListener(
+    'mousemove',
+    move
+  );
+
+  tr.addEventListener(
+    'mouseup',
+    clear
+  );
+
+  tr.addEventListener(
+    'mouseleave',
+    clear
+  );
+
+  /*
+   * 长按完成后，吞掉紧接着产生的 click，
+   * 避免同时触发“用户名跳转”或“帖子内容复制”。
+   */
+  tr.addEventListener(
+    'click',
+    event => {
+      if (triggered) {
+        event.preventDefault();
+        event.stopPropagation();
+        triggered = false;
+      }
+    },
+    true
+  );
 }
 
 
