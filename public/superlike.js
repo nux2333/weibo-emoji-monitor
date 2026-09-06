@@ -117,7 +117,8 @@ function restoreSearchState() {
         'post_created_at',
         'comments_count',
         'uid',
-        'username'
+        'username',
+        'moved_flag'
       ].includes(
         state.sortKey
       )
@@ -1780,7 +1781,7 @@ function escapeCsv(
 }
 
 
-function downloadCsv() {
+async function downloadCsv() {
 
   const columns =
     getSelectedCsvColumns();
@@ -1806,6 +1807,55 @@ function downloadCsv() {
       '当前没有可导出的数据'
     );
 
+    return;
+  }
+
+
+  /*
+   * 下载 CSV 代表这批帖子将被搬运到微博群：
+   * 先把当前搜索结果整批写入数据库为“已搬运”，
+   * 成功后再生成 CSV，确保多人看到的状态一致。
+   */
+  const ids =
+    allRows
+      .map(row => Number(row.id))
+      .filter(id => Number.isFinite(id) && id > 0);
+
+  try {
+    const response = await fetch(
+      '/api/superlike-posts-moved',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type':
+            'application/json'
+        },
+        body: JSON.stringify({
+          ids
+        })
+      }
+    );
+
+    const json =
+      await response.json();
+
+    if (!response.ok || !json.success) {
+      throw new Error(
+        json.message ||
+        '批量标记已搬运失败'
+      );
+    }
+
+    for (const row of allRows) {
+      row.moved_flag = 1;
+    }
+
+    renderTable();
+  } catch (error) {
+    alert(
+      'CSV 未下载：' +
+      error.message
+    );
     return;
   }
 
