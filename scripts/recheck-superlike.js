@@ -2895,7 +2895,7 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
   console.log('# 数据库顺序：按最久未检查 UID 轮询');
-  console.log('# 优先使用 weibo-good-proxies.txt 健康代理池；连接失败最多换5个后回本地IP');
+  console.log('# 优先使用 weibo-good-proxies.txt 健康代理池；失败持续换代理，本地418也会回切代理池');
   console.log('########################################');
 
   let context = null;
@@ -3179,6 +3179,46 @@ async function runLightSuperLikeRecheck(signal = null) {
 
             i--;
             continue;
+          }
+
+          if (
+            result?.blocked
+            &&
+            !proxyAssignment?.raw
+          ) {
+            console.log(
+              '[模式3] 本地IP命中418，立即重新检查健康代理池。'
+            );
+
+            const localFallbackAssignment =
+              await acquireMode3ProxyWaiting(
+                signal
+              );
+
+            if (
+              localFallbackAssignment?.proxy
+            ) {
+              proxyAssignment =
+                localFallbackAssignment;
+
+              proxy =
+                proxyAssignment.proxy;
+
+              console.log(
+                `[模式3] 本地IP 418 → 切换健康代理：${proxyAssignment.masked}，重试当前UID。`
+              );
+
+              await relaunchContext(
+                proxy
+              );
+
+              i--;
+              continue;
+            }
+
+            console.log(
+              '[模式3] 本地IP 418，但健康代理池确实为空；本条暂不重试。'
+            );
           }
 
           await sleep(
@@ -3948,11 +3988,63 @@ async function runLightCommentRecheck(
           }
 
           /*
-           * 本地IP本身418时不要1秒后疯狂重启 NORMAL。
-           * 没有代理可切时，至少等待30秒再结束本轮。
+           * 本地IP 418：先立即回头检查健康代理池。
+           * 有代理就切过去重试当前帖子；真的没有代理时才等待30秒。
            */
           console.log(
-            `[模式2][${queueLabel}] 本地IP命中418，等待30秒后再结束本轮，避免空转刷请求。`
+            `[模式2][${queueLabel}] 本地IP命中418，立即重新检查健康代理池。`
+          );
+
+          const localFallbackAssignment =
+            await acquireMode2ProxyWaiting(
+              queueLabel,
+              signal
+            );
+
+          if (
+            localFallbackAssignment?.proxy
+          ) {
+            if (context) {
+              try {
+                await context.close();
+              } catch {
+                // ignore
+              }
+            }
+
+            proxyAssignment =
+              localFallbackAssignment;
+
+            const retryProxy =
+              proxyAssignment.proxy;
+
+            context =
+              await chromium.launchPersistentContext(
+                profileDir,
+                {
+                  headless: true,
+                  proxy: retryProxy,
+                  viewport: {
+                    width: 1280,
+                    height: 900
+                  }
+                }
+              );
+
+            page =
+              context.pages()[0]
+              || await context.newPage();
+
+            console.log(
+              `[模式2][${queueLabel}] 本地IP 418 → 切换健康代理：${proxyAssignment.masked}，重试当前帖子。`
+            );
+
+            i--;
+            continue;
+          }
+
+          console.log(
+            `[模式2][${queueLabel}] 本地IP 418，但健康代理池确实为空；等待30秒后结束本轮，避免空转刷请求。`
           );
 
           await sleep(
@@ -5737,6 +5829,38 @@ async function main() {
             );
 
             continue;
+          }
+
+          if (
+            blocked418
+            &&
+            !mode1ProxyAssignment?.raw
+          ) {
+            console.log(
+              '[模式1] 本地IP命中418，立即重新检查健康代理池。'
+            );
+
+            const next =
+              await acquireMode1ProxyWaiting();
+
+            if (next?.proxy) {
+              mode1ProxyAssignment =
+                next;
+
+              console.log(
+                `[模式1] 本地IP 418 → 切换健康代理：${next.masked}，重试当前Monitor。`
+              );
+
+              await launchMode1Context(
+                next.proxy
+              );
+
+              continue;
+            }
+
+            console.log(
+              '[模式1] 本地IP 418，但健康代理池确实为空。'
+            );
           }
 
           throw error;
