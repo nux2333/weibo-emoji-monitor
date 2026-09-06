@@ -1431,6 +1431,179 @@ function buildChaohuaUrl(
  * ============================================================
  */
 
+async function fetchJsonInPageWithRetry(
+  page,
+  url,
+  {
+    headers = {
+      Accept:
+        'application/json, text/plain, */*'
+    },
+    maxAttempts = 3,
+    retryDelaysMs = [500, 1000]
+  } = {}
+) {
+  let lastResult = null;
+
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    const startedAt =
+      Date.now();
+
+    const result =
+      await page.evaluate(
+        async ({
+          requestUrl,
+          requestHeaders
+        }) => {
+          try {
+            const response =
+              await fetch(
+                requestUrl,
+                {
+                  method:
+                    'GET',
+
+                  credentials:
+                    'include',
+
+                  headers:
+                    requestHeaders
+                }
+              );
+
+            const text =
+              await response.text();
+
+            let json = null;
+
+            try {
+              json =
+                JSON.parse(
+                  text
+                );
+            } catch {
+              // 非 JSON 保留原始文本，由调用方判断。
+            }
+
+            return {
+              httpStatus:
+                response.status,
+
+              ok:
+                response.ok,
+
+              finalUrl:
+                response.url,
+
+              text,
+
+              json,
+
+              error:
+                null
+            };
+
+          } catch (error) {
+            return {
+              httpStatus:
+                null,
+
+              ok:
+                false,
+
+              finalUrl:
+                requestUrl,
+
+              text:
+                '',
+
+              json:
+                null,
+
+              error:
+                error?.message
+                || String(error)
+            };
+          }
+        },
+
+        {
+          requestUrl:
+            url,
+
+          requestHeaders:
+            headers
+        }
+      );
+
+    result.attempt =
+      attempt;
+
+    result.elapsedMs =
+      Date.now()
+      - startedAt;
+
+    lastResult =
+      result;
+
+    const status =
+      Number(
+        result.httpStatus
+      );
+
+    const retryable =
+      (
+        result.httpStatus === null
+        ||
+        result.error
+        ||
+        status === 429
+        ||
+        status >= 500
+      );
+
+    /*
+     * 418 不在这里盲目重试：
+     * 交给上层现有的 418 / 代理切换逻辑处理。
+     */
+    if (
+      result.ok
+      ||
+      status === 418
+      ||
+      !retryable
+      ||
+      attempt >= maxAttempts
+    ) {
+      return result;
+    }
+
+    const delayMs =
+      retryDelaysMs[
+        Math.min(
+          attempt - 1,
+          retryDelaysMs.length - 1
+        )
+      ]
+      ?? 1000;
+
+    console.log(
+      `[SuperLike][Fetch重试] ${attempt}/${maxAttempts} 失败 | status=${result.httpStatus ?? '-'} | error=${result.error || '-'} | ${result.elapsedMs}ms | ${delayMs}ms后重试`
+    );
+
+    await page.waitForTimeout(
+      delayMs
+    );
+  }
+
+  return lastResult;
+}
+
+
 async function fetchChaohuaInPage(
   page,
   url,
@@ -1491,98 +1664,31 @@ async function fetchChaohuaInPage(
   }
 
 
-  return await page.evaluate(
-    async ({
-      requestUrl,
-      headers
-    }) => {
-      try {
-        const response =
-          await fetch(
-            requestUrl,
-            {
-              method:
-                'GET',
-
-              credentials:
-                'include',
-
-              headers
-            }
-          );
-
-
-        const text =
-          await response.text();
-
-
-        let json = null;
-
-        try {
-          json =
-            JSON.parse(
-              text
-            );
-
-        } catch {
-          // 非 JSON 时保留原始文本，交给调用方打印诊断。
-        }
-
-
-        return {
-          httpStatus:
-            response.status,
-
-          ok:
-            response.ok,
-
-          finalUrl:
-            response.url,
-
-          text:
-            text.slice(
-              0,
-              500
-            ),
-
-          json,
-
-          error:
-            null
-        };
-
-      } catch (error) {
-        return {
-          httpStatus:
-            null,
-
-          ok:
-            false,
-
-          finalUrl:
-            requestUrl,
-
-          text:
-            '',
-
-          json:
-            null,
-
-          error:
-            error?.message
-            || String(error)
-        };
+  const result =
+    await fetchJsonInPageWithRetry(
+      page,
+      url,
+      {
+        headers:
+          safeHeaders,
+        maxAttempts:
+          3,
+        retryDelaysMs:
+          [500, 1000]
       }
-    },
+    );
 
-    {
-      requestUrl:
-        url,
-
-      headers:
-        safeHeaders
-    }
-  );
+  return {
+    ...result,
+    text:
+      String(
+        result?.text
+        || ''
+      ).slice(
+        0,
+        500
+      )
+  };
 }
 
 
@@ -1914,61 +2020,30 @@ async function checkUserSuperLikeByProfile(
     );
 
     /*
-     * 然后在浏览器页面上下文里 fetch JSON API。
+     * 统一使用页面内 fetch 共通方法：
+     * 网络失败 / 429 / 5xx 最多请求3次；
+     * 418 不在这里重复撞，交给上层代理/退避逻辑。
      */
-    const result =
-      await profilePage.evaluate(
-        async requestUrl => {
-          try {
-            const response =
-              await fetch(
-                requestUrl,
-                {
-                  method: 'GET',
-
-                  credentials:
-                    'include',
-
-                  headers: {
-                    Accept:
-                      'application/json, text/plain, */*'
-                  }
-                }
-              );
-
-            const text =
-              await response.text();
-
-            return {
-              ok:
-                response.ok,
-
-              status:
-                response.status,
-
-              finalUrl:
-                response.url,
-
-              text
-            };
-
-          } catch (error) {
-            return {
-              ok: false,
-              status: null,
-              finalUrl: requestUrl,
-              text: '',
-              error:
-                error.message
-            };
-          }
-        },
-
-        url
+    const fetchResult =
+      await fetchJsonInPageWithRetry(
+        profilePage,
+        url,
+        {
+          maxAttempts:
+            3,
+          retryDelaysMs:
+            [500, 1000]
+        }
       );
 
+    const result = {
+      ...fetchResult,
+      status:
+        fetchResult.httpStatus
+    };
+
     console.log(
-      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} url=${result.finalUrl}`
+      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} attempt=${result.attempt || 1}/3 elapsed=${result.elapsedMs || 0}ms url=${result.finalUrl}`
     );
 
     if (
@@ -2531,8 +2606,10 @@ async function processPagePosts(
       stats.profileFailed++;
 
       console.log(
-        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | 为避免漏帖仍按候选处理`
+        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | 已连续重试最多3次，本轮跳过，不入库`
       );
+
+      continue;
     }
 
 
