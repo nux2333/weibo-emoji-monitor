@@ -52,6 +52,7 @@ function migrateSuperlikePostsIfNeeded() {
       post_text TEXT,
       comments_count INTEGER NOT NULL DEFAULT 0,
       current_has_superlike INTEGER NOT NULL DEFAULT 0,
+      moved_flag INTEGER NOT NULL DEFAULT 0,
       icon_summary TEXT,
       experience_7d INTEGER,
       post_created_at TEXT,
@@ -528,6 +529,9 @@ function initDatabase() {
   `);
 
   migrateSuperlikePostsIfNeeded();
+
+  // 候选帖是否已经搬运到微博群。旧数据库启动时自动补列。
+  ensureColumn('superlike_posts', 'moved_flag', 'INTEGER NOT NULL DEFAULT 0');
   
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_monitors_type_enabled
@@ -983,6 +987,26 @@ function saveSuperLikeTargetPost(data = {}) {
     iconSummary
   };
 }
+
+function setSuperLikePostMoved(postRowId, moved) {
+  initDatabase();
+
+  const id = Number(postRowId);
+  if (!Number.isFinite(id) || id <= 0) {
+    throw new Error('setSuperLikePostMoved 缺少有效帖子ID');
+  }
+
+  const movedFlag = moved ? 1 : 0;
+
+  const result = db.prepare(`
+    UPDATE superlike_posts
+    SET moved_flag = ?
+    WHERE id = ?
+  `).run(movedFlag, id);
+
+  return Number(result.changes || 0);
+}
+
 
 function deletePostsByUidSet(uidSet) {
   initDatabase();
@@ -1709,6 +1733,7 @@ module.exports = {
   markSuperLikeProfileChecked,
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
+  setSuperLikePostMoved,
   deletePostsByUidSet,
   markDailyExcludedUser,
   isDailyExcludedUser,
