@@ -913,20 +913,20 @@ function renderTable() {
 }
 
 
-async function toggleMovedStatus(button) {
-  if (!button || button.disabled) {
+async function toggleMovedRow(tr) {
+  if (!tr || tr.dataset.movedBusy === '1') {
     return;
   }
 
-  const id = Number(button.dataset.postRowId);
-  const currentMoved = button.dataset.moved === '1';
+  const id = Number(tr.dataset.postRowId);
+  const currentMoved = tr.dataset.moved === '1';
   const nextMoved = !currentMoved;
 
   if (!id) {
     return;
   }
 
-  button.disabled = true;
+  tr.dataset.movedBusy = '1';
 
   try {
     const response = await fetch(
@@ -959,30 +959,51 @@ async function toggleMovedStatus(button) {
       row.moved_flag = json.moved_flag;
     }
 
-    button.dataset.moved =
+    tr.dataset.moved =
       json.moved_flag === 1 ? '1' : '0';
 
-    button.textContent =
+    tr.classList.toggle(
+      'is-moved',
+      json.moved_flag === 1
+    );
+
+    const oldBubble =
+      document.querySelector('.copy-toast');
+
+    if (oldBubble) {
+      oldBubble.remove();
+    }
+
+    const bubble =
+      document.createElement('div');
+
+    bubble.className = 'copy-toast';
+    bubble.textContent =
       json.moved_flag === 1
         ? '已搬运'
-        : '未搬运';
+        : '已取消搬运';
 
-    button.classList.toggle(
-      'is-moved',
-      json.moved_flag === 1
+    bubble.style.left = '50%';
+    bubble.style.top = '20px';
+    bubble.style.transform = 'translateX(-50%)';
+
+    document.body.appendChild(bubble);
+
+    requestAnimationFrame(
+      () => bubble.classList.add('show')
     );
 
-    button.closest('tr')?.classList.toggle(
-      'is-moved',
-      json.moved_flag === 1
-    );
+    setTimeout(() => {
+      bubble.classList.remove('show');
+      setTimeout(() => bubble.remove(), 180);
+    }, 700);
   } catch (error) {
     alert(
       '更新失败：' +
       error.message
     );
   } finally {
-    button.disabled = false;
+    tr.dataset.movedBusy = '0';
   }
 }
 
@@ -1041,7 +1062,12 @@ function initRowLongPress(tr) {
   let timer = null;
   let startX = 0;
   let startY = 0;
+  let lastX = 0;
+  let lastY = 0;
   let triggered = false;
+  let swiping = false;
+
+  const SWIPE_THRESHOLD = 70;
 
   const clear = () => {
     if (timer) {
@@ -1052,16 +1078,16 @@ function initRowLongPress(tr) {
 
   const start = event => {
     triggered = false;
+    swiping = false;
 
     const point =
       event.touches?.[0]
       || event;
 
-    startX =
-      Number(point.clientX || 0);
-
-    startY =
-      Number(point.clientY || 0);
+    startX = Number(point.clientX || 0);
+    startY = Number(point.clientY || 0);
+    lastX = startX;
+    lastY = startY;
 
     clear();
 
@@ -1071,28 +1097,19 @@ function initRowLongPress(tr) {
           triggered = true;
           clear();
 
-          const uid =
-            tr.dataset.uid;
-
+          const uid = tr.dataset.uid;
           const monitorId =
-            Number(
-              tr.dataset.monitorId
-            );
-
+            Number(tr.dataset.monitorId);
           const username =
-            tr.dataset.username
-            || uid;
+            tr.dataset.username || uid;
 
-          if (
-            !uid
-            || !monitorId
-          ) {
+          if (!uid || !monitorId) {
             return;
           }
 
           const confirmed =
             window.confirm(
-              `确认将「${username}」标记为已超Like并删除吗？`
+              `确认把「${username}」标记为 SuperLike 并从候选池删除吗？`
             );
 
           if (!confirmed) {
@@ -1104,14 +1121,11 @@ function initRowLongPress(tr) {
               await fetch(
                 '/api/superlike-mark-user',
                 {
-                  method:
-                    'POST',
-
+                  method: 'POST',
                   headers: {
                     'Content-Type':
                       'application/json'
                   },
-
                   body:
                     JSON.stringify({
                       monitorId,
@@ -1125,17 +1139,14 @@ function initRowLongPress(tr) {
 
             if (!json.success) {
               throw new Error(
-                json.message
-                || '操作失败'
+                json.message || '操作失败'
               );
             }
 
             await loadData(false);
-
           } catch (error) {
             alert(
-              '操作失败：'
-              +
+              '操作失败：' +
               error.message
             );
           }
@@ -1149,24 +1160,52 @@ function initRowLongPress(tr) {
       event.touches?.[0]
       || event;
 
-    const dx =
-      Math.abs(
-        Number(point.clientX || 0)
-        - startX
-      );
+    lastX = Number(point.clientX || 0);
+    lastY = Number(point.clientY || 0);
 
-    const dy =
-      Math.abs(
-        Number(point.clientY || 0)
-        - startY
-      );
+    const dx = lastX - startX;
+    const dy = lastY - startY;
 
     if (
-      dx > 10
-      || dy > 10
+      Math.abs(dx) > 10
+      || Math.abs(dy) > 10
     ) {
       clear();
     }
+
+    /*
+     * 只有触摸设备启用右滑搬运。
+     * 鼠标拖动不会触发，电脑版没有单条搬运操作。
+     */
+    if (
+      event.touches
+      &&
+      dx > 18
+      &&
+      Math.abs(dx) > Math.abs(dy) * 1.3
+    ) {
+      swiping = true;
+    }
+  };
+
+  const touchEnd = event => {
+    clear();
+
+    const dx = lastX - startX;
+    const dy = lastY - startY;
+
+    if (
+      swiping
+      &&
+      dx >= SWIPE_THRESHOLD
+      &&
+      Math.abs(dx) > Math.abs(dy) * 1.3
+    ) {
+      triggered = true;
+      toggleMovedRow(tr);
+    }
+
+    swiping = false;
   };
 
   tr.addEventListener(
@@ -1183,7 +1222,7 @@ function initRowLongPress(tr) {
 
   tr.addEventListener(
     'touchend',
-    clear
+    touchEnd
   );
 
   tr.addEventListener(
@@ -1191,6 +1230,10 @@ function initRowLongPress(tr) {
     clear
   );
 
+  /*
+   * 电脑版仍保留鼠标长按 = 标记 SuperLike / 删除候选。
+   * 不提供鼠标滑动“已搬运”。
+   */
   tr.addEventListener(
     'mousedown',
     start
@@ -1211,10 +1254,6 @@ function initRowLongPress(tr) {
     clear
   );
 
-  /*
-   * 长按完成后，吞掉紧接着产生的 click，
-   * 避免同时触发“用户名跳转”或“帖子内容复制”。
-   */
   tr.addEventListener(
     'click',
     event => {
@@ -1227,7 +1266,6 @@ function initRowLongPress(tr) {
     true
   );
 }
-
 
 function renderPagination() {
 
