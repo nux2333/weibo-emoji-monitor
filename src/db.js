@@ -632,8 +632,6 @@ function initDatabase() {
     );
   }
 
-  }
-
   /*
    * 只有完整初始化成功后才置为 true。
    * 上面任意 migration / DDL 失败都会直接抛错，
