@@ -439,6 +439,21 @@ function initDatabase() {
       profile_link TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+
+    /*
+     * 当天排除 UID：
+     * 某个用户任意候选帖评论达到 21 后，当天不再抓取该 UID 的其他帖子。
+     * 日期固定按中国时间（UTC+8）。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_daily_excluded_users (
+      monitor_id INTEGER NOT NULL,
+      uid TEXT NOT NULL,
+      exclude_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
+      reason TEXT NOT NULL DEFAULT 'COMMENTS_21',
+      created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      PRIMARY KEY(monitor_id, uid, exclude_date),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
   `);
 
   ensureColumn('comments', 'buyer_nickname', 'TEXT');
@@ -559,6 +574,9 @@ function initDatabase() {
 
     CREATE INDEX IF NOT EXISTS idx_black_fan_users_uid
       ON black_fan_users(uid);
+
+    CREATE INDEX IF NOT EXISTS idx_superlike_daily_excluded_date_uid
+      ON superlike_daily_excluded_users(exclude_date, uid);
 
     CREATE INDEX IF NOT EXISTS idx_black_fan_users_username
       ON black_fan_users(username);
@@ -1007,6 +1025,78 @@ function deletePostsByUidSet(uidSet) {
 
   return deleted;
 }
+
+function markDailyExcludedUser(
+  monitorId,
+  uid,
+  reason = 'COMMENTS_21'
+) {
+  initDatabase();
+
+  if (!monitorId || !uid) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_daily_excluded_users(
+      monitor_id,
+      uid,
+      exclude_date,
+      reason,
+      created_at
+    )
+    VALUES(
+      ?, ?,
+      date('now', '+8 hours'),
+      ?,
+      datetime('now', '+8 hours')
+    )
+    ON CONFLICT(monitor_id, uid, exclude_date)
+    DO UPDATE SET
+      reason = excluded.reason
+  `).run(
+    Number(monitorId),
+    String(uid),
+    String(reason || 'COMMENTS_21')
+  );
+
+  return true;
+}
+
+function isDailyExcludedUser(
+  monitorId,
+  uid
+) {
+  initDatabase();
+
+  if (!monitorId || !uid) {
+    return false;
+  }
+
+  return !!db.prepare(`
+    SELECT 1
+    FROM superlike_daily_excluded_users
+    WHERE monitor_id = ?
+      AND uid = ?
+      AND exclude_date = date('now', '+8 hours')
+    LIMIT 1
+  `).get(
+    Number(monitorId),
+    String(uid)
+  );
+}
+
+function cleanupOldDailyExcludedUsers() {
+  initDatabase();
+
+  const result = db.prepare(`
+    DELETE FROM superlike_daily_excluded_users
+    WHERE exclude_date < date('now', '+8 hours', '-7 days')
+  `).run();
+
+  return Number(result.changes || 0);
+}
+
 
 function cleanupSuperLikePostsByUsersTable() {
   initDatabase();
@@ -1620,6 +1710,9 @@ module.exports = {
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   deletePostsByUidSet,
+  markDailyExcludedUser,
+  isDailyExcludedUser,
+  cleanupOldDailyExcludedUsers,
   cleanupSuperLikePostsByUsersTable,
   getScanCheckpoint,
   saveScanCheckpoint,
