@@ -381,6 +381,7 @@ function getDistinctUsers(
       uid,
       MAX(username) AS username,
       COUNT(*) AS post_count,
+      MAX(COALESCE(moved_flag, 0)) AS has_moved_post,
       MIN(datetime(first_seen_at)) AS oldest_first_seen_at,
       MIN(id) AS first_id
     FROM superlike_posts
@@ -400,6 +401,7 @@ function getDistinctUsers(
 
     GROUP BY uid
     ORDER BY
+      has_moved_post DESC,
       CASE
         WHEN oldest_first_seen_at IS NULL THEN 1
         ELSE 0
@@ -2257,6 +2259,7 @@ function getCommentCandidatePosts(queueType = 'normal') {
           AND deu.exclude_date = date('now', '+8 hours')
       )
     ORDER BY
+      COALESCE(moved_flag, 0) DESC,
       comments_count DESC,
       CASE
         WHEN comment_last_checked_at IS NULL THEN 0
@@ -2611,7 +2614,8 @@ function getDistinctUsersForLightProfile(
    * 全量 UID 分批轮询：
    * - superlike_posts 中所有尚未确认 SuperLike 的 UID 都进入队列
    * - 同一个 UID 无论有多少帖子，Profile 只检查一次
-   * - 从未检查过的 UID 最优先
+   * - 有已搬运帖子的 UID 最优先
+   * - 同一搬运状态下，从未检查过的 UID 优先
    * - 之后按 profile_last_checked_at 最旧的优先
    * - 每轮最多 PROFILE_VERIFY_BATCH_SIZE 个
    *
@@ -2623,6 +2627,7 @@ function getDistinctUsersForLightProfile(
       p.uid,
       MAX(p.username) AS username,
       COUNT(*) AS post_count,
+      MAX(COALESCE(p.moved_flag, 0)) AS has_moved_post,
       MAX(p.id) AS latest_id,
       MIN(p.first_seen_at) AS first_seen_at,
       MAX(p.profile_last_checked_at) AS profile_last_checked_at
@@ -2637,6 +2642,7 @@ function getDistinctUsersForLightProfile(
       )
     GROUP BY p.uid
     ORDER BY
+      has_moved_post DESC,
       CASE
         WHEN MAX(p.profile_last_checked_at) IS NULL
         THEN 0
@@ -3819,7 +3825,7 @@ async function runLightCommentRecheck(
       ? '# HOT：只查18-20条；每30秒独立调度，不等待普通队列'
       : '# NORMAL：只查0-17条；按comment_next_check_at到期轮询'
   );
-  console.log('# 当前队列无数量上限；队列内按 comments_count DESC 优先');
+  console.log('# 当前队列无数量上限；已搬运优先，同组内按 comments_count DESC 优先');
   console.log('# 18-20条≈30秒；15-17条≈1分钟；10-14条≈2分钟；0-9条≈10分钟');
   console.log(`本轮${queueLabel}到期=${posts.length}`);
   console.log('########################################');
