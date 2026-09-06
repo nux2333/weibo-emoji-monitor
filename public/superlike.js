@@ -357,6 +357,39 @@ function formatPostTime(
 }
 
 
+async function loadEnvironmentBadge() {
+  try {
+    const response =
+      await fetch(
+        '/api/environment'
+      );
+
+    const json =
+      await response.json();
+
+    const badge =
+      document.getElementById(
+        'environmentBadge'
+      );
+
+    if (
+      badge
+      &&
+      json?.isTest
+    ) {
+      badge.style.display =
+        'inline-block';
+
+      document.title =
+        '[TEST] ' +
+        document.title;
+    }
+  } catch {
+    // 环境标识读取失败不影响页面主功能。
+  }
+}
+
+
 function getKeyword() {
   return document
     .getElementById(
@@ -2021,6 +2054,8 @@ document
 initCsvColumns();
 
 restoreSearchState();
+
+loadEnvironmentBadge();
 
 loadData(
   false
