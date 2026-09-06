@@ -14,6 +14,7 @@ const {
   getComments,
   getApiResponseById,
   saveSuperLikeUser,
+  setSuperLikePostMoved,
   deletePostsByUidSet
 } = require('./src/db');
 
@@ -75,6 +76,7 @@ app.use((req, res, next) => {
     '/style.css',
     '/api/superlike-posts',
     '/api/superlike-mark-user',
+    '/api/superlike-post-moved',
     '/favicon.ico'
   ]);
 
@@ -285,6 +287,7 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.post_text,
         sp.comments_count,
         sp.current_has_superlike,
+        sp.moved_flag,
         sp.icon_summary,
         sp.experience_7d,
         sp.post_created_at,
@@ -421,6 +424,47 @@ app.post('/api/superlike-mark-user', (req, res) => {
       success: false,
       message:
         error.message
+    });
+  }
+});
+
+
+/*
+ * 标记/取消“已搬运”。
+ * moved=true  -> 已搬运
+ * moved=false -> 未搬运
+ */
+app.post('/api/superlike-post-moved', (req, res) => {
+  try {
+    const id = Number(req.body?.id);
+    const moved = req.body?.moved === true;
+
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: '帖子ID无效'
+      });
+    }
+
+    const changed = setSuperLikePostMoved(id, moved);
+
+    if (!changed) {
+      return res.status(404).json({
+        success: false,
+        message: '帖子不存在或已被删除'
+      });
+    }
+
+    res.json({
+      success: true,
+      id,
+      moved_flag: moved ? 1 : 0
+    });
+  } catch (error) {
+    console.error('[SuperLike][搬运状态] 更新失败：', error);
+    res.status(500).json({
+      success: false,
+      message: error.message
     });
   }
 });
