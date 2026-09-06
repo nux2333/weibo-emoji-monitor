@@ -1008,6 +1008,55 @@ function setSuperLikePostMoved(postRowId, moved) {
 }
 
 
+function setSuperLikePostsMoved(postRowIds, moved = true) {
+  initDatabase();
+
+  const ids = Array.from(
+    new Set(
+      (postRowIds || [])
+        .map(id => Number(id))
+        .filter(id => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (ids.length === 0) {
+    return 0;
+  }
+
+  const movedFlag = moved ? 1 : 0;
+  const CHUNK_SIZE = 500;
+  let changed = 0;
+
+  db.exec('BEGIN');
+
+  try {
+    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
+      const chunk = ids.slice(i, i + CHUNK_SIZE);
+      const placeholders = chunk.map(() => '?').join(',');
+
+      const result = db.prepare(`
+        UPDATE superlike_posts
+        SET moved_flag = ?
+        WHERE id IN (${placeholders})
+      `).run(movedFlag, ...chunk);
+
+      changed += Number(result.changes || 0);
+    }
+
+    db.exec('COMMIT');
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK');
+    } catch {
+      // ignore rollback error
+    }
+    throw error;
+  }
+
+  return changed;
+}
+
+
 function deletePostsByUidSet(uidSet) {
   initDatabase();
 
@@ -1734,6 +1783,7 @@ module.exports = {
   saveSuperLikeUser,
   saveSuperLikeTargetPost,
   setSuperLikePostMoved,
+  setSuperLikePostsMoved,
   deletePostsByUidSet,
   markDailyExcludedUser,
   isDailyExcludedUser,
