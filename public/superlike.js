@@ -994,7 +994,7 @@ function initRowLongPress(tr) {
 
           const confirmed =
             window.confirm(
-              `确认「${username}」已经是超Like吗？\n\n确认后会删除这个UID的全部候选帖子，并加入 superlike_users。`
+              `确认将「${username}」标记为已超Like并删除吗？`
             );
 
           if (!confirmed) {
