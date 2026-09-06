@@ -931,6 +931,17 @@ function renderTable() {
             : '-'
         }
 
+        <div class="link-black-fan-actions">
+          <button
+            type="button"
+            class="black-fan-button"
+            data-uid="${escapeHtml(row.uid || '')}"
+            data-username="${escapeHtml(row.username || '')}"
+            title="把该用户加入黑粉名单"
+          >
+            发现🐷
+          </button>
+        </div>
       </td>
     `;
 
@@ -1037,6 +1048,98 @@ async function toggleMovedRow(tr) {
     );
   } finally {
     tr.dataset.movedBusy = '0';
+  }
+}
+
+
+async function markBlackFan(button) {
+  if (!button || button.disabled) {
+    return;
+  }
+
+  const uid =
+    String(
+      button.dataset.uid
+      || ''
+    ).trim();
+
+  const username =
+    String(
+      button.dataset.username
+      || ''
+    ).trim();
+
+  if (!uid) {
+    return;
+  }
+
+  const confirmed =
+    window.confirm(
+      '确定他是🐷吗？'
+    );
+
+  if (!confirmed) {
+    return;
+  }
+
+  button.disabled = true;
+
+  try {
+    const response =
+      await fetch(
+        '/api/black-fan-user',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type':
+              'application/json'
+          },
+          body:
+            JSON.stringify({
+              uid,
+              username
+            })
+        }
+      );
+
+    const json =
+      await response.json();
+
+    if (
+      !response.ok
+      || !json.success
+    ) {
+      throw new Error(
+        json.message
+        || '标记黑粉失败'
+      );
+    }
+
+    button.textContent =
+      '已发现🐷';
+
+    /*
+     * 默认勾选“屏蔽🐷屎”时，
+     * 标记完成后刷新，当前用户会立即从列表消失。
+     * 如果用户关闭了屏蔽，则按钮会保留为已标记状态直到下次刷新。
+     */
+    const hideBlack =
+      document
+        .getElementById(
+          'hideBlack'
+        )
+        ?.checked !== false;
+
+    if (hideBlack) {
+      await loadData(false);
+    }
+  } catch (error) {
+    alert(
+      '操作失败：' +
+      error.message
+    );
+
+    button.disabled = false;
   }
 }
 
@@ -2026,6 +2129,20 @@ async function downloadCsv() {
 document
   .getElementById('tbody')
   .addEventListener('click', event => {
+    const blackFanButton =
+      event.target.closest(
+        '.black-fan-button'
+      );
+
+    if (blackFanButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      markBlackFan(
+        blackFanButton
+      );
+      return;
+    }
+
     const movedButton =
       event.target.closest('.moved-toggle');
 

@@ -172,6 +172,7 @@
       width: 90px;
     }
 
+
     th.sortable {
       cursor: pointer;
       user-select: none;
@@ -442,11 +443,17 @@
         text-align: center;
       }
 
-      /* Link */
+      /* Link + 🐷按钮 */
       th:nth-child(7),
       td:nth-child(7) {
         width: 15%;
         text-align: center;
+      }
+
+      .black-fan-button {
+        padding: 5px 4px;
+        font-size: 10px;
+        white-space: nowrap;
       }
 
       .link-button {
@@ -496,6 +503,29 @@
     tr.is-moved .post-text {
       text-decoration: line-through;
       text-decoration-color: #bbb;
+    }
+
+    .link-black-fan-actions {
+      margin-top: 10px;
+    }
+
+    .black-fan-button {
+      white-space: nowrap;
+      padding: 5px 9px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      background: #fff;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .black-fan-button:hover {
+      background: #fff5f5;
+    }
+
+    .black-fan-button:disabled {
+      opacity: .55;
+      cursor: wait;
     }
 
   </style>
@@ -628,7 +658,7 @@
         onchange="changeHideBlack()"
         style="width:auto;max-width:none;"
       >
-      屏蔽🐷屎
+      屏蔽🐷
     </label>
 
     <button
