@@ -85,6 +85,16 @@ const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
   || 100;
 
+/*
+ * 每轮必须先从最新页抓一小段，保证新帖子及时入库。
+ * 即使存在很深的 Resume，也不能一上来就跳到旧页。
+ */
+const FRESH_FIRST_PAGES =
+  Number(
+    process.env.SUPERLIKE_FRESH_FIRST_PAGES
+  )
+  || 10;
+
 const EXISTING_STOP_THRESHOLD =
   Number(process.env.SUPERLIKE_EXISTING_STOP_THRESHOLD)
   || 10;
@@ -3187,7 +3197,7 @@ async function scanOneSuperLikeMonitor(
 
     console.log(
       resume
-        ? `[SuperLike][Resume] 发现断点：下次从 sort_time page=${resume.next_page} 继续。`
+        ? `[SuperLike][Resume] 发现断点 page=${resume.next_page}；本轮会先抓最新，再继续断点。`
         : '[SuperLike][Resume] 无断点，从最新开始。'
     );
 
@@ -3469,70 +3479,17 @@ async function scanOneSuperLikeMonitor(
     let logicalPageNumber = 1;
 
     /*
-     * 有持久化断点时：
-     * 仍先通过真实页面拿到最新的 sort_time 模板/header，
-     * 然后直接使用上次保存的 cursor 跳回中断位置。
+     * Fresh-first：
+     * 即使有旧 Resume，也先从最新 page=1 往后扫。
+     * 这样新帖子不会被几千页的历史 Resume 卡住。
      */
+    let switchedToResume =
+      false;
+
     if (resume) {
-      const resumeParams = {
-        page:
-          Number(resume.next_page),
-
-        since_id:
-          resume.next_since_id
-          ?? null,
-
-        max_id:
-          resume.next_max_id
-          ?? '0'
-      };
-
-      const resumeUrl =
-        buildChaohuaUrl(
-          resume.sort_time_flow_id
-          || sortTimeFlowId,
-          resumeParams,
-          sortTimeRequestTemplateUrl
-        );
-
       console.log(
-        `[SuperLike][Resume] 从断点继续：page=${resumeParams.page}`
+        `[SuperLike][FreshFirst] 检测到 Resume page=${resume.next_page}；本轮先扫描最新 ${FRESH_FIRST_PAGES} 页，再继续旧 Resume。`
       );
-
-      const resumeResult =
-        await fetchChaohuaInPage(
-          page,
-          resumeUrl,
-          sortTimeRequestTemplateHeaders
-        );
-
-      if (
-        resumeResult.httpStatus === 418
-      ) {
-        throw new Weibo418Error(
-          'Resume sort_time 返回 HTTP 418'
-        );
-      }
-
-      if (!resumeResult.ok) {
-        throw new Error(
-          `Resume sort_time HTTP ${resumeResult.httpStatus ?? '-'}：${resumeResult.error || resumeResult.text || '请求失败'}`
-        );
-      }
-
-      current = {
-        url:
-          resumeUrl,
-
-        page:
-          resumeParams.page,
-
-        json:
-          resumeResult.json
-      };
-
-      logicalPageNumber =
-        resumeParams.page;
     }
 
     // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
@@ -3707,6 +3664,86 @@ async function scanOneSuperLikeMonitor(
 
 
       /*
+       * Fresh-first 阶段结束后，再跳回旧 Resume 继续补历史。
+       * 只切一次；Resume 阶段继续受本轮 MAX_PAGES 总上限约束。
+       */
+      if (
+        resume
+        &&
+        !switchedToResume
+        &&
+        batchPageIndex >=
+          FRESH_FIRST_PAGES
+      ) {
+        const resumeParams = {
+          page:
+            Number(resume.next_page),
+
+          since_id:
+            resume.next_since_id
+            ?? null,
+
+          max_id:
+            resume.next_max_id
+            ?? '0'
+        };
+
+        const resumeUrl =
+          buildChaohuaUrl(
+            resume.sort_time_flow_id
+            || sortTimeFlowId,
+            resumeParams,
+            sortTimeRequestTemplateUrl
+          );
+
+        console.log(
+          `[SuperLike][FreshFirst] 最新区段已处理 ${FRESH_FIRST_PAGES} 页；现在切回 Resume page=${resumeParams.page}。`
+        );
+
+        const resumeResult =
+          await fetchChaohuaInPage(
+            page,
+            resumeUrl,
+            sortTimeRequestTemplateHeaders
+          );
+
+        if (
+          resumeResult.httpStatus === 418
+        ) {
+          throw new Weibo418Error(
+            'Resume sort_time 返回 HTTP 418'
+          );
+        }
+
+        if (!resumeResult.ok) {
+          throw new Error(
+            `Resume sort_time HTTP ${resumeResult.httpStatus ?? '-'}：${resumeResult.error || resumeResult.text || '请求失败'}`
+          );
+        }
+
+        current = {
+          url:
+            resumeUrl,
+          page:
+            resumeParams.page,
+          json:
+            resumeResult.json
+        };
+
+        logicalPageNumber =
+          resumeParams.page;
+
+        switchedToResume =
+          true;
+
+        consecutiveOldCheckpointPages =
+          0;
+
+        continue;
+      }
+
+
+      /*
        * 下一页改为直接 AJAX：
        *
        * 从当前 sort_time JSON 的 moreInfo.params 读取
@@ -3744,7 +3781,15 @@ async function scanOneSuperLikeMonitor(
        * 当前页已经完整处理成功，此时才把“下一页 cursor”落库。
        * 所以即使下一页请求失败/进程退出，重启后也从未处理页继续。
        */
-      if (checkpoint) {
+      if (
+        checkpoint
+        &&
+        (
+          !resume
+          ||
+          switchedToResume
+        )
+      ) {
         saveScanResume(
           monitor.id,
           checkpoint,
