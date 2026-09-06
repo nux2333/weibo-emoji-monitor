@@ -173,43 +173,8 @@ const CSV_COLUMNS = [
     key: 'post_created_at',
     label: '发帖时间',
     defaultChecked: true
-  },
-  {
-    key: 'first_seen_at',
-    label: '首次发现',
-    defaultChecked: true
-  },
-  {
-    key: 'last_seen_at',
-    label: '最后确认',
-    defaultChecked: true
-  },
-  {
-    key: 'moved_flag',
-    label: '已搬运',
-    defaultChecked: true
-  },
-  {
-    key: 'post_link',
-    label: 'Link',
-    defaultChecked: true
-  },
-  {
-    key: 'post_id',
-    label: 'Post ID',
-    defaultChecked: false
-  },
-  {
-    key: 'monitor_id',
-    label: 'Monitor ID',
-    defaultChecked: false
-  },
-  {
-    key: 'monitor_name',
-    label: 'Monitor名称',
-    defaultChecked: false
   }
-];
+]
 
 
 function escapeHtml(
