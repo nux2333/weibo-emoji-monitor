@@ -1621,23 +1621,57 @@ async function recheckOneMonitor(
 
         stats.profileFailed++;
 
-
-        console.log(
-          `[Recheck][Profile失败] UID=${uid} | ${
+        const profileMessage =
+          String(
             profileResult.message
             ||
             'unknown'
-          }`
+          );
+
+
+        console.log(
+          `[Recheck][Profile失败] UID=${uid} | ${profileMessage}`
         );
 
 
         /*
-         * 无法确认：
+         * 代理/网络连接类错误不能在这里直接 continue。
+         *
+         * 否则 Mode1 会一直拿同一个坏代理继续检查后续 UID，
+         * 外层 main() 的“淘汰当前代理 -> 切换下一个健康代理”
+         * 永远收不到这个错误。
+         *
+         * 所以这类错误直接抛到外层处理。
+         */
+        if (
+          isProxyConnectionError(
+            profileMessage
+          )
+          ||
+          /ERR_TIMED_OUT/i.test(
+            profileMessage
+          )
+          ||
+          /Timeout\s+\d+ms\s+exceeded/i.test(
+            profileMessage
+          )
+          ||
+          /Navigation timeout/i.test(
+            profileMessage
+          )
+        ) {
+          throw new Error(
+            profileMessage
+          );
+        }
+
+
+        /*
+         * 普通 Profile 业务失败：
          *
          * 不删除用户
          * 不删除帖子
-         *
-         * 防止误删。
+         * 继续下一个 UID，防止误删。
          */
         continue;
       }
