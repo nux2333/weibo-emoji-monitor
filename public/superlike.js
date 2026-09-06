@@ -800,7 +800,7 @@ function renderTable() {
             ? `
               <a
                 class="user-link"
-                href="https://m.weibo.cn/p/index?containerid=231140f1d33f71dff693a2708cb3e8ef584a44_-_profile_inpage&extparam=target_uid%2523${encodeURIComponent(row.uid)}&luicode=10000011&lfid=231140f1d33f71dff693a2708cb3e8ef584a44_-_chaolikenew&launchid=10000360-page_H5"
+                href="https://m.weibo.cn/p/index?containerid=231140f1d33f71dff693a2708cb3e8ef584a44_-_profile_inpage&extparam=target_uid%2523${encodeURIComponent(row.uid)}&luicode=10000011"
                 target="_blank"
                 rel="noopener noreferrer"
               >
