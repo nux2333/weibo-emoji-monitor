@@ -761,7 +761,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="8"
+          colspan="7"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -931,19 +931,17 @@ function renderTable() {
             : '-'
         }
 
-      </td>
-
-
-      <td>
-        <button
-          type="button"
-          class="black-fan-button"
-          data-uid="${escapeHtml(row.uid || '')}"
-          data-username="${escapeHtml(row.username || '')}"
-          title="把该用户加入黑粉名单"
-        >
-          发现🐷
-        </button>
+        <div class="link-black-fan-actions">
+          <button
+            type="button"
+            class="black-fan-button"
+            data-uid="${escapeHtml(row.uid || '')}"
+            data-username="${escapeHtml(row.username || '')}"
+            title="把该用户加入黑粉名单"
+          >
+            发现🐷
+          </button>
+        </div>
       </td>
     `;
 
