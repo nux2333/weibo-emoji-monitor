@@ -877,9 +877,9 @@ function renderTable() {
 
 
       <td
-        class="post-text copy-post-link moved-longpress"
+        class="post-text copy-post-link"
         data-post-link="${escapeHtml(row.post_link || '')}"
-        title="点击复制帖子链接；长按切换已搬运"
+        title="点击复制帖子链接并标记为已搬运"
       >
         ${escapeHtml(
           row.post_text || ''
@@ -1061,6 +1061,80 @@ async function copyPostLink(cell) {
     textarea.remove();
   }
 
+  /*
+   * 复制成功后，同时把当前帖子标记为“已搬运”。
+   * 如果本来已经是已搬运，不反向取消。
+   */
+  const tr = cell.closest('tr');
+
+  if (
+    tr
+    &&
+    tr.dataset.moved !== '1'
+    &&
+    tr.dataset.movedBusy !== '1'
+  ) {
+    const id =
+      Number(tr.dataset.postRowId);
+
+    if (id) {
+      tr.dataset.movedBusy = '1';
+
+      try {
+        const response =
+          await fetch(
+            '/api/superlike-post-moved',
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type':
+                  'application/json'
+              },
+              body:
+                JSON.stringify({
+                  id,
+                  moved: true
+                })
+            }
+          );
+
+        const json =
+          await response.json();
+
+        if (
+          !response.ok
+          || !json.success
+        ) {
+          throw new Error(
+            json.message
+            || '标记已搬运失败'
+          );
+        }
+
+        const row =
+          allRows.find(
+            item =>
+              Number(item.id)
+              === id
+          );
+
+        if (row) {
+          row.moved_flag = 1;
+        }
+
+        tr.dataset.moved = '1';
+        tr.classList.add('is-moved');
+      } catch (error) {
+        console.error(
+          '[SuperLike] 复制成功，但标记已搬运失败：',
+          error
+        );
+      } finally {
+        tr.dataset.movedBusy = '0';
+      }
+    }
+  }
+
   // 点击位置附近显示一个短暂的 Copied! 小气泡。
   const oldBubble = document.querySelector('.copy-toast');
   if (oldBubble) {
@@ -1069,7 +1143,7 @@ async function copyPostLink(cell) {
 
   const bubble = document.createElement('div');
   bubble.className = 'copy-toast';
-  bubble.textContent = '已复制';
+  bubble.textContent = '已复制 · 已搬运';
 
   const rect = cell.getBoundingClientRect();
   bubble.style.left = Math.min(
@@ -1093,7 +1167,6 @@ async function copyPostLink(cell) {
 
 function initCellLongPress(tr) {
   const usernameCell = tr.querySelector('.username-cell');
-  const postTextCell = tr.querySelector('.moved-longpress');
 
   function bindLongPress(element, action) {
     if (!element) return;
@@ -1189,12 +1262,6 @@ function initCellLongPress(tr) {
     }
   );
 
-  bindLongPress(
-    postTextCell,
-    async () => {
-      await toggleMovedRow(tr);
-    }
-  );
 }
 
 function renderPagination() {
