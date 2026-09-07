@@ -778,7 +778,8 @@ function extractIcons(post) {
 
 function saveTargetPost(
   monitorId,
-  post
+  post,
+  profileStatus = 'UNKNOWN'
 ) {
   const postId =
     getPostId(post);
@@ -909,6 +910,7 @@ function saveTargetPost(
     iconSummary,
     postCreatedAt,
     postCreatedAtMs,
+    profileStatus,
     rawJson
   });
 }
@@ -2983,7 +2985,15 @@ async function processPagePosts(
       const saved =
         saveTargetPost(
           monitorId,
-          targetPost
+          targetPost,
+          profileResult && !profileResult.ok
+            ? 'PROFILE_FAILED'
+            : (
+                profileResult?.ok
+                && profileResult.hasSuperLike === false
+                  ? 'NO_SUPERLIKE'
+                  : 'UNKNOWN'
+              )
         );
 
 
