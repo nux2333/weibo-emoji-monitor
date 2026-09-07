@@ -105,7 +105,7 @@ const TAG_SECTION_PAGES =
   Number(
     process.env.SUPERLIKE_TAG_SECTION_PAGES
   )
-  || 20;
+  || 100;
 
 const TAG_SECTION_SOURCES = [
   {
