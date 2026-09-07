@@ -438,6 +438,24 @@ function initDatabase() {
     );
 
     /*
+     * 分区独立 Resume。
+     * 每个 monitor + source_key 单独保存 tag_status_sort 的下一页 cursor。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_scan_source_resume (
+      monitor_id INTEGER NOT NULL,
+      source_key TEXT NOT NULL,
+      flow_id TEXT NOT NULL,
+      next_page INTEGER,
+      next_since_id TEXT,
+      next_max_id TEXT,
+      next_count TEXT,
+      next_page_common_ext TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(monitor_id, source_key),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
+    /*
      * SuperLike 页面黑粉关键词。
      * 页面“ 不显示猪 ”筛选会检查：
      * username / post_text / icon_summary。
@@ -1436,6 +1454,124 @@ function clearScanResume(monitorId) {
 }
 
 
+function getScanSourceResume(
+  monitorId,
+  sourceKey
+) {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      source_key,
+      flow_id,
+      next_page,
+      next_since_id,
+      next_max_id,
+      next_count,
+      next_page_common_ext,
+      updated_at
+    FROM superlike_scan_source_resume
+    WHERE monitor_id = ?
+      AND source_key = ?
+  `).get(
+    Number(monitorId),
+    String(sourceKey)
+  ) || null;
+}
+
+
+function saveScanSourceResume(
+  monitorId,
+  sourceKey,
+  flowId,
+  nextParams
+) {
+  initDatabase();
+
+  if (
+    !monitorId
+    ||
+    !sourceKey
+    ||
+    !flowId
+    ||
+    !nextParams
+    ||
+    !nextParams.since_id
+  ) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_scan_source_resume(
+      monitor_id,
+      source_key,
+      flow_id,
+      next_page,
+      next_since_id,
+      next_max_id,
+      next_count,
+      next_page_common_ext,
+      updated_at
+    )
+    VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(monitor_id, source_key)
+    DO UPDATE SET
+      flow_id = excluded.flow_id,
+      next_page = excluded.next_page,
+      next_since_id = excluded.next_since_id,
+      next_max_id = excluded.next_max_id,
+      next_count = excluded.next_count,
+      next_page_common_ext = excluded.next_page_common_ext,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    Number(monitorId),
+    String(sourceKey),
+    String(flowId),
+    Number.isFinite(
+      Number(nextParams.page)
+    )
+      ? Number(nextParams.page)
+      : null,
+    String(nextParams.since_id),
+    nextParams.max_id == null
+      ? '0'
+      : String(nextParams.max_id),
+    nextParams.count == null
+      ? '15'
+      : String(nextParams.count),
+    nextParams.page_common_ext == null
+      ? 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
+      : String(nextParams.page_common_ext)
+  );
+
+  return true;
+}
+
+
+function clearScanSourceResume(
+  monitorId,
+  sourceKey
+) {
+  initDatabase();
+
+  const result =
+    db.prepare(`
+      DELETE FROM superlike_scan_source_resume
+      WHERE monitor_id = ?
+        AND source_key = ?
+    `).run(
+      Number(monitorId),
+      String(sourceKey)
+    );
+
+  return Number(
+    result.changes || 0
+  );
+}
+
+
 function getMonitors(onlyEnabled = true) {
   initDatabase();
   return onlyEnabled
@@ -1889,5 +2025,8 @@ module.exports = {
   saveScanCheckpoint,
   getScanResume,
   saveScanResume,
-  clearScanResume
+  clearScanResume,
+  getScanSourceResume,
+  saveScanSourceResume,
+  clearScanSourceResume
 };
