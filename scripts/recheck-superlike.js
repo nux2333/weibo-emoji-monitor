@@ -396,8 +396,10 @@ function getDistinctUsers(
           AND deu.exclude_date = date('now', '+8 hours')
       )
 
-      -- 只复检最近5天进入候选池的数据
-      AND datetime(first_seen_at) >= datetime('now', '-5 days')
+      -- Mode1：只复检今天和昨天首次入库、且仍未搬运的数据
+      AND date(first_seen_at) >= date('now', '+8 hours', '-1 day')
+      AND date(first_seen_at) <= date('now', '+8 hours')
+      AND COALESCE(moved_flag, 0) = 0
 
     GROUP BY uid
     ORDER BY
@@ -433,8 +435,10 @@ function getPostsByUid(
     WHERE monitor_id = ?
       AND uid = ?
 
-      -- 只复检最近5天发布的帖子
-      AND datetime(first_seen_at) >= datetime('now', '-5 days')
+      -- Mode1：只读取今天和昨天首次入库、且仍未搬运的候选
+      AND date(first_seen_at) >= date('now', '+8 hours', '-1 day')
+      AND date(first_seen_at) <= date('now', '+8 hours')
+      AND COALESCE(moved_flag, 0) = 0
 
     ORDER BY first_seen_at
   `).all(
