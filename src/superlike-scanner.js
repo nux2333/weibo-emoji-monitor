@@ -57,7 +57,7 @@ const {
  *      page
  *      since_id
  *      max_id
- * 7. “最新发帖”fresh / “最新评论” / 多个分区 tag_status_sort 并发采集列表页
+ * 7. “最新发帖”fresh / 多个分区 tag_status_sort 并发采集列表页
  * 8. 所有 fresh 来源汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
  * 9. “最新发帖”历史 Resume 继续沿用原 checkpoint / Resume
  * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
@@ -88,9 +88,8 @@ const MAX_PAGES =
   || 100;
 
 /*
- * “最新评论”与“最新发帖”是两条独立数据流。
- * 最新评论不是按发帖时间排序，因此不使用 latest_post checkpoint / Resume，
- * 每轮固定扫描前 N 页，避免因为命中旧帖子而提前停止。
+ * 最新评论 _feed 不再作为帖子扫描数据源。
+ * 下面的页数配置暂时保留，便于兼容旧代码；不会主动启动最新评论采集。
  */
 const LATEST_COMMENTS_PAGES =
   Number(
@@ -5075,8 +5074,12 @@ async function scanOneSuperLikeMonitor(
      * 与最新发帖 fresh 同时启动最新评论分页。
      * 两边都只做列表采集，不在翻页途中查 Profile。
      */
-    scanLatestComments(
-      'parallel-with-latest-posts'
+    /*
+     * 最新评论不再作为 Scan 数据源。
+     * feedResult 仍保留给页面初始化/现有上下文使用，但不采集 _feed 帖子。
+     */
+    console.log(
+      '[SuperLike][最新评论] 已禁用，不参与帖子采集。'
     );
 
     for (
@@ -5089,7 +5092,7 @@ async function scanOneSuperLikeMonitor(
     }
 
     console.log(
-      `[SuperLike][并发采集] 已启动来源：最新发帖 / 最新评论 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')}`
+      `[SuperLike][并发采集] 已启动来源：最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')}`
     );
 
     // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
@@ -5306,10 +5309,6 @@ async function scanOneSuperLikeMonitor(
         batchPageIndex >=
           freshFirstPages
       ) {
-        await scanLatestComments(
-          'before-history-resume'
-        );
-
         await flushFreshPool(
           'before-history-resume'
         );
@@ -5399,10 +5398,6 @@ async function scanOneSuperLikeMonitor(
         batchPageIndex >=
           freshFirstPages
       ) {
-        await scanLatestComments(
-          'night-fresh-complete'
-        );
-
         await flushFreshPool(
           'night-fresh-complete'
         );
@@ -5430,10 +5425,6 @@ async function scanOneSuperLikeMonitor(
         batchPageIndex >=
           freshFirstPages
       ) {
-        await scanLatestComments(
-          'fresh-complete-no-resume'
-        );
-
         await flushFreshPool(
           'fresh-complete-no-resume'
         );
@@ -5667,10 +5658,6 @@ async function scanOneSuperLikeMonitor(
      * 如果 sort_time 因 checkpoint / 无下一页等原因提前结束，
      * 仍保证最新评论在本轮至少扫描一次。
      */
-    await scanLatestComments(
-      'latest-posts-finished'
-    );
-
     await flushFreshPool(
       'latest-posts-finished'
     );
