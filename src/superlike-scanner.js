@@ -2165,7 +2165,7 @@ function pickProfileReplacementPost(profilePosts) {
 
 /**
  * ============================================================
- * 请求用户 profile_inpage 并判断当前是否有超LIKE
+ * 游客模式请求用户 profile_inpage 并判断当前是否有超LIKE
  *
  * 返回：
  * {
@@ -2199,15 +2199,51 @@ async function checkUserSuperLikeByProfileInner(
     `[SuperLike][ProfileURL] ${url}`
   );
 
+  let profileContext = null;
   let profilePage = null;
 
   try {
+    /*
+     * Profile 查询统一使用独立游客 Context：
+     * - 不继承持久化微博登录账号 Cookie / localStorage
+     * - 每次检查从干净匿名会话开始
+     * - Browser 仍沿用当前轮启动时的代理/本地网络出口
+     *
+     * Scanner / Mode1 / Mode3 都共用这个函数，
+     * 因此三种模式的用户主页查询会一起切到游客模式。
+     */
+    const parentBrowser =
+      context.browser();
+
+    if (
+      !parentBrowser
+      ||
+      typeof parentBrowser.newContext
+        !== 'function'
+    ) {
+      throw new Error(
+        '无法创建游客 BrowserContext'
+      );
+    }
+
+    profileContext =
+      await parentBrowser.newContext({
+        viewport: {
+          width: 1280,
+          height: 900
+        }
+      });
+
     profilePage =
-      await context.newPage();
+      await profileContext.newPage();
+
+    console.log(
+      `[SuperLike][Profile游客模式] UID=${uid} 使用独立匿名Context，不携带登录账号Cookie`
+    );
 
     /*
      * 先打开 m.weibo.cn 首页，
-     * 让 visitor/cookie/session 建立起来。
+     * 只建立游客 visitor/cookie/session。
      */
     await profilePage.goto(
       'https://m.weibo.cn/',
@@ -2445,6 +2481,14 @@ async function checkUserSuperLikeByProfileInner(
     ) {
       try {
         await profilePage.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (profileContext) {
+      try {
+        await profileContext.close();
       } catch {
         // ignore
       }
