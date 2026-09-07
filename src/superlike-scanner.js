@@ -2237,58 +2237,8 @@ async function checkUserSuperLikeByProfileInner(
     profilePage =
       await profileContext.newPage();
 
-    /*
-     * 微博娱乐客页有时会在 Profile 已经返回后继续跳转到
-     * visitor/passport 登录页。这里直接拦掉后续登录跳转，
-     * 我们只关心已经返回的 profile_inpage Response。
-     */
-    await profilePage.route(
-      '**/*',
-      async route => {
-        const requestUrl =
-          route.request().url();
-
-        let isPassportJump =
-          false;
-
-        try {
-          const requestHost =
-            new URL(
-              requestUrl
-            ).hostname
-              .toLowerCase();
-
-          isPassportJump =
-            requestHost ===
-              'visitor.passport.weibo.cn'
-            ||
-            requestHost ===
-              'passport.weibo.cn'
-            ||
-            requestHost ===
-              'passport.weibo.com';
-        } catch {
-          isPassportJump =
-            false;
-        }
-
-        if (
-          isPassportJump
-        ) {
-          console.log(
-            `[SuperLike][Profile游客模式] UID=${uid} 已阻止登录跳转：${requestUrl}`
-          );
-
-          await route.abort();
-          return;
-        }
-
-        await route.continue();
-      }
-    );
-
     console.log(
-      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page打开Profile API，并拦截passport登录跳转`
+      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page允许Visitor初始化后获取Profile API`
     );
 
     const maxAttempts = 2;
@@ -2422,10 +2372,53 @@ async function checkUserSuperLikeByProfileInner(
             `[SuperLike][Profile重定向] UID=${uid} status=${status} location=${location || '-'}`
           );
 
+          const isVisitorRedirect =
+            location.includes(
+              'visitor.passport.weibo.cn/visitor/visitor'
+            );
+
+          if (
+            isVisitorRedirect
+            &&
+            attempt < maxAttempts
+          ) {
+            console.log(
+              `[SuperLike][Visitor初始化] UID=${uid} 允许微博完成游客身份初始化，随后使用同一Context重试Profile API`
+            );
+
+            /*
+             * 不拦 visitor.passport，让本次 goto 的 redirect chain
+             * 有机会写入游客 Cookie。最多等 4 秒，不让单个 UID 卡太久。
+             */
+            await Promise.race([
+              navigationPromise,
+              profilePage.waitForTimeout(
+                4000
+              )
+            ]);
+
+            const cookies =
+              await profileContext.cookies(
+                'https://m.weibo.cn/',
+                'https://visitor.passport.weibo.cn/'
+              );
+
+            console.log(
+              `[SuperLike][Visitor初始化] UID=${uid} 当前游客Cookie=${cookies.length}个，重试Profile API`
+            );
+
+            await profilePage.waitForTimeout(
+              retryDelayMs
+            );
+
+            continue;
+          }
+
           return {
             ok: false,
             blocked: false,
-            visitorRedirect: true,
+            visitorRedirect:
+              isVisitorRedirect,
             hasSuperLike: null,
             status: 403,
             httpStatus: status,
