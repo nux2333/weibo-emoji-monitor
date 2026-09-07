@@ -2200,17 +2200,17 @@ async function checkUserSuperLikeByProfileInner(
   );
 
   let profileContext = null;
-  let profilePage = null;
 
   try {
     /*
      * Profile 查询统一使用独立游客 Context：
      * - 不继承持久化微博登录账号 Cookie / localStorage
-     * - 每次检查从干净匿名会话开始
-     * - Browser 仍沿用当前轮启动时的代理/本地网络出口
+     * - 不打开 m.weibo.cn 首页
+     * - 不创建 Page，不走 window.fetch
+     * - 直接使用匿名 Context 的 request.get()
      *
-     * Scanner / Mode1 / Mode3 都共用这个函数，
-     * 因此三种模式的用户主页查询会一起切到游客模式。
+     * Browser 仍沿用当前轮的代理/本地网络出口。
+     * Scanner / Mode1 / Mode3 都共用这个函数。
      */
     const parentBrowser =
       context.browser();
@@ -2227,68 +2227,153 @@ async function checkUserSuperLikeByProfileInner(
     }
 
     profileContext =
-      await parentBrowser.newContext({
-        viewport: {
-          width: 1280,
-          height: 900
-        }
-      });
-
-    profilePage =
-      await profileContext.newPage();
+      await parentBrowser.newContext();
 
     console.log(
-      `[SuperLike][Profile游客模式] UID=${uid} 使用独立匿名Context，不携带登录账号Cookie`
+      `[SuperLike][Profile游客模式] UID=${uid} 匿名Context直接request.get，不携带登录账号Cookie`
     );
 
-    /*
-     * 先打开 m.weibo.cn 首页，
-     * 只建立游客 visitor/cookie/session。
-     */
-    await profilePage.goto(
-      'https://m.weibo.cn/',
-      {
-        waitUntil:
-          'domcontentloaded',
+    const maxAttempts = 2;
+    const retryDelayMs = 500;
+    const requestTimeoutMs = 5000;
 
-        timeout:
-          30000
+    let result = null;
+
+    for (
+      let attempt = 1;
+      attempt <= maxAttempts;
+      attempt++
+    ) {
+      const startedAt =
+        Date.now();
+
+      try {
+        const response =
+          await profileContext.request.get(
+            url,
+            {
+              headers: {
+                'Accept':
+                  'application/json, text/plain, */*',
+                'Referer':
+                  'https://m.weibo.cn/'
+              },
+              timeout:
+                requestTimeoutMs,
+              failOnStatusCode:
+                false
+            }
+          );
+
+        const status =
+          response.status();
+
+        const text =
+          await response.text();
+
+        result = {
+          ok:
+            status >= 200
+            &&
+            status < 300,
+          status,
+          text,
+          attempt,
+          elapsedMs:
+            Date.now()
+            - startedAt,
+          finalUrl:
+            response.url(),
+          error:
+            null
+        };
+
+        console.log(
+          `[SuperLike][ProfileResponse] UID=${uid} status=${status} attempt=${attempt}/${maxAttempts} elapsed=${result.elapsedMs}ms url=${result.finalUrl}`
+        );
+
+        /*
+         * 418 / 403 不在这里重复撞。
+         * - 418 交给上层代理/冷却逻辑
+         * - 403 保留原 profile_status，不标 PROFILE_FAILED
+         */
+        if (
+          status === 418
+          ||
+          status === 403
+        ) {
+          break;
+        }
+
+        if (
+          result.ok
+        ) {
+          break;
+        }
+
+        if (
+          attempt < maxAttempts
+        ) {
+          console.log(
+            `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=${status} | ${retryDelayMs}ms后重试`
+          );
+
+          await new Promise(
+            resolve =>
+              setTimeout(
+                resolve,
+                retryDelayMs
+              )
+          );
+        }
+
+      } catch (error) {
+        result = {
+          ok: false,
+          status: null,
+          text: '',
+          attempt,
+          elapsedMs:
+            Date.now()
+            - startedAt,
+          finalUrl:
+            url,
+          error:
+            error.message
+        };
+
+        if (
+          attempt < maxAttempts
+        ) {
+          console.log(
+            `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=- | error=${error.message} | ${retryDelayMs}ms后重试`
+          );
+
+          await new Promise(
+            resolve =>
+              setTimeout(
+                resolve,
+                retryDelayMs
+              )
+          );
+
+          continue;
+        }
       }
-    );
+    }
 
-    await profilePage.waitForTimeout(
-      1000
-    );
-
-    /*
-     * 统一使用页面内 fetch 共通方法：
-     * Scan 不能被单个 Profile 长时间卡住：
-     * 网络失败 / 429 / 5xx 最多2次，每次最多5秒；
-     * 418 不在这里重复撞，交给上层代理/退避逻辑。
-     */
-    const fetchResult =
-      await fetchJsonInPageWithRetry(
-        profilePage,
+    if (
+      !result
+    ) {
+      return {
+        ok: false,
+        hasSuperLike: null,
+        status: null,
         url,
-        {
-          maxAttempts:
-            2,
-          retryDelaysMs:
-            [500],
-          timeoutMs:
-            5000
-        }
-      );
-
-    const result = {
-      ...fetchResult,
-      status:
-        fetchResult.httpStatus
-    };
-
-    console.log(
-      `[SuperLike][ProfileResponse] UID=${uid} status=${result.status} attempt=${result.attempt || 1}/2 elapsed=${result.elapsedMs || 0}ms url=${result.finalUrl}`
-    );
+        message:
+          'Profile 请求没有结果'
+      };
+    }
 
     if (
       result.error
@@ -2298,10 +2383,8 @@ async function checkUserSuperLikeByProfileInner(
         hasSuperLike: null,
         status:
           result.status,
-
         url:
           result.finalUrl,
-
         message:
           result.error
       };
@@ -2312,13 +2395,13 @@ async function checkUserSuperLikeByProfileInner(
     ) {
       return {
         ok: false,
+        blocked:
+          result.status === 418,
         hasSuperLike: null,
         status:
           result.status,
-
         url:
           result.finalUrl,
-
         message:
           `HTTP ${result.status}`
       };
@@ -2341,10 +2424,8 @@ async function checkUserSuperLikeByProfileInner(
         hasSuperLike: null,
         status:
           result.status,
-
         url:
           result.finalUrl,
-
         message:
           '返回HTML，不是JSON'
       };
@@ -2364,10 +2445,8 @@ async function checkUserSuperLikeByProfileInner(
         hasSuperLike: null,
         status:
           result.status,
-
         url:
           result.finalUrl,
-
         message:
           `JSON解析失败：${error.message}`
       };
@@ -2381,27 +2460,28 @@ async function checkUserSuperLikeByProfileInner(
       !== 1
     ) {
       const apiErrno =
-        Number(json?.errno);
+        Number(
+          json?.errno
+        );
 
       return {
         ok: false,
+        blocked: false,
         hasSuperLike: null,
         status:
           apiErrno === 403
             ? 403
             : result.status,
-
         httpStatus:
           result.status,
-
         apiErrno:
-          Number.isFinite(apiErrno)
+          Number.isFinite(
+            apiErrno
+          )
             ? apiErrno
             : null,
-
         url:
           result.finalUrl,
-
         message:
           apiErrno === 403
             ? 'API errno=403 请求被拒绝'
@@ -2454,11 +2534,11 @@ async function checkUserSuperLikeByProfileInner(
 
     return {
       ok: true,
+      blocked: false,
       hasSuperLike,
       profilePosts,
       status:
         result.status,
-
       url:
         result.finalUrl
     };
@@ -2466,6 +2546,7 @@ async function checkUserSuperLikeByProfileInner(
   } catch (error) {
     return {
       ok: false,
+      blocked: false,
       hasSuperLike: null,
       status: null,
       url,
@@ -2474,18 +2555,6 @@ async function checkUserSuperLikeByProfileInner(
     };
 
   } finally {
-    if (
-      profilePage
-      &&
-      !profilePage.isClosed()
-    ) {
-      try {
-        await profilePage.close();
-      } catch {
-        // ignore
-      }
-    }
-
     if (profileContext) {
       try {
         await profileContext.close();
@@ -2495,7 +2564,6 @@ async function checkUserSuperLikeByProfileInner(
     }
   }
 }
-
 
 async function checkUserSuperLikeByProfile(
   context,
