@@ -396,8 +396,8 @@ function getDistinctUsers(
           AND deu.exclude_date = date('now', '+8 hours')
       )
 
-      -- Mode1：只复检今天和昨天首次入库、且仍未搬运的数据
-      AND date(first_seen_at) >= date('now', '+8 hours', '-1 day')
+      -- Mode1：只复检今天、昨天、前天首次入库、且仍未搬运的数据
+      AND date(first_seen_at) >= date('now', '+8 hours', '-2 day')
       AND date(first_seen_at) <= date('now', '+8 hours')
       AND COALESCE(moved_flag, 0) = 0
 
@@ -435,8 +435,8 @@ function getPostsByUid(
     WHERE monitor_id = ?
       AND uid = ?
 
-      -- Mode1：只读取今天和昨天首次入库、且仍未搬运的候选
-      AND date(first_seen_at) >= date('now', '+8 hours', '-1 day')
+      -- Mode1：只读取今天、昨天、前天首次入库、且仍未搬运的候选
+      AND date(first_seen_at) >= date('now', '+8 hours', '-2 day')
       AND date(first_seen_at) <= date('now', '+8 hours')
       AND COALESCE(moved_flag, 0) = 0
 
@@ -2258,6 +2258,9 @@ function getCommentCandidatePosts(queueType = 'normal') {
     FROM superlike_posts
     WHERE post_id IS NOT NULL
       AND post_id <> ''
+      -- Mode2：只处理今天、昨天、前天首次入库的数据
+      AND date(first_seen_at) >= date('now', '+8 hours', '-2 day')
+      AND date(first_seen_at) <= date('now', '+8 hours')
       AND comments_count < ?
       AND ${
         isHot
@@ -2658,6 +2661,9 @@ function getDistinctUsersForLightProfile(
     WHERE p.monitor_id = ?
       AND p.uid IS NOT NULL
       AND p.uid <> ''
+      -- Mode3：只处理今天、昨天、前天首次入库的数据
+      AND date(p.first_seen_at) >= date('now', '+8 hours', '-2 day')
+      AND date(p.first_seen_at) <= date('now', '+8 hours')
       AND NOT EXISTS (
         SELECT 1
         FROM superlike_users su
