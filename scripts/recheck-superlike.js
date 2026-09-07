@@ -3042,6 +3042,90 @@ async function runLightSuperLikeRecheck(signal = null) {
         );
     }
 
+    async function ensureMode3ProfileHealthy(
+      config,
+      probeUid
+    ) {
+      const maxProxyTries = 8;
+
+      for (let tryNo = 1; tryNo <= maxProxyTries; tryNo++) {
+        throwIfAborted(signal);
+
+        console.log(
+          `[模式3][Profile健康检查] ${tryNo}/${maxProxyTries} | ${proxyAssignment?.masked || 'LOCAL'} | UID=${probeUid}`
+        );
+
+        const probe =
+          await checkUserSuperLikeByProfile(
+            context,
+            config,
+            probeUid
+          );
+
+        if (probe?.ok) {
+          console.log(
+            `[模式3][Profile健康检查] 通过：${proxyAssignment?.masked || 'LOCAL'}`
+          );
+          return probe;
+        }
+
+        if (Number(probe?.status) === 403) {
+          console.log(
+            `[模式3][Profile健康检查] 链路可达但返回403：${proxyAssignment?.masked || 'LOCAL'}，保留代理。`
+          );
+          return probe;
+        }
+
+        const healthMessage =
+          String(probe?.message || 'unknown');
+
+        console.log(
+          `[模式3][Profile健康检查] 失败：${proxyAssignment?.masked || 'LOCAL'} | ${healthMessage}`
+        );
+
+        if (proxyAssignment?.raw) {
+          MODE3_PROXY_POOL.remove(
+            proxyAssignment.raw
+          );
+
+          console.log(
+            `[模式3][Profile健康检查] 淘汰Profile不可用代理：${proxyAssignment.masked}`
+          );
+
+          proxyAssignment =
+            await acquireMode3ProxyWaiting(
+              signal
+            );
+
+          proxy =
+            proxyAssignment?.proxy || null;
+
+          console.log(
+            proxy
+              ? `[模式3][Profile健康检查] 切换代理：${proxyAssignment.masked}`
+              : '[模式3][Profile健康检查] 代理池为空，切本地IP测试。'
+          );
+
+          await relaunchContext(
+            proxy
+          );
+
+          continue;
+        }
+
+        console.log(
+          '[模式3][Profile健康检查] 本地IP也无法访问Profile，本轮停止，避免30个UID全部空打。'
+        );
+        return probe;
+      }
+
+      return {
+        ok: false,
+        status: null,
+        message: 'Mode3 Profile health check exhausted'
+      };
+    }
+
     await relaunchContext(
       proxy
     );
@@ -3071,6 +3155,30 @@ async function runLightSuperLikeRecheck(signal = null) {
         `[轻量Profile] Monitor=${monitor.name} | UID=${users.length}`
       );
 
+      let firstProbeResult = null;
+
+      if (users.length > 0) {
+        const probeUid =
+          String(users[0].uid || '').trim();
+
+        firstProbeResult =
+          await ensureMode3ProfileHealthy(
+            config,
+            probeUid
+          );
+
+        if (
+          !firstProbeResult?.ok
+          &&
+          Number(firstProbeResult?.status) !== 403
+        ) {
+          console.log(
+            '[模式3] Profile健康检查未通过，本Monitor本轮停止，避免继续空打。'
+          );
+          continue outer;
+        }
+      }
+
       for (
         let i = 0;
         i < users.length;
@@ -3091,12 +3199,25 @@ async function runLightSuperLikeRecheck(signal = null) {
         let result;
 
         try {
-          result =
-            await checkUserSuperLikeByProfile(
-              context,
-              config,
-              uid
+          if (
+            i === 0
+            &&
+            firstProbeResult?.ok
+          ) {
+            result =
+              firstProbeResult;
+
+            console.log(
+              `[模式3][Profile健康检查] UID=${uid} 复用检查结果，不重复请求。`
             );
+          } else {
+            result =
+              await checkUserSuperLikeByProfile(
+                context,
+                config,
+                uid
+              );
+          }
 
         } catch (error) {
           if (
