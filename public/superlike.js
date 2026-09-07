@@ -854,6 +854,11 @@ function renderTable() {
       Number(row.moved_flag) === 1
     );
 
+    tr.classList.toggle(
+      'profile-failed',
+      String(row.profile_status || '').toUpperCase() === 'PROFILE_FAILED'
+    );
+
     tr.dataset.postRowId =
       String(row.id || '');
 
