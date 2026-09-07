@@ -2189,14 +2189,48 @@ async function checkUserSuperLikeByProfileInner(
   config,
   uid
 ) {
-  const url =
+  const apiUrl =
     buildProfileInPageApiUrl(
       config,
       uid
     );
 
+  const pageUrl =
+    new URL(
+      'https://m.weibo.cn/p/index'
+    );
+
+  pageUrl.searchParams.set(
+    'containerid',
+    config.profileContainerId
+  );
+
+  pageUrl.searchParams.set(
+    'extparam',
+    `target_uid%23${uid}`
+  );
+
+  pageUrl.searchParams.set(
+    'luicode',
+    '10000011'
+  );
+
+  pageUrl.searchParams.set(
+    'lfid',
+    config.chaoLikeListContainerId
+  );
+
+  pageUrl.searchParams.set(
+    'launchid',
+    '10000360-page_H5'
+  );
+
   console.log(
-    `[SuperLike][ProfileURL] ${url}`
+    `[SuperLike][ProfileURL] ${apiUrl}`
+  );
+
+  console.log(
+    `[SuperLike][Profile页面] ${pageUrl.toString()}`
   );
 
   let profileContext = null;
@@ -2204,13 +2238,12 @@ async function checkUserSuperLikeByProfileInner(
 
   try {
     /*
-     * 游客 Profile 查询：
-     * - 独立匿名 BrowserContext，不继承登录 Cookie/localStorage
-     * - 不先打开微博首页
-     * - 直接用真实 Page 导航到 profile_inpage API
-     * - 从 navigation Response 读取原始 body
-     *
-     * 这样既保持游客身份，又避免 APIRequestContext 被微博返回 HTML。
+     * 真正模拟浏览器无痕访问：
+     * - 新建匿名 BrowserContext，不继承登录 Cookie/localStorage
+     * - 打开真实 /p/index 用户超话主页，而不是直接导航 API
+     * - 监听页面自己发出的 profile_inpage XHR
+     * - 一旦拿到目标 Response，就直接使用
+     * - 拿到 Profile 后，阻止页面继续跳 passport / 登录页
      */
     const parentBrowser =
       context.browser();
@@ -2237,13 +2270,71 @@ async function checkUserSuperLikeByProfileInner(
     profilePage =
       await profileContext.newPage();
 
+    let profileCaptured =
+      false;
+
+    await profilePage.route(
+      '**/*',
+      async route => {
+        const request =
+          route.request();
+
+        const requestUrl =
+          request.url();
+
+        let host =
+          '';
+
+        try {
+          host =
+            new URL(
+              requestUrl
+            ).hostname
+              .toLowerCase();
+        } catch {
+          host = '';
+        }
+
+        const isPassport =
+          host ===
+            'visitor.passport.weibo.cn'
+          ||
+          host ===
+            'passport.weibo.cn'
+          ||
+          host ===
+            'passport.weibo.com';
+
+        /*
+         * 只有在 Profile 数据已经拿到后，
+         * 才拦截后续登录跳转。
+         *
+         * 在此之前不破坏微博正常的游客初始化流程。
+         */
+        if (
+          isPassport
+          &&
+          profileCaptured
+        ) {
+          console.log(
+            `[SuperLike][Profile游客模式] UID=${uid} Profile已取得，阻止后续登录跳转：${requestUrl}`
+          );
+
+          await route.abort();
+          return;
+        }
+
+        await route.continue();
+      }
+    );
+
     console.log(
-      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page允许Visitor初始化后获取Profile API`
+      `[SuperLike][Profile游客模式] UID=${uid} 使用匿名浏览器打开真实用户主页，等待页面自己的Profile XHR`
     );
 
     const maxAttempts = 2;
     const retryDelayMs = 500;
-    const navigationTimeoutMs = 5000;
+    const responseTimeoutMs = 7000;
 
     let result = null;
 
@@ -2256,10 +2347,6 @@ async function checkUserSuperLikeByProfileInner(
         Date.now();
 
       try {
-        /*
-         * 先监听真正的 profile_inpage Response。
-         * 即使页面随后被微博脚本带去登录页，也使用这里已经捕获的结果。
-         */
         const targetResponsePromise =
           profilePage.waitForResponse(
             response => {
@@ -2304,28 +2391,40 @@ async function checkUserSuperLikeByProfileInner(
             },
             {
               timeout:
-                navigationTimeoutMs
+                responseTimeoutMs
             }
           );
 
         /*
-         * 不等待完整页面渲染；目标 Response 到手即可。
-         * 后续 passport 跳转会被 route 拦截。
+         * 每次都打开真实 H5 Profile 页面。
+         * cache bust 避免第二次重试只命中浏览器缓存。
          */
+        const attemptPageUrl =
+          new URL(
+            pageUrl.toString()
+          );
+
+        attemptPageUrl.searchParams.set(
+          '_profile_retry',
+          String(
+            Date.now()
+          )
+        );
+
         const navigationPromise =
           profilePage.goto(
-            url,
+            attemptPageUrl.toString(),
             {
               waitUntil:
-                'commit',
+                'domcontentloaded',
               timeout:
-                navigationTimeoutMs
+                responseTimeoutMs
             }
           )
           .catch(
             error => {
               console.log(
-                `[SuperLike][Profile导航提示] UID=${uid} ${error.message}`
+                `[SuperLike][Profile页面导航提示] UID=${uid} ${error.message}`
               );
 
               return null;
@@ -2335,8 +2434,12 @@ async function checkUserSuperLikeByProfileInner(
         const response =
           await targetResponsePromise;
 
+        profileCaptured =
+          true;
+
         /*
-         * 确保 goto 已经开始执行，但不要求最终跳转成功。
+         * XHR 已经到手后，不要求页面最终停在哪儿。
+         * 后续登录跳转会被 route 拦截。
          */
         await Promise.race([
           navigationPromise,
@@ -2345,20 +2448,9 @@ async function checkUserSuperLikeByProfileInner(
           )
         ]);
 
-        if (!response) {
-          throw new Error(
-            '没有捕获到 Profile API Response'
-          );
-        }
-
         const status =
           response.status();
 
-        /*
-         * Playwright 对 3xx redirect response 没有可读取的 body。
-         * 这种情况说明 Profile API 本身没有返回 JSON，而是要求跳转。
-         * 不调用 response.text()，也不要把它误标成 PROFILE_FAILED。
-         */
         if (
           status >= 300
           &&
@@ -2369,63 +2461,20 @@ async function checkUserSuperLikeByProfileInner(
             || '';
 
           console.log(
-            `[SuperLike][Profile重定向] UID=${uid} status=${status} location=${location || '-'}`
+            `[SuperLike][ProfileXHR重定向] UID=${uid} status=${status} location=${location || '-'}`
           );
-
-          const isVisitorRedirect =
-            location.includes(
-              'visitor.passport.weibo.cn/visitor/visitor'
-            );
-
-          if (
-            isVisitorRedirect
-            &&
-            attempt < maxAttempts
-          ) {
-            console.log(
-              `[SuperLike][Visitor初始化] UID=${uid} 允许微博完成游客身份初始化，随后使用同一Context重试Profile API`
-            );
-
-            /*
-             * 不拦 visitor.passport，让本次 goto 的 redirect chain
-             * 有机会写入游客 Cookie。最多等 4 秒，不让单个 UID 卡太久。
-             */
-            await Promise.race([
-              navigationPromise,
-              profilePage.waitForTimeout(
-                4000
-              )
-            ]);
-
-            const cookies =
-              await profileContext.cookies(
-                'https://m.weibo.cn/',
-                'https://visitor.passport.weibo.cn/'
-              );
-
-            console.log(
-              `[SuperLike][Visitor初始化] UID=${uid} 当前游客Cookie=${cookies.length}个，重试Profile API`
-            );
-
-            await profilePage.waitForTimeout(
-              retryDelayMs
-            );
-
-            continue;
-          }
 
           return {
             ok: false,
             blocked: false,
-            visitorRedirect:
-              isVisitorRedirect,
+            visitorRedirect: true,
             hasSuperLike: null,
             status: 403,
             httpStatus: status,
             url:
               response.url(),
             message:
-              `Profile redirect ${status}${location ? ' -> ' + location : ''}`
+              `Profile XHR redirect ${status}${location ? ' -> ' + location : ''}`
           };
         }
 
@@ -2453,9 +2502,6 @@ async function checkUserSuperLikeByProfileInner(
           `[SuperLike][ProfileResponse] UID=${uid} status=${status} attempt=${attempt}/${maxAttempts} elapsed=${result.elapsedMs}ms url=${result.finalUrl}`
         );
 
-        /*
-         * HTTP 418/403 不重复撞。
-         */
         if (
           status === 418
           ||
@@ -2464,10 +2510,6 @@ async function checkUserSuperLikeByProfileInner(
           break;
         }
 
-        /*
-         * 捕获到的目标 Profile Response 如果仍然是 HTML：
-         * 说明这次没有拿到真正 JSON，允许再试一次。
-         */
         const returnedHtml =
           text
             .trimStart()
@@ -2488,6 +2530,9 @@ async function checkUserSuperLikeByProfileInner(
             `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=${status} | ${returnedHtml ? '返回HTML' : 'HTTP异常'} | ${retryDelayMs}ms后重试`
           );
 
+          profileCaptured =
+            false;
+
           await profilePage.waitForTimeout(
             retryDelayMs
           );
@@ -2503,7 +2548,7 @@ async function checkUserSuperLikeByProfileInner(
             Date.now()
             - startedAt,
           finalUrl:
-            url,
+            apiUrl,
           error:
             error.message
         };
@@ -2514,6 +2559,9 @@ async function checkUserSuperLikeByProfileInner(
           console.log(
             `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=- | error=${error.message} | ${retryDelayMs}ms后重试`
           );
+
+          profileCaptured =
+            false;
 
           await profilePage.waitForTimeout(
             retryDelayMs
@@ -2531,7 +2579,8 @@ async function checkUserSuperLikeByProfileInner(
         ok: false,
         hasSuperLike: null,
         status: null,
-        url,
+        url:
+          apiUrl,
         message:
           'Profile 请求没有结果'
       };
@@ -2711,7 +2760,8 @@ async function checkUserSuperLikeByProfileInner(
       blocked: false,
       hasSuperLike: null,
       status: null,
-      url,
+      url:
+        apiUrl,
       message:
         error.message
     };
