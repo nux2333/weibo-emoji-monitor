@@ -2237,8 +2237,40 @@ async function checkUserSuperLikeByProfileInner(
     profilePage =
       await profileContext.newPage();
 
+    /*
+     * 微博娱乐客页有时会在 Profile 已经返回后继续跳转到
+     * visitor/passport 登录页。这里直接拦掉后续登录跳转，
+     * 我们只关心已经返回的 profile_inpage Response。
+     */
+    await profilePage.route(
+      '**/*',
+      async route => {
+        const requestUrl =
+          route.request().url();
+
+        if (
+          /https?:\\/\\/(?:visitor\\.)?passport\\.weibo\\.(?:cn|com)\\//i.test(
+            requestUrl
+          )
+          ||
+          /https?:\\/\\/passport\\.weibo\\.cn\\//i.test(
+            requestUrl
+          )
+        ) {
+          console.log(
+            `[SuperLike][Profile游客模式] UID=${uid} 已阻止登录跳转：${requestUrl}`
+          );
+
+          await route.abort();
+          return;
+        }
+
+        await route.continue();
+      }
+    );
+
     console.log(
-      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page直接打开Profile API，不携带登录账号Cookie`
+      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page打开Profile API，并拦截passport登录跳转`
     );
 
     const maxAttempts = 2;
@@ -2256,20 +2288,98 @@ async function checkUserSuperLikeByProfileInner(
         Date.now();
 
       try {
-        const response =
-          await profilePage.goto(
-            url,
+        /*
+         * 先监听真正的 profile_inpage Response。
+         * 即使页面随后被微博脚本带去登录页，也使用这里已经捕获的结果。
+         */
+        const targetResponsePromise =
+          profilePage.waitForResponse(
+            response => {
+              try {
+                const responseUrl =
+                  new URL(
+                    response.url()
+                  );
+
+                if (
+                  responseUrl.hostname !==
+                    'm.weibo.cn'
+                  ||
+                  responseUrl.pathname !==
+                    '/api/container/getIndex'
+                ) {
+                  return false;
+                }
+
+                const containerId =
+                  responseUrl.searchParams.get(
+                    'containerid'
+                  );
+
+                const extparam =
+                  responseUrl.searchParams.get(
+                    'extparam'
+                  )
+                  || '';
+
+                return (
+                  containerId ===
+                    config.profileContainerId
+                  &&
+                  extparam.includes(
+                    String(uid)
+                  )
+                );
+              } catch {
+                return false;
+              }
+            },
             {
-              waitUntil:
-                'domcontentloaded',
               timeout:
                 navigationTimeoutMs
             }
           );
 
+        /*
+         * 不等待完整页面渲染；目标 Response 到手即可。
+         * 后续 passport 跳转会被 route 拦截。
+         */
+        const navigationPromise =
+          profilePage.goto(
+            url,
+            {
+              waitUntil:
+                'commit',
+              timeout:
+                navigationTimeoutMs
+            }
+          )
+          .catch(
+            error => {
+              console.log(
+                `[SuperLike][Profile导航提示] UID=${uid} ${error.message}`
+              );
+
+              return null;
+            }
+          );
+
+        const response =
+          await targetResponsePromise;
+
+        /*
+         * 确保 goto 已经开始执行，但不要求最终跳转成功。
+         */
+        await Promise.race([
+          navigationPromise,
+          profilePage.waitForTimeout(
+            100
+          )
+        ]);
+
         if (!response) {
           throw new Error(
-            'Profile navigation 没有 Response'
+            '没有捕获到 Profile API Response'
           );
         }
 
@@ -2312,8 +2422,8 @@ async function checkUserSuperLikeByProfileInner(
         }
 
         /*
-         * HTTP 2xx 但返回 HTML：
-         * 这次视为失败，允许再试一次。
+         * 捕获到的目标 Profile Response 如果仍然是 HTML：
+         * 说明这次没有拿到真正 JSON，允许再试一次。
          */
         const returnedHtml =
           text
