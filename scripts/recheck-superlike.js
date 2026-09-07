@@ -2365,6 +2365,8 @@ function isProxyConnectionError(message) {
     ||
     /ERR_TIMED_OUT/i.test(text)
     ||
+    /ERR_EMPTY_RESPONSE/i.test(text)
+    ||
     /Timeout\s+\d+ms\s+exceeded/i.test(text)
     ||
     /page\.goto:\s*Timeout/i.test(text)
