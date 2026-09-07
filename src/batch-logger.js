@@ -27,6 +27,17 @@ function formatTimestamp(date) {
 }
 
 
+function formatDateDir(date) {
+  return (
+    date.getFullYear()
+    +
+    pad(date.getMonth() + 1)
+    +
+    pad(date.getDate())
+  );
+}
+
+
 function formatLogTime(date) {
   return (
     `${date.getFullYear()}-`
@@ -61,11 +72,22 @@ function createBatchLogger(batchName, mode = null) {
     new Date();
 
 
+  /*
+   * 日志目录：
+   * logs/<模式或batch>/<YYYYMMDD>/
+   *
+   * 例：
+   * logs/mode1/20260907/recheck-superlike_mode1_....log
+   * logs/mode3/20260907/recheck-superlike_mode3_....log
+   * logs/scan-superlike/20260907/scan-superlike_....log
+   */
   const logDir =
     path.join(
       __dirname,
       '..',
-      'logs'
+      'logs',
+      normalizedMode || batchName,
+      formatDateDir(startTime)
     );
 
 
