@@ -126,7 +126,7 @@ const FEED_WAIT_MS =
 
 const PAGE_DELAY_MS =
   Number(process.env.SUPERLIKE_PAGE_DELAY_MS)
-  || 500;
+  || 1000;
 
 const MAX_COMMENTS = 21;
 
@@ -1529,7 +1529,7 @@ async function fetchJsonInPageWithRetry(
     },
     maxAttempts = 3,
     retryDelaysMs = [500, 1000],
-    timeoutMs = 8000
+    timeoutMs = 15000
   } = {}
 ) {
   let lastResult = null;
@@ -4341,12 +4341,41 @@ async function scanOneSuperLikeMonitor(
       );
 
 
-      const nextResult =
+      let nextResult =
         await fetchChaohuaInPage(
           page,
           nextUrl,
           sortTimeRequestTemplateHeaders
         );
+
+
+      /*
+       * 页面内 fetch 连续3次都没有拿到 HTTP Response 时，
+       * 不立即结束整段扫描。
+       *
+       * 常见原因是代理瞬时抖动 / fetch Abort / 临时网络失败。
+       * 先额外等待5秒，再做最后一次慢重试。
+       */
+      if (
+        !nextResult.ok
+        &&
+        nextResult.httpStatus === null
+      ) {
+        console.log(
+          `[SuperLike][sort_time慢重试] page=${nextParams.page} | 前3次均未拿到HTTP Response | error=${nextResult.error || '-'} | 5000ms后最后重试一次`
+        );
+
+        await page.waitForTimeout(
+          5000
+        );
+
+        nextResult =
+          await fetchChaohuaInPage(
+            page,
+            nextUrl,
+            sortTimeRequestTemplateHeaders
+          );
+      }
 
 
       if (
@@ -4362,10 +4391,20 @@ async function scanOneSuperLikeMonitor(
         !nextResult.ok
       ) {
         stopReason =
-          `sort_time 下一页 HTTP ${nextResult.httpStatus}`;
+          nextResult.httpStatus === null
+            ? `sort_time 下一页请求失败：${nextResult.error || 'unknown error'}`
+            : `sort_time 下一页 HTTP ${nextResult.httpStatus}`;
 
         console.log(
           `[SuperLike] ${stopReason}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] error=${nextResult.error || '-'}`
+        );
+
+        console.log(
+          `[SuperLike][sort_time诊断] attempt=${nextResult.attempt || '-'} elapsed=${nextResult.elapsedMs || '-'}ms`
         );
 
         console.log(
