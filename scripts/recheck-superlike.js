@@ -1748,15 +1748,23 @@ async function recheckOneMonitor(
           `[Recheck][Profile失败] UID=${uid} | ${profileMessage}`
         );
 
-        markProfileChecked(
-          monitor.id,
-          uid,
-          'PROFILE_FAILED'
-        );
+        if (
+          Number(profileResult.status) !== 403
+        ) {
+          markProfileChecked(
+            monitor.id,
+            uid,
+            'PROFILE_FAILED'
+          );
 
-        console.log(
-          `[Recheck][Profile状态] UID=${uid} -> PROFILE_FAILED`
-        );
+          console.log(
+            `[Recheck][Profile状态] UID=${uid} -> PROFILE_FAILED`
+          );
+        } else {
+          console.log(
+            `[Recheck][Profile状态] UID=${uid} status=403，保留原 profile_status，不标记 PROFILE_FAILED`
+          );
+        }
 
 
         /*
@@ -3136,15 +3144,23 @@ async function runLightSuperLikeRecheck(signal = null) {
             `UID=${uid} | 失败 | ${message}`
           );
 
-          markProfileChecked(
-            monitor.id,
-            uid,
-            'PROFILE_FAILED'
-          );
+          if (
+            Number(result?.status) !== 403
+          ) {
+            markProfileChecked(
+              monitor.id,
+              uid,
+              'PROFILE_FAILED'
+            );
 
-          console.log(
-            `[模式3][Profile状态] UID=${uid} -> PROFILE_FAILED`
-          );
+            console.log(
+              `[模式3][Profile状态] UID=${uid} -> PROFILE_FAILED`
+            );
+          } else {
+            console.log(
+              `[模式3][Profile状态] UID=${uid} status=403，保留原 profile_status，不标记 PROFILE_FAILED`
+            );
+          }
 
           const proxyConnectionFailed =
             /ERR_(?:TUNNEL_CONNECTION_FAILED|PROXY_CONNECTION_FAILED|SOCKS_CONNECTION_FAILED)|proxy.*(?:failed|error)|socket hang up|ECONNRESET|ECONNREFUSED|ETIMEDOUT/i.test(
