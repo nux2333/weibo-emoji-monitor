@@ -268,7 +268,7 @@ app.get('/api/superlike-posts', (req, res) => {
 
     if (todayOnly) {
       where.push(
-        "date(sp.first_seen_at) = date('now', '+8 hours')"
+        "date(datetime(sp.first_seen_at, '+8 hours')) = date('now', '+8 hours')"
       );
     }
 
