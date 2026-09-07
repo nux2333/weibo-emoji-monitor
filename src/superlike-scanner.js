@@ -3608,9 +3608,7 @@ async function processPagePosts(
       const userInserted =
         saveSuperLikeUser(
           monitorId,
-          uid,
-          null,
-          profileResult.experience7d
+          uid
         );
 
       const deletedNow =
