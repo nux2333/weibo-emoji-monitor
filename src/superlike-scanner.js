@@ -2404,6 +2404,38 @@ async function checkUserSuperLikeByProfileInner(
         const status =
           response.status();
 
+        /*
+         * Playwright 对 3xx redirect response 没有可读取的 body。
+         * 这种情况说明 Profile API 本身没有返回 JSON，而是要求跳转。
+         * 不调用 response.text()，也不要把它误标成 PROFILE_FAILED。
+         */
+        if (
+          status >= 300
+          &&
+          status < 400
+        ) {
+          const location =
+            response.headers()['location']
+            || '';
+
+          console.log(
+            `[SuperLike][Profile重定向] UID=${uid} status=${status} location=${location || '-'}`
+          );
+
+          return {
+            ok: false,
+            blocked: false,
+            visitorRedirect: true,
+            hasSuperLike: null,
+            status: 403,
+            httpStatus: status,
+            url:
+              response.url(),
+            message:
+              `Profile redirect ${status}${location ? ' -> ' + location : ''}`
+          };
+        }
+
         const text =
           await response.text();
 
