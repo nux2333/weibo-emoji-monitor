@@ -2869,7 +2869,8 @@ async function processPagePosts(
   checkpoint,
   context,
   config,
-  profileCache
+  profileCache,
+  reusableProfileContext = null
 ) {
   const stats = {
     found: 0,
@@ -3221,7 +3222,8 @@ async function processPagePosts(
         await checkUserSuperLikeByProfile(
           context,
           config,
-          uid
+          uid,
+          reusableProfileContext
         );
 
       profileCache.set(
@@ -3466,6 +3468,7 @@ async function scanOneSuperLikeMonitor(
 	  );
 
   let browser = null;
+  let scanVisitorContext = null;
   let proxyAssignment = null;
   let delegatedToLocal = false;
 
@@ -3640,6 +3643,37 @@ async function scanOneSuperLikeMonitor(
             }
           }
         );
+
+    /*
+     * Scan 本 Monitor 全程共享一个匿名游客 Context：
+     * 第一个 UID 建立 Visitor/H5 会话后，后续 UID 直接复用，
+     * 避免每个 UID 都重新初始化无痕浏览器环境。
+     */
+    const parentBrowser =
+      browser.browser();
+
+    if (
+      parentBrowser
+      &&
+      typeof parentBrowser.newContext ===
+        'function'
+    ) {
+      scanVisitorContext =
+        await parentBrowser.newContext({
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        });
+
+      console.log(
+        '[SuperLike][Profile游客模式] 已创建本Monitor共享游客Context；后续UID复用Visitor Cookie/会话。'
+      );
+    } else {
+      console.log(
+        '[SuperLike][Profile游客模式] 无法创建共享游客Context，本轮退回每UID独立游客Context。'
+      );
+    }
 
 
     /*
@@ -3942,7 +3976,8 @@ async function scanOneSuperLikeMonitor(
           checkpoint,
           browser,
           config,
-          profileCache
+          profileCache,
+          scanVisitorContext
         );
 
 
@@ -4522,6 +4557,16 @@ async function scanOneSuperLikeMonitor(
     throw error;
 
   } finally {
+    if (scanVisitorContext) {
+      try {
+        await scanVisitorContext.close();
+      } catch {
+        // ignore
+      }
+
+      scanVisitorContext = null;
+    }
+
     if (browser) {
       try {
         await browser.close();
