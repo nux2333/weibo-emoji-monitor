@@ -2933,7 +2933,7 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('');
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式3 BrowserContext Profile 模式');
-  console.log('# 复用 superlike-scanner 的 checkUserSuperLikeByProfile');
+  console.log('# 复用 superlike-scanner 的 checkUserSuperLikeByProfile；本轮30个UID共享一个游客Context');
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
   console.log('# 数据库顺序：按最久未检查 UID 轮询');
@@ -2942,6 +2942,7 @@ async function runLightSuperLikeRecheck(signal = null) {
 
   let context = null;
   let page = null;
+  let mode3VisitorContext = null;
   let proxyAssignment = null;
   let proxyFailureCount = 0;
 
@@ -2972,6 +2973,16 @@ async function runLightSuperLikeRecheck(signal = null) {
   }
 
   async function closeCurrentContext() {
+    if (mode3VisitorContext) {
+      try {
+        await mode3VisitorContext.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    mode3VisitorContext = null;
+
     if (context) {
       try {
         await context.close();
@@ -3040,6 +3051,32 @@ async function runLightSuperLikeRecheck(signal = null) {
             }
           }
         );
+
+      const parentBrowser =
+        context.browser();
+
+      if (
+        !parentBrowser
+        ||
+        typeof parentBrowser.newContext
+          !== 'function'
+      ) {
+        throw new Error(
+          'Mode3 无法创建共享游客Context'
+        );
+      }
+
+      mode3VisitorContext =
+        await parentBrowser.newContext({
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        });
+
+      console.log(
+        '[模式3] 已创建本轮共享游客Context；后续UID复用Visitor Cookie/会话。'
+      );
     }
 
     async function ensureMode3ProfileHealthy(
@@ -3059,7 +3096,8 @@ async function runLightSuperLikeRecheck(signal = null) {
           await checkUserSuperLikeByProfile(
             context,
             config,
-            probeUid
+            probeUid,
+            mode3VisitorContext
           );
 
         if (probe?.ok) {
@@ -3215,7 +3253,8 @@ async function runLightSuperLikeRecheck(signal = null) {
               await checkUserSuperLikeByProfile(
                 context,
                 config,
-                uid
+                uid,
+                mode3VisitorContext
               );
           }
 
