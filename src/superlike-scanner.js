@@ -2141,7 +2141,9 @@ function pickProfileReplacementPost(profilePosts) {
       return (
         comments !== null
         &&
-        comments < 4
+        comments >= 1
+        &&
+        comments <= 4
         &&
         Number.isFinite(
           Number(createdAtMs)
