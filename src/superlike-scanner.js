@@ -3251,7 +3251,8 @@ async function processPagePosts(
   context,
   config,
   profileCache,
-  reusableProfileContext = null
+  reusableProfileContext = null,
+  preExtractedPosts = null
 ) {
   const stats = {
     found: 0,
@@ -3277,9 +3278,13 @@ async function processPagePosts(
 
 
   const posts =
-    findPosts(
-      json
-    );
+    Array.isArray(
+      preExtractedPosts
+    )
+      ? preExtractedPosts
+      : findPosts(
+          json
+        );
 
 
   stats.newestSeen =
@@ -4340,6 +4345,190 @@ async function scanOneSuperLikeMonitor(
       );
     }
 
+
+    const freshCollectedPosts = [];
+    const freshCollectedPostIds = new Set();
+    let freshPoolFlushed = false;
+    let latestCommentsPromise = null;
+    let latestCommentsError = null;
+
+    function collectFreshPage(
+      json,
+      source,
+      checkpointForPage = null
+    ) {
+      const posts = findPosts(json);
+      const stats = {
+        found: posts.length,
+        collected: 0,
+        duplicateInPool: 0,
+        checkpointReached: false,
+        pageFullyAtOrBeforeCheckpoint: false,
+        pageHasNoPosts: posts.length === 0,
+        newestSeen: getNewestPostInfo(posts)
+      };
+
+      if (checkpointForPage) {
+        const checkpointMs =
+          Number(checkpointForPage.latest_created_at_ms);
+
+        let comparablePosts = 0;
+        let allComparable =
+          Number.isFinite(checkpointMs)
+          && posts.length > 0;
+        let allAtOrBefore =
+          allComparable;
+
+        for (const post of posts) {
+          const postId = getPostId(post);
+
+          if (!postId) {
+            continue;
+          }
+
+          if (
+            shouldStopAtCheckpoint(
+              post,
+              checkpointForPage
+            )
+          ) {
+            stats.checkpointReached = true;
+          }
+
+          if (allComparable) {
+            const createdAtMs =
+              parsePostCreatedAtMs(post);
+
+            if (
+              !Number.isFinite(
+                Number(createdAtMs)
+              )
+            ) {
+              allComparable = false;
+              allAtOrBefore = false;
+            } else {
+              comparablePosts++;
+
+              if (
+                Number(createdAtMs)
+                >
+                checkpointMs
+              ) {
+                allAtOrBefore = false;
+              }
+            }
+          }
+        }
+
+        stats.pageFullyAtOrBeforeCheckpoint =
+          comparablePosts > 0
+          &&
+          allComparable
+          &&
+          allAtOrBefore;
+      }
+
+      for (const post of posts) {
+        const postId = getPostId(post);
+
+        if (!postId) {
+          continue;
+        }
+
+        if (
+          freshCollectedPostIds.has(
+            postId
+          )
+        ) {
+          stats.duplicateInPool++;
+          continue;
+        }
+
+        freshCollectedPostIds.add(postId);
+
+        freshCollectedPosts.push({
+          post,
+          source: String(source || 'unknown')
+        });
+
+        stats.collected++;
+      }
+
+      return stats;
+    }
+
+    async function flushFreshPool(trigger) {
+      if (freshPoolFlushed) {
+        return;
+      }
+
+      if (latestCommentsPromise) {
+        await latestCommentsPromise;
+
+        if (latestCommentsError) {
+          throw latestCommentsError;
+        }
+      }
+
+      freshPoolFlushed = true;
+
+      const posts =
+        freshCollectedPosts.map(
+          item => item.post
+        );
+
+      console.log(
+        `[SuperLike][统一处理] trigger=${trigger} | fresh唯一Post=${posts.length}`
+      );
+
+      if (posts.length === 0) {
+        return;
+      }
+
+      const freshStats =
+        await processPagePosts(
+          monitor.id,
+          null,
+          seenThisRun,
+          seenUidThisRun,
+          deleteUidSet,
+          null,
+          browser,
+          config,
+          profileCache,
+          scanVisitorContext,
+          posts
+        );
+
+      for (
+        const key
+        of Object.keys(total)
+      ) {
+        if (
+          typeof freshStats[key]
+          === 'number'
+        ) {
+          total[key] +=
+            freshStats[key]
+            || 0;
+        }
+      }
+
+      console.log(
+        [
+          '[SuperLike][统一处理完成]',
+          `Post=${freshStats.found}`,
+          `同UID重复=${freshStats.duplicateUidInRun}`,
+          `评论>=21=${freshStats.commentsFull}`,
+          `SuperLike=${freshStats.hasSuperLike}`,
+          `Profile查=${freshStats.profileChecked}`,
+          `Profile命中=${freshStats.profileSuperLike}`,
+          `Profile失败=${freshStats.profileFailed}`,
+          `新增=${freshStats.inserted}`,
+          `更新UID=${freshStats.replaced}`
+        ].join(' | ')
+      );
+    }
 
     let latestCommentsScanned =
       false;
