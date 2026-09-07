@@ -2187,7 +2187,8 @@ const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
 async function checkUserSuperLikeByProfileInner(
   context,
   config,
-  uid
+  uid,
+  reusableProfileContext = null
 ) {
   const apiUrl =
     buildProfileInPageApiUrl(
@@ -2233,7 +2234,13 @@ async function checkUserSuperLikeByProfileInner(
     `[SuperLike][Profile页面] ${pageUrl.toString()}`
   );
 
-  let profileContext = null;
+  let profileContext =
+    reusableProfileContext
+    || null;
+
+  const ownsProfileContext =
+    !reusableProfileContext;
+
   let profilePage = null;
 
   try {
@@ -2245,27 +2252,29 @@ async function checkUserSuperLikeByProfileInner(
      * - 一旦拿到目标 Response，就直接使用
      * - 拿到 Profile 后，阻止页面继续跳 passport / 登录页
      */
-    const parentBrowser =
-      context.browser();
+    if (!profileContext) {
+      const parentBrowser =
+        context.browser();
 
-    if (
-      !parentBrowser
-      ||
-      typeof parentBrowser.newContext
-        !== 'function'
-    ) {
-      throw new Error(
-        '无法创建游客 BrowserContext'
-      );
+      if (
+        !parentBrowser
+        ||
+        typeof parentBrowser.newContext
+          !== 'function'
+      ) {
+        throw new Error(
+          '无法创建游客 BrowserContext'
+        );
+      }
+
+      profileContext =
+        await parentBrowser.newContext({
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        });
     }
-
-    profileContext =
-      await parentBrowser.newContext({
-        viewport: {
-          width: 1280,
-          height: 900
-        }
-      });
 
     profilePage =
       await profileContext.newPage();
@@ -2779,7 +2788,11 @@ async function checkUserSuperLikeByProfileInner(
       }
     }
 
-    if (profileContext) {
+    if (
+      profileContext
+      &&
+      ownsProfileContext
+    ) {
       try {
         await profileContext.close();
       } catch {
@@ -2792,7 +2805,8 @@ async function checkUserSuperLikeByProfileInner(
 async function checkUserSuperLikeByProfile(
   context,
   config,
-  uid
+  uid,
+  reusableProfileContext = null
 ) {
   let timer = null;
 
@@ -2827,7 +2841,8 @@ async function checkUserSuperLikeByProfile(
       checkUserSuperLikeByProfileInner(
         context,
         config,
-        uid
+        uid,
+        reusableProfileContext
       ),
       hardTimeout
     ]);
