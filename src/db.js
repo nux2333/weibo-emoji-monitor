@@ -912,8 +912,20 @@ function saveSuperLikeTargetPost(data = {}) {
   const postCreatedAtMs = Number(data.postCreatedAtMs);
   const rawJson = data.rawJson || null;
   const experience7d =
-    Number.isFinite(Number(data.experience7d))
-      ? Number(data.experience7d)
+    data.experience7d !== null
+    &&
+    data.experience7d !== undefined
+    &&
+    data.experience7d !== ''
+    &&
+    Number.isFinite(
+      Number(
+        data.experience7d
+      )
+    )
+      ? Number(
+          data.experience7d
+        )
       : null;
   const profileStatus =
     String(data.profileStatus || 'UNKNOWN')
