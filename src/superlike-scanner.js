@@ -893,7 +893,8 @@ function extractIcons(post) {
 function saveTargetPost(
   monitorId,
   post,
-  profileStatus = 'UNKNOWN'
+  profileStatus = 'UNKNOWN',
+  experience7d = null
 ) {
   const postId =
     getPostId(post);
@@ -1026,6 +1027,7 @@ function saveTargetPost(
     postCreatedAt,
     postCreatedAtMs,
     profileStatus,
+    experience7d,
     rawJson
   });
 }
@@ -2298,6 +2300,234 @@ function pickProfileReplacementPost(profilePosts) {
  * ============================================================
  */
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
+const SCAN_EXPERIENCE_TIMEOUT_MS = 7000;
+
+function extractExperience7d(currentInfo) {
+  const text =
+    String(currentInfo || '').trim();
+
+  if (!text) {
+    return null;
+  }
+
+  const match =
+    text.match(
+      /经验值\s*[：:]\s*(\d+)/
+    )
+    ||
+    text.match(
+      /(\d+)\s*$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    Number(match[1]);
+
+  return Number.isFinite(value)
+    ? value
+    : null;
+}
+
+async function fetchSuperLikeExperience7d(
+  context,
+  config,
+  uid
+) {
+  try {
+    if (
+      !context
+      ||
+      !context.request
+      ||
+      typeof context.request.get !== 'function'
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        message: '当前BrowserContext不支持request.get'
+      };
+    }
+
+    const pageId =
+      `100808${config.topicHash}`;
+
+    const url =
+      new URL(
+        'https://huati.weibo.cn/aj/setting/icon/getconfig'
+      );
+
+    url.searchParams.set(
+      'type',
+      '1'
+    );
+
+    url.searchParams.set(
+      'union_id',
+      'chao_like'
+    );
+
+    url.searchParams.set(
+      'page_id',
+      pageId
+    );
+
+    url.searchParams.set(
+      'param_uid',
+      String(uid)
+    );
+
+    const referer =
+      new URL(
+        'https://huati.weibo.cn/super/setting/icon'
+      );
+
+    referer.searchParams.set(
+      'page_id',
+      pageId
+    );
+
+    referer.searchParams.set(
+      'icon_type',
+      '1'
+    );
+
+    referer.searchParams.set(
+      'union_id',
+      'chao_like'
+    );
+
+    referer.searchParams.set(
+      'param_uid',
+      String(uid)
+    );
+
+    const response =
+      await context.request.get(
+        url.toString(),
+        {
+          timeout:
+            SCAN_EXPERIENCE_TIMEOUT_MS,
+          failOnStatusCode:
+            false,
+          headers: {
+            'Accept':
+              'application/json, text/plain, */*',
+            'X-Requested-With':
+              'XMLHttpRequest',
+            'Referer':
+              referer.toString(),
+            'User-Agent':
+              'Mozilla/5.0 (Linux; Android 14) ' +
+              'AppleWebKit/537.36 (KHTML, like Gecko) ' +
+              'Mobile Safari/537.36 _weibo_'
+          }
+        }
+      );
+
+    const status =
+      response.status();
+
+    const text =
+      await response.text();
+
+    if (
+      status < 200
+      ||
+      status >= 300
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status,
+        message:
+          `HTTP ${status}`
+      };
+    }
+
+    if (
+      text
+        .trimStart()
+        .startsWith('<')
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status,
+        message:
+          '返回HTML/Access Deny'
+      };
+    }
+
+    let json;
+
+    try {
+      json =
+        JSON.parse(text);
+    } catch (error) {
+      return {
+        ok: false,
+        experience7d: null,
+        status,
+        message:
+          `JSON解析失败：${error.message}`
+      };
+    }
+
+    if (
+      Number(json?.code) !==
+      100000
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status,
+        message:
+          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'}`
+      };
+    }
+
+    const currentInfo =
+      json?.data?.current_info
+      || '';
+
+    const experience7d =
+      extractExperience7d(
+        currentInfo
+      );
+
+    if (
+      experience7d === null
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status,
+        currentInfo,
+        message:
+          'current_info没有可解析经验值'
+      };
+    }
+
+    return {
+      ok: true,
+      experience7d,
+      currentInfo,
+      status
+    };
+
+  } catch (error) {
+    return {
+      ok: false,
+      experience7d: null,
+      status: null,
+      message:
+        error.message
+    };
+  }
+}
 
 async function checkUserSuperLikeByProfileInner(
   context,
@@ -2833,6 +3063,24 @@ async function checkUserSuperLikeByProfileInner(
       `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
     );
 
+    const experienceResult =
+      await fetchSuperLikeExperience7d(
+        context,
+        config,
+        uid
+      );
+
+    const experience7d =
+      experienceResult?.ok
+        ? experienceResult.experience7d
+        : null;
+
+    console.log(
+      experienceResult?.ok
+        ? `[SuperLike][经验值] UID=${uid} 近7天=${experience7d} | ${experienceResult.currentInfo || ''}`
+        : `[SuperLike][经验值失败] UID=${uid} | ${experienceResult?.message || 'unknown'}`
+    );
+
     const profilePosts =
       getProfilePosts(
         json,
@@ -2871,6 +3119,7 @@ async function checkUserSuperLikeByProfileInner(
       ok: true,
       blocked: false,
       hasSuperLike,
+      experience7d,
       profilePosts,
       status:
         result.status,
@@ -3359,7 +3608,9 @@ async function processPagePosts(
       const userInserted =
         saveSuperLikeUser(
           monitorId,
-          uid
+          uid,
+          null,
+          profileResult.experience7d
         );
 
       const deletedNow =
@@ -3481,7 +3732,9 @@ async function processPagePosts(
                 && profileResult.hasSuperLike === false
                   ? 'NO_SUPERLIKE'
                   : 'UNKNOWN'
-              )
+              ),
+          profileResult?.experience7d
+          ?? null
         );
 
 
@@ -3497,6 +3750,7 @@ async function processPagePosts(
             `UID=${saved.uid || '-'}`,
             `用户=${saved.username || '-'}`,
             `评论=${saved.commentsCount}`,
+            `经验7D=${saved.experience7d ?? '-'}`,
             `Icon=${saved.iconSummary || '无'}`,
             saved.postLink || '-'
           ].join(' | ')
@@ -3514,6 +3768,7 @@ async function processPagePosts(
             `UID=${saved.uid || '-'}`,
             `用户=${saved.username || '-'}`,
             `评论=${saved.commentsCount}`,
+            `经验7D=${saved.experience7d ?? '-'}`,
             saved.postLink || '-'
           ].join(' | ')
         );
