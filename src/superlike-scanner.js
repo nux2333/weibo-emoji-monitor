@@ -95,6 +95,16 @@ const FRESH_FIRST_PAGES =
   )
   || 10;
 
+/*
+ * 历史 Resume 每轮最多补 15 分钟。
+ * 到时保存下一页断点并结束当前轮，让下一轮重新先抓最新数据。
+ */
+const RESUME_TIME_BUDGET_MS =
+  Number(
+    process.env.SUPERLIKE_RESUME_TIME_BUDGET_MS
+  )
+  || 15 * 60 * 1000;
+
 const EXISTING_STOP_THRESHOLD =
   Number(process.env.SUPERLIKE_EXISTING_STOP_THRESHOLD)
   || 10;
@@ -3486,6 +3496,9 @@ async function scanOneSuperLikeMonitor(
     let switchedToResume =
       false;
 
+    let resumeStartedAt =
+      null;
+
     if (resume) {
       console.log(
         `[SuperLike][FreshFirst] 检测到 Resume page=${resume.next_page}；本轮先扫描最新 ${FRESH_FIRST_PAGES} 页，再继续旧 Resume。`
@@ -3736,6 +3749,13 @@ async function scanOneSuperLikeMonitor(
         switchedToResume =
           true;
 
+        resumeStartedAt =
+          Date.now();
+
+        console.log(
+          `[SuperLike][Resume] 历史补扫时间上限=${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟。`
+        );
+
         consecutiveOldCheckpointPages =
           0;
 
@@ -3801,6 +3821,25 @@ async function scanOneSuperLikeMonitor(
         console.log(
           `[SuperLike][Resume] 已保存下一页断点：page=${nextParams.page}`
         );
+      }
+
+
+      if (
+        switchedToResume
+        &&
+        resumeStartedAt
+        &&
+        Date.now() - resumeStartedAt
+          >= RESUME_TIME_BUDGET_MS
+      ) {
+        stopReason =
+          `历史 Resume 已补扫 ${Math.round(RESUME_TIME_BUDGET_MS / 60000)} 分钟，已保存 Resume page=${nextParams.page}`;
+
+        console.log(
+          `[SuperLike][Resume] ${stopReason}；结束本轮，下一轮仍先抓最新数据。`
+        );
+
+        break;
       }
 
 
