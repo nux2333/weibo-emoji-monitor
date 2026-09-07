@@ -35,7 +35,10 @@ const {
   saveScanCheckpoint,
   getScanResume,
   saveScanResume,
-  clearScanResume
+  clearScanResume,
+  getScanSourceResume,
+  saveScanSourceResume,
+  clearScanSourceResume
 } = require('./db');
 
 /**
@@ -59,7 +62,7 @@ const {
  *      max_id
  * 7. “最新发帖”fresh / 多个分区 tag_status_sort 并发采集列表页
  * 8. 所有 fresh 来源汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
- * 9. “最新发帖”历史 Resume 继续沿用原 checkpoint / Resume
+ * 9. “最新发帖”与每个 tag_status_sort 分区都独立维护 Resume
  * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
@@ -4735,9 +4738,50 @@ async function scanOneSuperLikeMonitor(
 
       const promise =
         (async () => {
+          let sourceResume =
+            getScanSourceResume(
+              monitor.id,
+              source.key
+            );
+
+          if (
+            sourceResume
+            &&
+            String(
+              sourceResume.flow_id
+              || ''
+            )
+            !==
+            String(
+              source.flowId
+            )
+          ) {
+            clearScanSourceResume(
+              monitor.id,
+              source.key
+            );
+
+            sourceResume = null;
+          }
+
+          const sectionFreshPages =
+            sourceResume
+              ? Math.min(
+                  freshFirstPages,
+                  TAG_SECTION_PAGES
+                )
+              : TAG_SECTION_PAGES;
+
           console.log(
-            `[SuperLike][分区采集] ${source.name} 开始，最多 ${TAG_SECTION_PAGES} 页 | flowId=${source.flowId}`
+            sourceResume
+              ? `[SuperLike][分区Resume] ${source.name} 有历史断点；本轮先抓最新 ${sectionFreshPages} 页，再继续历史 Resume，总上限 ${TAG_SECTION_PAGES} 页。`
+              : `[SuperLike][分区采集] ${source.name} 无Resume，从最新开始，最多 ${TAG_SECTION_PAGES} 页。`
           );
+
+          const requestHeaders =
+            firstSortTimeResult.requestHeaders
+            || feedResult.requestHeaders
+            || {};
 
           let currentUrl =
             buildTagSectionUrl(
@@ -4748,9 +4792,7 @@ async function scanOneSuperLikeMonitor(
             await fetchChaohuaInPage(
               page,
               currentUrl,
-              firstSortTimeResult.requestHeaders
-              || feedResult.requestHeaders
-              || {}
+              requestHeaders
             );
 
           if (
@@ -4767,6 +4809,9 @@ async function scanOneSuperLikeMonitor(
             );
           }
 
+          let phase =
+            'fresh';
+
           for (
             let sectionPageIndex = 1;
             sectionPageIndex <= TAG_SECTION_PAGES;
@@ -4776,7 +4821,9 @@ async function scanOneSuperLikeMonitor(
 
             await saveScanResponseJson(
               currentResult.json,
-              source.key
+              phase === 'resume'
+                ? `${source.key}-resume`
+                : source.key
             );
 
             const sectionStats =
@@ -4788,7 +4835,7 @@ async function scanOneSuperLikeMonitor(
 
             console.log(
               [
-                `[分区采集 ${source.name} #${sectionPageIndex}]`,
+                `[分区采集 ${source.name} ${phase === 'resume' ? 'Resume' : 'Fresh'} #${sectionPageIndex}]`,
                 `Post=${sectionStats.found}`,
                 `新收集=${sectionStats.collected}`,
                 `池内重复=${sectionStats.duplicateInPool}`,
@@ -4796,22 +4843,144 @@ async function scanOneSuperLikeMonitor(
               ].join(' | ')
             );
 
-            if (
-              sectionPageIndex >=
-              TAG_SECTION_PAGES
-            ) {
-              break;
-            }
-
             const nextParams =
               extractTagNextPageParams(
                 currentResult.json
               );
 
             if (!nextParams) {
+              if (
+                phase === 'resume'
+                ||
+                !sourceResume
+              ) {
+                clearScanSourceResume(
+                  monitor.id,
+                  source.key
+                );
+              }
+
               console.log(
-                `[SuperLike][分区采集] ${source.name} 当前页没有下一页 since_id，结束。`
+                `[SuperLike][分区采集] ${source.name} 当前页没有下一页 since_id，视为已追到末尾，清除该分区Resume。`
               );
+
+              break;
+            }
+
+            /*
+             * 已进入 Resume 后，每处理成功一页就立刻保存“下一页”。
+             * 进程中断或网络失败时，下轮可从未处理页继续。
+             */
+            if (
+              phase === 'resume'
+            ) {
+              saveScanSourceResume(
+                monitor.id,
+                source.key,
+                source.flowId,
+                nextParams
+              );
+            }
+
+            /*
+             * 有旧 Resume 时，fresh 区段只负责补最新数据。
+             * fresh 达到 10/30 页后，切回该分区自己的历史 cursor。
+             */
+            if (
+              phase === 'fresh'
+              &&
+              sourceResume
+              &&
+              sectionPageIndex >=
+                sectionFreshPages
+            ) {
+              const resumeParams = {
+                page:
+                  sourceResume.next_page,
+                since_id:
+                  sourceResume.next_since_id,
+                max_id:
+                  sourceResume.next_max_id
+                  ?? '0',
+                count:
+                  sourceResume.next_count
+                  ?? '15',
+                page_common_ext:
+                  sourceResume.next_page_common_ext
+                  ?? 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
+              };
+
+              const resumeUrl =
+                buildTagSectionUrl(
+                  source.flowId,
+                  resumeParams
+                );
+
+              console.log(
+                `[SuperLike][分区Resume] ${source.name} fresh已完成 ${sectionFreshPages} 页，切回历史 cursor：${resumeParams.since_id}`
+              );
+
+              const resumeResult =
+                await fetchChaohuaInPage(
+                  page,
+                  resumeUrl,
+                  requestHeaders
+                );
+
+              if (
+                resumeResult.httpStatus === 418
+              ) {
+                throw new Weibo418Error(
+                  `${source.name} Resume 返回 HTTP 418`
+                );
+              }
+
+              if (!resumeResult.ok) {
+                console.log(
+                  `[SuperLike][分区Resume失败] ${source.name} | HTTP=${resumeResult.httpStatus ?? '-'} | 保留旧Resume，下轮继续。`
+                );
+
+                break;
+              }
+
+              currentUrl =
+                resumeUrl;
+
+              currentResult =
+                resumeResult;
+
+              phase =
+                'resume';
+
+              continue;
+            }
+
+            /*
+             * 第一次没有 Resume：
+             * 当前页处理成功后，始终把 next cursor 保存下来。
+             * 扫到100页或中途失败时，下轮即可进入“fresh + Resume”模式。
+             */
+            if (
+              phase === 'fresh'
+              &&
+              !sourceResume
+            ) {
+              saveScanSourceResume(
+                monitor.id,
+                source.key,
+                source.flowId,
+                nextParams
+              );
+            }
+
+            if (
+              sectionPageIndex >=
+              TAG_SECTION_PAGES
+            ) {
+              console.log(
+                `[SuperLike][分区Resume] ${source.name} 本轮达到 ${TAG_SECTION_PAGES} 页上限；下一页cursor已保存，下轮继续。`
+              );
+
               break;
             }
 
@@ -4821,17 +4990,11 @@ async function scanOneSuperLikeMonitor(
                 nextParams
               );
 
-            console.log(
-              `[SuperLike][分区采集] ${source.name} 请求下一页 | since_id=${nextParams.since_id}`
-            );
-
             currentResult =
               await fetchChaohuaInPage(
                 page,
                 currentUrl,
-                firstSortTimeResult.requestHeaders
-                || feedResult.requestHeaders
-                || {}
+                requestHeaders
               );
 
             if (
@@ -4844,8 +5007,9 @@ async function scanOneSuperLikeMonitor(
 
             if (!currentResult.ok) {
               console.log(
-                `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${currentResult.error || currentResult.text || '-'}`
+                `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${currentResult.error || currentResult.text || '-'} | Resume已保留`
               );
+
               break;
             }
 
@@ -4868,10 +5032,6 @@ async function scanOneSuperLikeMonitor(
               `[SuperLike][分区采集异常] ${source.name} | ${error?.message || error}`
             );
 
-            /*
-             * 单个分区失败不阻断其它来源和统一处理。
-             * 418 仍抛出，让现有代理切换逻辑处理。
-             */
             if (
               isWeibo418Error(
                 error
