@@ -2344,17 +2344,32 @@ async function checkUserSuperLikeByProfileInner(
       )
       !== 1
     ) {
+      const apiErrno =
+        Number(json?.errno);
+
       return {
         ok: false,
         hasSuperLike: null,
         status:
+          apiErrno === 403
+            ? 403
+            : result.status,
+
+        httpStatus:
           result.status,
+
+        apiErrno:
+          Number.isFinite(apiErrno)
+            ? apiErrno
+            : null,
 
         url:
           result.finalUrl,
 
         message:
-          `API ok=${json?.ok}`
+          apiErrno === 403
+            ? 'API errno=403 请求被拒绝'
+            : `API ok=${json?.ok}`
       };
     }
 
@@ -2986,7 +3001,9 @@ async function processPagePosts(
         saveTargetPost(
           monitorId,
           targetPost,
-          profileResult && !profileResult.ok
+          profileResult
+          && !profileResult.ok
+          && Number(profileResult.status) !== 403
             ? 'PROFILE_FAILED'
             : (
                 profileResult?.ok
