@@ -59,17 +59,17 @@ const {
  * 7. 最多 50 页
  * 8. DB 已有 post_id > 10 后结束
  * 9. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
- * 10. 15 分钟后重新开始
+ * 10. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
  */
 
 const DAY_SCAN_INTERVAL_MS =
   Number(process.env.SUPERLIKE_DAY_SCAN_INTERVAL_MS)
-  || 20 * 60 * 1000;
+  || 10 * 60 * 1000;
 
 const NIGHT_SCAN_INTERVAL_MS =
   Number(process.env.SUPERLIKE_NIGHT_SCAN_INTERVAL_MS)
-  || 5 * 60 * 1000;
+  || 3 * 60 * 1000;
 
 const RATE_LIMIT_BACKOFF_1_MS =
   Number(process.env.SUPERLIKE_418_BACKOFF_1_MS)
@@ -4871,10 +4871,26 @@ async function runSuperLikeRoundSafely(label = '本轮') {
 }
 
 
+function getChinaHour() {
+  const hourText =
+    new Intl.DateTimeFormat(
+      'en-US',
+      {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        hour12: false
+      }
+    ).format(
+      new Date()
+    );
+
+  return Number(hourText);
+}
+
+
 function getNormalScanIntervalMs() {
   const hour =
-    new Date()
-      .getHours();
+    getChinaHour();
 
   return hour >= 19
     ? NIGHT_SCAN_INTERVAL_MS
@@ -4963,15 +4979,53 @@ async function startSuperLikeBatch() {
 
 
   const scheduleNext = async (label) => {
+    /*
+     * 正常轮询按“本轮启动时间”计算下一次启动时间：
+     *
+     * 例如白天10分钟：
+     * 12:00启动 -> 12:07结束 -> 12:10再启动。
+     *
+     * 如果本轮运行超过间隔，则不并发启动第二轮，
+     * 当前轮结束后立即开始下一轮。
+     *
+     * 全局418退避仍保持原语义：
+     * 从本轮结束后完整等待30/60分钟。
+     */
+    const roundStartedAt =
+      Date.now();
+
     const result =
       await runSuperLikeRoundSafely(label);
 
-    const delayMs =
-      getNextDelayMs(result);
+    let delayMs;
 
-    console.log(
-      `[SuperLike] 下一轮将在 ${Math.round(delayMs / 60000)} 分钟后开始。`
-    );
+    if (result?.rateLimited) {
+      delayMs =
+        getNextDelayMs(result);
+    } else {
+      const intervalMs =
+        getNormalScanIntervalMs();
+
+      const nextStartAt =
+        roundStartedAt
+        + intervalMs;
+
+      delayMs =
+        Math.max(
+          0,
+          nextStartAt - Date.now()
+        );
+    }
+
+    if (delayMs <= 0) {
+      console.log(
+        '[SuperLike] 本轮耗时已达到/超过轮询间隔；不重叠启动，当前轮结束后立即开始下一轮。'
+      );
+    } else {
+      console.log(
+        `[SuperLike] 下一轮将在约 ${Math.ceil(delayMs / 1000)} 秒后开始。`
+      );
+    }
 
     setTimeout(
       () => {
