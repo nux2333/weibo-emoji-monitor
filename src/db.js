@@ -404,6 +404,7 @@ function initDatabase() {
       last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_rank INTEGER,
       last_seen_rank INTEGER,
+      experience_7d INTEGER,
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
@@ -519,6 +520,7 @@ function initDatabase() {
   ensureColumn('superlike_posts', 'comment_next_check_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
+  ensureColumn('superlike_posts', 'experience_7d', 'INTEGER');
 
   /*
    * superlike_users 精简：
@@ -533,6 +535,7 @@ function initDatabase() {
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
+  ensureColumn('superlike_users', 'experience_7d', 'INTEGER');
 
   // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
   // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
@@ -836,7 +839,7 @@ function markSuperLikeProfileChecked(
   return result.changes || 0;
 }
 
-function saveSuperLikeUser(monitorId, uid, scanDate = null) {
+function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null) {
   initDatabase();
 
   const normalizedMonitorId = Number(monitorId);
@@ -852,6 +855,11 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null) {
 
   const date = scanDate || getLocalDateString();
 
+  const normalizedExperience7d =
+    Number.isFinite(Number(experience7d))
+      ? Number(experience7d)
+      : null;
+
   const existed = !!db.prepare(`
     SELECT 1
     FROM superlike_users
@@ -865,21 +873,25 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null) {
       uid,
       scan_date,
       inserted_at,
-      last_seen_at
+      last_seen_at,
+      experience_7d
     )
     VALUES(
       ?, ?, ?,
       datetime('now', '+8 hours'),
-      datetime('now', '+8 hours')
+      datetime('now', '+8 hours'),
+      ?
     )
     ON CONFLICT(uid)
     DO UPDATE SET
       scan_date = excluded.scan_date,
-      last_seen_at = datetime('now', '+8 hours')
+      last_seen_at = datetime('now', '+8 hours'),
+      experience_7d = COALESCE(excluded.experience_7d, superlike_users.experience_7d)
   `).run(
     normalizedMonitorId,
     normalizedUid,
-    date
+    date,
+    normalizedExperience7d
   );
 
   return !existed;
@@ -899,6 +911,10 @@ function saveSuperLikeTargetPost(data = {}) {
   const postCreatedAt = data.postCreatedAt || null;
   const postCreatedAtMs = Number(data.postCreatedAtMs);
   const rawJson = data.rawJson || null;
+  const experience7d =
+    Number.isFinite(Number(data.experience7d))
+      ? Number(data.experience7d)
+      : null;
   const profileStatus =
     String(data.profileStatus || 'UNKNOWN')
       .trim()
@@ -954,15 +970,33 @@ function saveSuperLikeTargetPost(data = {}) {
       );
 
     if (!shouldReplace) {
-      if (profileStatus !== 'UNKNOWN') {
+      if (
+        profileStatus !== 'UNKNOWN'
+        ||
+        experience7d !== null
+      ) {
         db.prepare(`
           UPDATE superlike_posts
           SET
-            profile_status = ?,
-            profile_last_checked_at = CURRENT_TIMESTAMP
+            profile_status = CASE
+              WHEN ? = 'UNKNOWN' THEN profile_status
+              ELSE ?
+            END,
+            profile_last_checked_at = CASE
+              WHEN ? = 'UNKNOWN' THEN profile_last_checked_at
+              ELSE CURRENT_TIMESTAMP
+            END,
+            experience_7d = COALESCE(?, experience_7d)
           WHERE monitor_id = ?
             AND uid = ?
-        `).run(profileStatus, monitorId, uid);
+        `).run(
+          profileStatus,
+          profileStatus,
+          profileStatus,
+          experience7d,
+          monitorId,
+          uid
+        );
       }
 
       return {
@@ -1019,6 +1053,7 @@ function saveSuperLikeTargetPost(data = {}) {
     postText,
     commentsCount,
     iconSummary,
+    experience7d,
     postCreatedAt,
     profileStatus,
     profileStatus,
@@ -1032,7 +1067,8 @@ function saveSuperLikeTargetPost(data = {}) {
     username,
     postLink,
     commentsCount,
-    iconSummary
+    iconSummary,
+    experience7d
   };
 }
 
