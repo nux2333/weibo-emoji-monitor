@@ -57,9 +57,9 @@ const {
  *      page
  *      since_id
  *      max_id
- * 7. “最新发帖”按现有 checkpoint / Resume 扫描
- * 8. “最新评论”作为第二条独立数据流固定扫描前 N 页，不使用发帖时间 checkpoint
- * 9. 两条流共用 Post/UID 去重与 Profile 缓存，取并集但不重复处理
+ * 7. “最新发帖”fresh 与“最新评论”并发采集列表页
+ * 8. fresh 两条流汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
+ * 9. “最新发帖”历史 Resume 继续沿用原 checkpoint / Resume
  * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
@@ -4530,24 +4530,20 @@ async function scanOneSuperLikeMonitor(
       );
     }
 
-    let latestCommentsScanned =
-      false;
-
-    async function scanLatestComments(
-      trigger = 'after-fresh'
+    function scanLatestComments(
+      trigger = 'parallel-fresh'
     ) {
-      if (latestCommentsScanned) {
-        return;
+      if (latestCommentsPromise) {
+        return latestCommentsPromise;
       }
 
-      latestCommentsScanned =
-        true;
+      latestCommentsPromise =
+        (async () => {
+          console.log(
+            `[SuperLike][并发采集] 最新评论与最新发帖 fresh 同时采集；触发点=${trigger}`
+          );
 
-      console.log(
-        `[SuperLike][扫描顺序] 最新发帖 fresh → 最新评论；触发点=${trigger}`
-      );
-
-      console.log(
+          console.log(
         `[SuperLike][最新评论] 开始独立扫描 _feed，最多 ${LATEST_COMMENTS_PAGES} 页；不使用发帖时间Checkpoint。`
       );
       
@@ -4580,49 +4576,22 @@ async function scanOneSuperLikeMonitor(
         );
       
         const commentsStats =
-          await processPagePosts(
-            monitor.id,
+          collectFreshPage(
             commentsCurrent.json,
-            seenThisRun,
-            seenUidThisRun,
-            deleteUidSet,
-            null,
-            browser,
-            config,
-            profileCache,
-            scanVisitorContext
+            'latest-comments',
+            null
           );
-      
-        for (
-          const key
-          of Object.keys(total)
-        ) {
-          if (
-            typeof commentsStats[key]
-            === 'number'
-          ) {
-            total[key] +=
-              commentsStats[key]
-              || 0;
-          }
-        }
-      
+
         console.log(
           [
-            `[最新评论 第${commentsCurrent.page || commentsPageIndex}页]`,
+            `[最新评论采集 第${commentsCurrent.page || commentsPageIndex}页]`,
             `Post=${commentsStats.found}`,
-            `同UID重复=${commentsStats.duplicateUidInRun}`,
-            `DB保留=${commentsStats.existingInDb}`,
-            `评论>=21=${commentsStats.commentsFull}`,
-            `SuperLike=${commentsStats.hasSuperLike}`,
-            `Profile查=${commentsStats.profileChecked}`,
-            `Profile命中=${commentsStats.profileSuperLike}`,
-            `Profile失败=${commentsStats.profileFailed}`,
-            `新增=${commentsStats.inserted}`,
-            `更新UID=${commentsStats.replaced}`
+            `新收集=${commentsStats.collected}`,
+            `池内重复=${commentsStats.duplicateInPool}`,
+            `fresh池=${freshCollectedPosts.length}`
           ].join(' | ')
         );
-      
+
         if (
           commentsPageIndex >=
           LATEST_COMMENTS_PAGES
@@ -4722,7 +4691,29 @@ async function scanOneSuperLikeMonitor(
         }
       }
       
+        })()
+        .catch(
+          error => {
+            latestCommentsError = error;
+
+            console.log(
+              `[SuperLike][最新评论采集失败] ${error?.message || error}`
+            );
+
+            return null;
+          }
+        );
+
+      return latestCommentsPromise;
     }
+
+    /*
+     * 与最新发帖 fresh 同时启动最新评论分页。
+     * 两边都只做列表采集，不在翻页途中查 Profile。
+     */
+    scanLatestComments(
+      'parallel-with-latest-posts'
+    );
 
     // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
     const CHECKPOINT_OLD_PAGE_THRESHOLD = 3;
@@ -4745,32 +4736,46 @@ async function scanOneSuperLikeMonitor(
       );
 
 
+      const collectingFresh =
+        !switchedToResume
+        &&
+        !freshPoolFlushed
+        &&
+        batchPageIndex <= freshFirstPages;
+
       const pageStats =
-        await processPagePosts(
-          monitor.id,
-          current.json,
-          seenThisRun,
-          seenUidThisRun,
-          deleteUidSet,
-          checkpoint,
-          browser,
-          config,
-          profileCache,
-          scanVisitorContext
-        );
+        collectingFresh
+          ? collectFreshPage(
+              current.json,
+              'latest-posts',
+              checkpoint
+            )
+          : await processPagePosts(
+              monitor.id,
+              current.json,
+              seenThisRun,
+              seenUidThisRun,
+              deleteUidSet,
+              checkpoint,
+              browser,
+              config,
+              profileCache,
+              scanVisitorContext
+            );
 
-
-      for (
-        const key
-        of Object.keys(total)
-      ) {
-        if (
-          typeof pageStats[key]
-          === 'number'
+      if (!collectingFresh) {
+        for (
+          const key
+          of Object.keys(total)
         ) {
-          total[key] +=
-            pageStats[key]
-            || 0;
+          if (
+            typeof pageStats[key]
+            === 'number'
+          ) {
+            total[key] +=
+              pageStats[key]
+              || 0;
+          }
         }
       }
 
@@ -4791,21 +4796,29 @@ async function scanOneSuperLikeMonitor(
 
 
       console.log(
-        [
-          `[第${pageNumber}页]`,
-          `Post=${pageStats.found}`,
-          `同UID重复=${pageStats.duplicateUidInRun}`,
-          `DB保留=${pageStats.existingInDb}`,
-          `评论>=21=${pageStats.commentsFull}`,
-          `SuperLike=${pageStats.hasSuperLike}`,
-          `Profile查=${pageStats.profileChecked}`,
-          `Profile缓存=${pageStats.profileCached}`,
-          `Profile命中=${pageStats.profileSuperLike}`,
-          `Profile失败=${pageStats.profileFailed}`,
-          `待删UID=${pageStats.deleteQueued}`,
-          `新增=${pageStats.inserted}`,
-          `更新UID=${pageStats.replaced}`
-        ].join(' | ')
+        collectingFresh
+          ? [
+              `[最新发帖采集 第${pageNumber}页]`,
+              `Post=${pageStats.found}`,
+              `新收集=${pageStats.collected}`,
+              `池内重复=${pageStats.duplicateInPool}`,
+              `fresh池=${freshCollectedPosts.length}`
+            ].join(' | ')
+          : [
+              `[第${pageNumber}页]`,
+              `Post=${pageStats.found}`,
+              `同UID重复=${pageStats.duplicateUidInRun}`,
+              `DB保留=${pageStats.existingInDb}`,
+              `评论>=21=${pageStats.commentsFull}`,
+              `SuperLike=${pageStats.hasSuperLike}`,
+              `Profile查=${pageStats.profileChecked}`,
+              `Profile缓存=${pageStats.profileCached}`,
+              `Profile命中=${pageStats.profileSuperLike}`,
+              `Profile失败=${pageStats.profileFailed}`,
+              `待删UID=${pageStats.deleteQueued}`,
+              `新增=${pageStats.inserted}`,
+              `更新UID=${pageStats.replaced}`
+            ].join(' | ')
       );
 
 
@@ -4920,6 +4933,10 @@ async function scanOneSuperLikeMonitor(
           'before-history-resume'
         );
 
+        await flushFreshPool(
+          'before-history-resume'
+        );
+
         const resumeParams = {
           page:
             Number(resume.next_page),
@@ -5009,6 +5026,10 @@ async function scanOneSuperLikeMonitor(
           'night-fresh-complete'
         );
 
+        await flushFreshPool(
+          'night-fresh-complete'
+        );
+
         stopReason =
           `晚高峰最新区段已处理 ${freshFirstPages} 页，暂停历史 Resume`;
 
@@ -5027,12 +5048,16 @@ async function scanOneSuperLikeMonitor(
       if (
         !resume
         &&
-        !latestCommentsScanned
+        !freshPoolFlushed
         &&
         batchPageIndex >=
           freshFirstPages
       ) {
         await scanLatestComments(
+          'fresh-complete-no-resume'
+        );
+
+        await flushFreshPool(
           'fresh-complete-no-resume'
         );
       }
@@ -5266,6 +5291,10 @@ async function scanOneSuperLikeMonitor(
      * 仍保证最新评论在本轮至少扫描一次。
      */
     await scanLatestComments(
+      'latest-posts-finished'
+    );
+
+    await flushFreshPool(
       'latest-posts-finished'
     );
 
