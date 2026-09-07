@@ -352,7 +352,8 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.post_created_at,
         sp.inserted_at,
         sp.first_seen_at,
-        sp.last_seen_at
+        sp.last_seen_at,
+        sp.profile_status
       FROM superlike_posts sp
       LEFT JOIN monitors m ON m.id=sp.monitor_id
       ${whereSql}
