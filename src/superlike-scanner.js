@@ -57,8 +57,8 @@ const {
  *      page
  *      since_id
  *      max_id
- * 7. “最新发帖”fresh 与“最新评论”并发采集列表页
- * 8. fresh 两条流汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
+ * 7. “最新发帖”fresh / “最新评论” / 多个分区 tag_status_sort 并发采集列表页
+ * 8. 所有 fresh 来源汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
  * 9. “最新发帖”历史 Resume 继续沿用原 checkpoint / Resume
  * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
@@ -97,6 +97,37 @@ const LATEST_COMMENTS_PAGES =
     process.env.SUPERLIKE_LATEST_COMMENTS_PAGES
   )
   || 20;
+
+/*
+ * 额外分区：这些帖子不会稳定出现在“最新发帖”总流中，
+ * 因此作为独立 source 并发采集。
+ */
+const TAG_SECTION_PAGES =
+  Number(
+    process.env.SUPERLIKE_TAG_SECTION_PAGES
+  )
+  || 20;
+
+const TAG_SECTION_SOURCES = [
+  {
+    key: 'section-superlike',
+    name: '超like',
+    flowId:
+      '100808f1d33f71dff693a2708cb3e8ef584a44__5183718645432593_-_tag_status_sort'
+  },
+  {
+    key: 'section-yishanshui',
+    name: '一善水区',
+    flowId:
+      '100808f1d33f71dff693a2708cb3e8ef584a44__10010001_-_tag_status_sort'
+  },
+  {
+    key: 'section-qa',
+    name: '答疑专区',
+    flowId:
+      '100808f1d33f71dff693a2708cb3e8ef584a44__5186483501006975_-_tag_status_sort'
+  }
+];
 
 /*
  * 白天：先抓最新10页，再补历史 Resume。
@@ -1570,6 +1601,145 @@ function extractNextPageParams(
 
 
   return null;
+}
+
+
+/*
+ * tag_status_sort 分区分页和 sort_time 略有不同：
+ * 第二页真实请求可能没有 page=2，而只靠 since_id/max_id。
+ * 所以这里不要求 params.page >= 2。
+ */
+function extractTagNextPageParams(
+  json
+) {
+  const candidates = [
+    json?.moreInfo?.params,
+    json?.data?.moreInfo?.params,
+    json?.data?.more_info?.params,
+    json?.more_info?.params
+  ];
+
+  for (
+    const params
+    of candidates
+  ) {
+    if (
+      !params
+      ||
+      typeof params !== 'object'
+    ) {
+      continue;
+    }
+
+    const sinceId =
+      params.since_id
+      !== undefined
+      &&
+      params.since_id !== null
+        ? String(params.since_id)
+        : null;
+
+    if (!sinceId) {
+      continue;
+    }
+
+    return {
+      page:
+        Number.isFinite(
+          Number(params.page)
+        )
+          ? Number(params.page)
+          : null,
+
+      since_id:
+        sinceId,
+
+      max_id:
+        params.max_id
+        !== undefined
+        &&
+        params.max_id !== null
+          ? String(params.max_id)
+          : '0',
+
+      count:
+        params.count
+        !== undefined
+        &&
+        params.count !== null
+          ? String(params.count)
+          : '15',
+
+      page_common_ext:
+        params.page_common_ext
+        !== undefined
+        &&
+        params.page_common_ext !== null
+          ? String(params.page_common_ext)
+          : 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
+    };
+  }
+
+  return null;
+}
+
+
+function buildTagSectionUrl(
+  flowId,
+  pageParams = null
+) {
+  const url =
+    new URL(
+      '/ajax_proxy/chaohua/page',
+      'https://weibo.com'
+    );
+
+  url.searchParams.set(
+    'flowId',
+    flowId
+  );
+
+  if (!pageParams) {
+    return url.toString();
+  }
+
+  if (
+    Number.isFinite(
+      Number(pageParams.page)
+    )
+  ) {
+    url.searchParams.set(
+      'page',
+      String(pageParams.page)
+    );
+  }
+
+  if (pageParams.since_id) {
+    url.searchParams.set(
+      'since_id',
+      pageParams.since_id
+    );
+  }
+
+  url.searchParams.set(
+    'count',
+    pageParams.count
+    || '15'
+  );
+
+  url.searchParams.set(
+    'max_id',
+    pageParams.max_id
+    ?? '0'
+  );
+
+  url.searchParams.set(
+    'page_common_ext',
+    pageParams.page_common_ext
+    || 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
+  );
+
+  return url.toString();
 }
 
 
@@ -4352,6 +4522,9 @@ async function scanOneSuperLikeMonitor(
     let latestCommentsPromise = null;
     let latestCommentsError = null;
 
+    const tagSectionPromises =
+      new Map();
+
     function collectFreshPage(
       json,
       source,
@@ -4470,6 +4643,16 @@ async function scanOneSuperLikeMonitor(
         }
       }
 
+      if (
+        tagSectionPromises.size > 0
+      ) {
+        await Promise.all(
+          Array.from(
+            tagSectionPromises.values()
+          )
+        );
+      }
+
       freshPoolFlushed = true;
 
       const posts =
@@ -4529,6 +4712,187 @@ async function scanOneSuperLikeMonitor(
         ].join(' | ')
       );
     }
+
+    function scanTagSection(
+      source
+    ) {
+      if (
+        !source
+        ||
+        !source.flowId
+      ) {
+        return Promise.resolve();
+      }
+
+      if (
+        tagSectionPromises.has(
+          source.key
+        )
+      ) {
+        return tagSectionPromises.get(
+          source.key
+        );
+      }
+
+      const promise =
+        (async () => {
+          console.log(
+            `[SuperLike][分区采集] ${source.name} 开始，最多 ${TAG_SECTION_PAGES} 页 | flowId=${source.flowId}`
+          );
+
+          let currentUrl =
+            buildTagSectionUrl(
+              source.flowId
+            );
+
+          let currentResult =
+            await fetchChaohuaInPage(
+              page,
+              currentUrl,
+              firstSortTimeResult.requestHeaders
+              || feedResult.requestHeaders
+              || {}
+            );
+
+          if (
+            currentResult.httpStatus === 418
+          ) {
+            throw new Weibo418Error(
+              `${source.name} 第一页返回 HTTP 418`
+            );
+          }
+
+          if (!currentResult.ok) {
+            throw new Error(
+              `${source.name} 第一页请求失败：HTTP ${currentResult.httpStatus ?? '-'} ${currentResult.error || currentResult.text || ''}`
+            );
+          }
+
+          for (
+            let sectionPageIndex = 1;
+            sectionPageIndex <= TAG_SECTION_PAGES;
+            sectionPageIndex++
+          ) {
+            pagesScanned++;
+
+            await saveScanResponseJson(
+              currentResult.json,
+              source.key
+            );
+
+            const sectionStats =
+              collectFreshPage(
+                currentResult.json,
+                source.key,
+                null
+              );
+
+            console.log(
+              [
+                `[分区采集 ${source.name} #${sectionPageIndex}]`,
+                `Post=${sectionStats.found}`,
+                `新收集=${sectionStats.collected}`,
+                `池内重复=${sectionStats.duplicateInPool}`,
+                `fresh池=${freshCollectedPosts.length}`
+              ].join(' | ')
+            );
+
+            if (
+              sectionPageIndex >=
+              TAG_SECTION_PAGES
+            ) {
+              break;
+            }
+
+            const nextParams =
+              extractTagNextPageParams(
+                currentResult.json
+              );
+
+            if (!nextParams) {
+              console.log(
+                `[SuperLike][分区采集] ${source.name} 当前页没有下一页 since_id，结束。`
+              );
+              break;
+            }
+
+            currentUrl =
+              buildTagSectionUrl(
+                source.flowId,
+                nextParams
+              );
+
+            console.log(
+              `[SuperLike][分区采集] ${source.name} 请求下一页 | since_id=${nextParams.since_id}`
+            );
+
+            currentResult =
+              await fetchChaohuaInPage(
+                page,
+                currentUrl,
+                firstSortTimeResult.requestHeaders
+                || feedResult.requestHeaders
+                || {}
+              );
+
+            if (
+              currentResult.httpStatus === 418
+            ) {
+              throw new Weibo418Error(
+                `${source.name} 下一页返回 HTTP 418`
+              );
+            }
+
+            if (!currentResult.ok) {
+              console.log(
+                `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${currentResult.error || currentResult.text || '-'}`
+              );
+              break;
+            }
+
+            if (
+              PAGE_DELAY_MS > 0
+            ) {
+              await page.waitForTimeout(
+                PAGE_DELAY_MS
+              );
+            }
+          }
+
+          console.log(
+            `[SuperLike][分区采集完成] ${source.name}`
+          );
+        })()
+        .catch(
+          error => {
+            console.log(
+              `[SuperLike][分区采集异常] ${source.name} | ${error?.message || error}`
+            );
+
+            /*
+             * 单个分区失败不阻断其它来源和统一处理。
+             * 418 仍抛出，让现有代理切换逻辑处理。
+             */
+            if (
+              isWeibo418Error(
+                error
+              )
+            ) {
+              throw error;
+            }
+
+            return null;
+          }
+        );
+
+      tagSectionPromises.set(
+        source.key,
+        promise
+      );
+
+      return promise;
+    }
+
 
     function scanLatestComments(
       trigger = 'parallel-fresh'
@@ -4713,6 +5077,19 @@ async function scanOneSuperLikeMonitor(
      */
     scanLatestComments(
       'parallel-with-latest-posts'
+    );
+
+    for (
+      const source
+      of TAG_SECTION_SOURCES
+    ) {
+      scanTagSection(
+        source
+      );
+    }
+
+    console.log(
+      `[SuperLike][并发采集] 已启动来源：最新发帖 / 最新评论 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')}`
     );
 
     // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
