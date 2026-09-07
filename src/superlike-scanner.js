@@ -86,14 +86,21 @@ const MAX_PAGES =
   || 100;
 
 /*
- * 每轮必须先从最新页抓一小段，保证新帖子及时入库。
- * 即使存在很深的 Resume，也不能一上来就跳到旧页。
+ * 白天：先抓最新10页，再补历史 Resume。
+ * 晚高峰（中国时间19:00-23:59）：只抓最新30页，暂停历史 Resume。
  */
-const FRESH_FIRST_PAGES =
+const DAY_FRESH_FIRST_PAGES =
   Number(
-    process.env.SUPERLIKE_FRESH_FIRST_PAGES
+    process.env.SUPERLIKE_DAY_FRESH_FIRST_PAGES
+    || process.env.SUPERLIKE_FRESH_FIRST_PAGES
   )
   || 10;
+
+const NIGHT_FRESH_FIRST_PAGES =
+  Number(
+    process.env.SUPERLIKE_NIGHT_FRESH_FIRST_PAGES
+  )
+  || 30;
 
 /*
  * 历史 Resume 每轮最多补 15 分钟。
@@ -3499,9 +3506,34 @@ async function scanOneSuperLikeMonitor(
     let resumeStartedAt =
       null;
 
+    const chinaHour =
+      Number(
+        new Intl.DateTimeFormat(
+          'en-US',
+          {
+            timeZone:
+              'Asia/Shanghai',
+            hour:
+              '2-digit',
+            hour12:
+              false
+          }
+        ).format(
+          new Date()
+        )
+      );
+
+    const nightPeak =
+      chinaHour >= 19;
+
+    const freshFirstPages =
+      nightPeak
+        ? NIGHT_FRESH_FIRST_PAGES
+        : DAY_FRESH_FIRST_PAGES;
+
     if (resume) {
       console.log(
-        `[SuperLike][FreshFirst] 检测到 Resume page=${resume.next_page}；本轮先扫描最新 ${FRESH_FIRST_PAGES} 页，再继续旧 Resume。`
+        `[SuperLike][FreshFirst] ${nightPeak ? '晚高峰' : '白天'}策略：检测到 Resume page=${resume.next_page}；本轮先扫描最新 ${freshFirstPages} 页${nightPeak ? '，晚高峰暂停历史 Resume' : '，再继续旧 Resume'}。`
       );
     }
 
@@ -3683,10 +3715,12 @@ async function scanOneSuperLikeMonitor(
       if (
         resume
         &&
+        !nightPeak
+        &&
         !switchedToResume
         &&
         batchPageIndex >=
-          FRESH_FIRST_PAGES
+          freshFirstPages
       ) {
         const resumeParams = {
           page:
@@ -3710,7 +3744,7 @@ async function scanOneSuperLikeMonitor(
           );
 
         console.log(
-          `[SuperLike][FreshFirst] 最新区段已处理 ${FRESH_FIRST_PAGES} 页；现在切回 Resume page=${resumeParams.page}。`
+          `[SuperLike][FreshFirst] 最新区段已处理 ${freshFirstPages} 页；现在切回 Resume page=${resumeParams.page}。`
         );
 
         const resumeResult =
@@ -3760,6 +3794,27 @@ async function scanOneSuperLikeMonitor(
           0;
 
         continue;
+      }
+
+
+      if (
+        nightPeak
+        &&
+        resume
+        &&
+        !switchedToResume
+        &&
+        batchPageIndex >=
+          freshFirstPages
+      ) {
+        stopReason =
+          `晚高峰最新区段已处理 ${freshFirstPages} 页，暂停历史 Resume`;
+
+        console.log(
+          `[SuperLike][FreshFirst] ${stopReason}；保留 Resume page=${resume.next_page}，结束本轮。`
+        );
+
+        break;
       }
 
 
