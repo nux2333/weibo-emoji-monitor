@@ -333,6 +333,30 @@ function initSuperLikeTable() {
   initDatabase();
 }
 
+function deletePostsByUidWithLog(
+  uid,
+  reason
+) {
+  const normalizedUid =
+    String(uid || '').trim();
+
+  if (!normalizedUid) {
+    return 0;
+  }
+
+  const deleted =
+    deletePostsByUidSet(
+      new Set([normalizedUid])
+    );
+
+  console.log(
+    `[DB删除][UID=${normalizedUid}] 原因=${reason || 'UNSPECIFIED'} | 删除=${deleted}`
+  );
+
+  return deleted;
+}
+
+
 // 保留 scanner 内原函数名，实际数据库查询统一交给 db.js。
 function postIdExists(postId) {
   return superLikePostIdExists(postId);
@@ -921,8 +945,9 @@ function saveTargetPost(
       uid
     );
 
-    deletePostsByUidSet(
-      new Set([uid])
+    deletePostsByUidWithLog(
+      uid,
+      'FEED_SUPERLIKE_ICON'
     );
 
     return {
@@ -3220,8 +3245,9 @@ async function processPagePosts(
         );
 
         const deletedNow =
-          deletePostsByUidSet(
-            new Set([uid])
+          deletePostsByUidWithLog(
+            uid,
+            'COMMENTS_21'
           );
 
         console.log(
@@ -3337,8 +3363,9 @@ async function processPagePosts(
         );
 
       const deletedNow =
-        deletePostsByUidSet(
-          new Set([uid])
+        deletePostsByUidWithLog(
+          uid,
+          'SUPERLIKE_PROFILE_CONFIRMED'
         );
 
       if (!deleteUidSet.has(uid)) {
@@ -3419,8 +3446,9 @@ async function processPagePosts(
           );
         } else {
           const deletedNow =
-            deletePostsByUidSet(
-              new Set([uid])
+            deletePostsByUidWithLog(
+              uid,
+              'PROFILE_NO_USABLE_POST'
             );
 
           console.log(
