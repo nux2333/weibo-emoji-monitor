@@ -57,10 +57,11 @@ const {
  *      page
  *      since_id
  *      max_id
- * 7. 最多 50 页
- * 8. DB 已有 post_id > 10 后结束
- * 9. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
- * 10. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
+ * 7. “最新发帖”按现有 checkpoint / Resume 扫描
+ * 8. “最新评论”作为第二条独立数据流固定扫描前 N 页，不使用发帖时间 checkpoint
+ * 9. 两条流共用 Post/UID 去重与 Profile 缓存，取并集但不重复处理
+ * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
+ * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
  */
 
@@ -85,6 +86,17 @@ let consecutive418 = 0;
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
   || 100;
+
+/*
+ * “最新评论”与“最新发帖”是两条独立数据流。
+ * 最新评论不是按发帖时间排序，因此不使用 latest_post checkpoint / Resume，
+ * 每轮固定扫描前 N 页，避免因为命中旧帖子而提前停止。
+ */
+const LATEST_COMMENTS_PAGES =
+  Number(
+    process.env.SUPERLIKE_LATEST_COMMENTS_PAGES
+  )
+  || 20;
 
 /*
  * 白天：先抓最新10页，再补历史 Resume。
@@ -272,7 +284,10 @@ function getChinaDateParts(date = new Date()) {
   };
 }
 
-async function saveScanResponseJson(json) {
+async function saveScanResponseJson(
+  json,
+  source = 'latest-posts'
+) {
   try {
     const now = new Date();
     const { dateDir, stamp } =
@@ -284,7 +299,9 @@ async function saveScanResponseJson(json) {
         '..',
         'logs',
         'scan-responses',
-        dateDir
+        dateDir,
+        String(source || 'unknown')
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
       );
 
     await fs.promises.mkdir(
@@ -4338,7 +4355,8 @@ async function scanOneSuperLikeMonitor(
 
 
       await saveScanResponseJson(
-        current.json
+        current.json,
+        'latest-posts'
       );
 
 
@@ -4821,6 +4839,196 @@ async function scanOneSuperLikeMonitor(
       logicalPageNumber =
         Number(nextParams.page);
 
+
+      if (
+        PAGE_DELAY_MS > 0
+      ) {
+        await page.waitForTimeout(
+          PAGE_DELAY_MS
+        );
+      }
+    }
+
+
+    /*
+     * ============================================================
+     * 第二条独立数据流：最新评论（_-_feed）
+     *
+     * 重要：
+     * - 与“最新发帖 sort_time”不是同一批帖子，必须独立扫描。
+     * - 放在 sort_time 之后扫描，优先保留“最新发帖”选中的同 UID 帖子。
+     * - 共用 seenThisRun / seenUidThisRun / profileCache / deleteUidSet，
+     *   两边重复的 Post/UID 不会重复处理、不会重复查 Profile。
+     * - 不传 checkpoint：最新评论按“最近发生评论”排序，不按发帖时间排序，
+     *   不能因为遇到旧 Post 就停止。
+     * - 不使用 Resume：每轮固定扫描前 LATEST_COMMENTS_PAGES 页。
+     * ============================================================
+     */
+    console.log(
+      `[SuperLike][最新评论] 开始独立扫描 _feed，最多 ${LATEST_COMMENTS_PAGES} 页；不使用发帖时间Checkpoint。`
+    );
+
+    let commentsCurrent = {
+      url:
+        feedResult.url,
+      page:
+        Number(feedResult.page || 1),
+      json:
+        feedResult.json
+    };
+
+    const commentsTemplateUrl =
+      feedResult.url;
+
+    const commentsTemplateHeaders =
+      feedResult.requestHeaders
+      || {};
+
+    for (
+      let commentsPageIndex = 1;
+      commentsPageIndex <= LATEST_COMMENTS_PAGES;
+      commentsPageIndex++
+    ) {
+      pagesScanned++;
+
+      await saveScanResponseJson(
+        commentsCurrent.json,
+        'latest-comments'
+      );
+
+      const commentsStats =
+        await processPagePosts(
+          monitor.id,
+          commentsCurrent.json,
+          seenThisRun,
+          seenUidThisRun,
+          deleteUidSet,
+          null,
+          browser,
+          config,
+          profileCache,
+          scanVisitorContext
+        );
+
+      for (
+        const key
+        of Object.keys(total)
+      ) {
+        if (
+          typeof commentsStats[key]
+          === 'number'
+        ) {
+          total[key] +=
+            commentsStats[key]
+            || 0;
+        }
+      }
+
+      console.log(
+        [
+          `[最新评论 第${commentsCurrent.page || commentsPageIndex}页]`,
+          `Post=${commentsStats.found}`,
+          `同UID重复=${commentsStats.duplicateUidInRun}`,
+          `DB保留=${commentsStats.existingInDb}`,
+          `评论>=21=${commentsStats.commentsFull}`,
+          `SuperLike=${commentsStats.hasSuperLike}`,
+          `Profile查=${commentsStats.profileChecked}`,
+          `Profile命中=${commentsStats.profileSuperLike}`,
+          `Profile失败=${commentsStats.profileFailed}`,
+          `新增=${commentsStats.inserted}`,
+          `更新UID=${commentsStats.replaced}`
+        ].join(' | ')
+      );
+
+      if (
+        commentsPageIndex >=
+        LATEST_COMMENTS_PAGES
+      ) {
+        console.log(
+          `[SuperLike][最新评论] 已扫描固定上限 ${LATEST_COMMENTS_PAGES} 页。`
+        );
+        break;
+      }
+
+      const commentsNextParams =
+        extractNextPageParams(
+          commentsCurrent.json
+        );
+
+      if (!commentsNextParams) {
+        console.log(
+          `[SuperLike][最新评论] 第${commentsCurrent.page || commentsPageIndex}页没有下一页参数，结束最新评论扫描。`
+        );
+        break;
+      }
+
+      const commentsNextUrl =
+        buildChaohuaUrl(
+          config.feedFlowId,
+          commentsNextParams,
+          commentsTemplateUrl
+        );
+
+      console.log(
+        `[SuperLike][最新评论] 请求下一页 _feed：page=${commentsNextParams.page}`
+      );
+
+      let commentsNextResult =
+        await fetchChaohuaInPage(
+          page,
+          commentsNextUrl,
+          commentsTemplateHeaders
+        );
+
+      if (
+        !commentsNextResult.ok
+        &&
+        commentsNextResult.httpStatus === null
+      ) {
+        console.log(
+          `[SuperLike][最新评论慢重试] page=${commentsNextParams.page} | 前3次未拿到HTTP Response | 5000ms后最后重试一次`
+        );
+
+        await page.waitForTimeout(
+          5000
+        );
+
+        commentsNextResult =
+          await fetchChaohuaInPage(
+            page,
+            commentsNextUrl,
+            commentsTemplateHeaders
+          );
+      }
+
+      if (
+        commentsNextResult.httpStatus === 418
+      ) {
+        throw new Weibo418Error(
+          '最新评论 _feed 下一页返回 HTTP 418'
+        );
+      }
+
+      if (!commentsNextResult.ok) {
+        console.log(
+          commentsNextResult.httpStatus === null
+            ? `[SuperLike][最新评论] 下一页请求失败：${commentsNextResult.error || 'unknown error'}`
+            : `[SuperLike][最新评论] 下一页 HTTP ${commentsNextResult.httpStatus}`
+        );
+
+        break;
+      }
+
+      commentsCurrent = {
+        url:
+          commentsNextUrl,
+        page:
+          Number(
+            commentsNextParams.page
+          ),
+        json:
+          commentsNextResult.json
+      };
 
       if (
         PAGE_DELAY_MS > 0
