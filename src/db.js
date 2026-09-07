@@ -1036,7 +1036,7 @@ function saveSuperLikeTargetPost(data = {}) {
       ?,?,?,?,?,?,?,
       0,
       ?,
-      NULL,
+      ?,
       ?,
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP,
