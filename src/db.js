@@ -899,6 +899,10 @@ function saveSuperLikeTargetPost(data = {}) {
   const postCreatedAt = data.postCreatedAt || null;
   const postCreatedAtMs = Number(data.postCreatedAtMs);
   const rawJson = data.rawJson || null;
+  const profileStatus =
+    String(data.profileStatus || 'UNKNOWN')
+      .trim()
+      .toUpperCase();
 
   if (!Number.isFinite(monitorId) || monitorId <= 0) {
     throw new Error('saveSuperLikeTargetPost 缺少有效 monitorId');
@@ -950,6 +954,17 @@ function saveSuperLikeTargetPost(data = {}) {
       );
 
     if (!shouldReplace) {
+      if (profileStatus !== 'UNKNOWN') {
+        db.prepare(`
+          UPDATE superlike_posts
+          SET
+            profile_status = ?,
+            profile_last_checked_at = CURRENT_TIMESTAMP
+          WHERE monitor_id = ?
+            AND uid = ?
+        `).run(profileStatus, monitorId, uid);
+      }
+
       return {
         status: 'kept_existing',
         postId: String(existing.post_id),
@@ -979,6 +994,8 @@ function saveSuperLikeTargetPost(data = {}) {
       post_created_at,
       first_seen_at,
       last_seen_at,
+      profile_last_checked_at,
+      profile_status,
       raw_json
     )
     VALUES(
@@ -989,6 +1006,8 @@ function saveSuperLikeTargetPost(data = {}) {
       ?,
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP,
+      CASE WHEN ? = 'UNKNOWN' THEN NULL ELSE CURRENT_TIMESTAMP END,
+      ?,
       ?
     )
   `).run(
@@ -1001,6 +1020,8 @@ function saveSuperLikeTargetPost(data = {}) {
     commentsCount,
     iconSummary,
     postCreatedAt,
+    profileStatus,
+    profileStatus,
     rawJson
   );
 
