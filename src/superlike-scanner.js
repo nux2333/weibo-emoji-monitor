@@ -11,6 +11,7 @@ if (require.main === module) {
     );
 }
 
+const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 const {
@@ -231,6 +232,95 @@ async function acquireScanProxyWaiting() {
       proxy: null,
       masked: 'LOCAL'
     };
+  }
+}
+
+
+/* ============================================================
+ * Scan Response JSON
+ * ============================================================ */
+
+let scanResponseSequence = 0;
+
+function getChinaDateParts(date = new Date()) {
+  const parts =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }
+    ).formatToParts(date);
+
+  const map = {};
+
+  for (const part of parts) {
+    if (part.type !== 'literal') {
+      map[part.type] = part.value;
+    }
+  }
+
+  return {
+    dateDir: `${map.year}-${map.month}-${map.day}`,
+    stamp: `${map.year}${map.month}${map.day}-${map.hour}${map.minute}${map.second}`
+  };
+}
+
+async function saveScanResponseJson(json) {
+  try {
+    const now = new Date();
+    const { dateDir, stamp } =
+      getChinaDateParts(now);
+
+    const dir =
+      path.join(
+        __dirname,
+        '..',
+        'logs',
+        'scan-responses',
+        dateDir
+      );
+
+    await fs.promises.mkdir(
+      dir,
+      { recursive: true }
+    );
+
+    scanResponseSequence++;
+
+    const fileName =
+      `Response-${stamp}-${String(scanResponseSequence).padStart(3, '0')}.json`;
+
+    const filePath =
+      path.join(
+        dir,
+        fileName
+      );
+
+    await fs.promises.writeFile(
+      filePath,
+      JSON.stringify(json, null, 2),
+      'utf8'
+    );
+
+    console.log(
+      `[SuperLike][Response保存] ${path.relative(process.cwd(), filePath)}`
+    );
+
+    return filePath;
+
+  } catch (error) {
+    console.warn(
+      `[SuperLike][Response保存失败] ${error?.message || error}`
+    );
+
+    return null;
   }
 }
 
@@ -3964,6 +4054,11 @@ async function scanOneSuperLikeMonitor(
       const pageNumber =
         logicalPageNumber;
       pagesScanned++;
+
+
+      await saveScanResponseJson(
+        current.json
+      );
 
 
       const pageStats =
