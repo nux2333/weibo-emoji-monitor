@@ -454,7 +454,8 @@ function getPostsByUid(
  */
 function deleteAllPostsByUid(
   monitorId,
-  uid
+  uid,
+  reason = 'UNSPECIFIED'
 ) {
 
   const result =
@@ -467,8 +468,14 @@ function deleteAllPostsByUid(
       uid
     );
 
+  const deleted =
+    Number(result.changes || 0);
 
-  return result.changes;
+  console.log(
+    `[DB删除][UID=${uid}] Monitor=${monitorId} | 原因=${reason} | 删除=${deleted}`
+  );
+
+  return deleted;
 }
 
 
@@ -1847,7 +1854,8 @@ async function recheckOneMonitor(
         const deleted =
           deleteAllPostsByUid(
             monitor.id,
-            uid
+            uid,
+            'SUPERLIKE_PROFILE_CONFIRMED'
           );
 
 
@@ -1944,7 +1952,8 @@ async function recheckOneMonitor(
           const deleted =
             deleteAllPostsByUid(
               monitor.id,
-              uid
+              uid,
+              'PROFILE_NO_USABLE_POST'
             );
 
           console.log(
@@ -2081,7 +2090,8 @@ async function recheckOneMonitor(
           const deleted =
             deleteAllPostsByUid(
               monitor.id,
-              uid
+              uid,
+              'COMMENTS_21'
             );
 
           stats.deletedByComments +=
@@ -3483,7 +3493,8 @@ async function runLightSuperLikeRecheck(signal = null) {
           const deleted =
             deleteAllPostsByUid(
               monitor.id,
-              uid
+              uid,
+              'SUPERLIKE_PROFILE_CONFIRMED'
             );
 
           stats.deletedRows +=
