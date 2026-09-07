@@ -2628,8 +2628,9 @@ function getDistinctUsersForLightProfile(
    * 全量 UID 分批轮询：
    * - superlike_posts 中所有尚未确认 SuperLike 的 UID 都进入队列
    * - 同一个 UID 无论有多少帖子，Profile 只检查一次
-   * - 有已搬运帖子的 UID 最优先
-   * - 同一搬运状态下，从未检查过的 UID 优先
+   * - PROFILE_FAILED 的 UID 最优先
+   * - 其次有已搬运帖子的 UID 优先
+   * - 同一状态下，从未检查过的 UID 优先
    * - 之后按 profile_last_checked_at 最旧的优先
    * - 每轮最多 PROFILE_VERIFY_BATCH_SIZE 个
    *
@@ -2656,6 +2657,11 @@ function getDistinctUsersForLightProfile(
       )
     GROUP BY p.uid
     ORDER BY
+      CASE
+        WHEN UPPER(COALESCE(MAX(p.profile_status), '')) = 'PROFILE_FAILED'
+        THEN 0
+        ELSE 1
+      END ASC,
       has_moved_post DESC,
       CASE
         WHEN MAX(p.profile_last_checked_at) IS NULL
