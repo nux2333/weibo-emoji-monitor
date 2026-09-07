@@ -2248,14 +2248,32 @@ async function checkUserSuperLikeByProfileInner(
         const requestUrl =
           route.request().url();
 
+        let isPassportJump =
+          false;
+
+        try {
+          const requestHost =
+            new URL(
+              requestUrl
+            ).hostname
+              .toLowerCase();
+
+          isPassportJump =
+            requestHost ===
+              'visitor.passport.weibo.cn'
+            ||
+            requestHost ===
+              'passport.weibo.cn'
+            ||
+            requestHost ===
+              'passport.weibo.com';
+        } catch {
+          isPassportJump =
+            false;
+        }
+
         if (
-          /https?:\\/\\/(?:visitor\\.)?passport\\.weibo\\.(?:cn|com)\\//i.test(
-            requestUrl
-          )
-          ||
-          /https?:\\/\\/passport\\.weibo\\.cn\\//i.test(
-            requestUrl
-          )
+          isPassportJump
         ) {
           console.log(
             `[SuperLike][Profile游客模式] UID=${uid} 已阻止登录跳转：${requestUrl}`
