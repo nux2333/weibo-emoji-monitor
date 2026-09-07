@@ -162,7 +162,8 @@ function restoreSearchState() {
         'post_created_at',
         'comments_count',
         'uid',
-        'username'
+        'username',
+        'experience_7d'
       ].includes(
         state.sortKey
       )
@@ -206,6 +207,11 @@ const CSV_COLUMNS = [
   {
     key: 'comments_count',
     label: '评论',
+    defaultChecked: true
+  },
+  {
+    key: 'experience_7d',
+    label: 'jyz',
     defaultChecked: true
   },
   {
@@ -795,7 +801,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="7"
+          colspan="8"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -940,6 +946,13 @@ function renderTable() {
       >
         ${escapeHtml(
           row.comments_count
+        )}
+      </td>
+
+
+      <td class="experience-7d">
+        ${escapeHtml(
+          row.experience_7d ?? '-'
         )}
       </td>
 
