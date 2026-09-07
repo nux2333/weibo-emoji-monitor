@@ -272,7 +272,7 @@ const MODE2_ROUND_INTERVAL_MS =
   Number(
     process.env.SUPERLIKE_MODE2_ROUND_INTERVAL_MS
   )
-  || 30 * 1000;
+  || 15 * 1000;
 
 const MODE3_ROUND_INTERVAL_MS =
   Number(
@@ -282,7 +282,7 @@ const MODE3_ROUND_INTERVAL_MS =
 
 /*
  * Mode2：
- * 每30秒作为最短轮询间隔。
+ * 每15秒作为最短轮询间隔。
  * 不再限制每轮60条；只处理 comment_next_check_at 已到期的数据。
  */
 
@@ -2230,11 +2230,11 @@ function getCommentCheckIntervalMinutes(commentsCount) {
   const count =
     Number(commentsCount) || 0;
 
-  if (count >= 18) return 0.5;
-  if (count >= 15) return 1;
-  if (count >= 10) return 2;
-  if (count >= 5) return 10;
-  return 10;
+  if (count >= 18) return 0.25;
+  if (count >= 15) return 0.5;
+  if (count >= 10) return 1;
+  if (count >= 5) return 5;
+  return 5;
 }
 
 function getCommentCandidatePosts(queueType = 'normal') {
@@ -2243,7 +2243,7 @@ function getCommentCandidatePosts(queueType = 'normal') {
    *
    * HOT：
    *   comments_count 18~20
-   *   每30秒独立一轮，不被普通队列阻塞。
+   *   每15秒独立一轮，不被普通队列阻塞。
    *
    * NORMAL：
    *   comments_count 0~17
@@ -4049,11 +4049,11 @@ async function runLightCommentRecheck(
   console.log('# 其余 → 只更新 comments_count');
   console.log(
     queueType === 'hot'
-      ? '# HOT：只查18-20条；每30秒独立调度，不等待普通队列'
+      ? '# HOT：只查18-20条；每15秒独立调度，不等待普通队列'
       : '# NORMAL：只查0-17条；按comment_next_check_at到期轮询'
   );
   console.log('# 当前队列无数量上限；已搬运优先，同组内按 comments_count DESC 优先');
-  console.log('# 18-20条≈30秒；15-17条≈1分钟；10-14条≈2分钟；0-9条≈10分钟');
+  console.log('# 18-20条≈15秒；15-17条≈30秒；10-14条≈1分钟；0-9条≈5分钟');
   console.log(`本轮${queueLabel}到期=${posts.length}`);
   console.log('########################################');
 
@@ -5473,7 +5473,7 @@ async function runMode4Forever() {
  * ============================================================
  * 模式2/3常驻轮询
  *
- * Mode2：30秒为最短轮询间隔，处理全部到期评论任务；上一轮不强制取消。
+ * Mode2：15秒为最短轮询间隔，处理全部到期评论任务；上一轮不强制取消。
  * Mode3：2分钟一轮，每轮最多30个 UID，按最久未检查优先。
  *
  * Mode3 到达下一轮边界时，如果上一轮仍未结束，会 abort 上一轮。
@@ -5483,7 +5483,7 @@ async function runMode4Forever() {
 async function runMode2DualForever() {
   console.log('');
   console.log('[Recheck] 模式2：双独立循环启动。');
-  console.log('[Recheck] HOT：18-20评论，每30秒独立检查一次。');
+  console.log('[Recheck] HOT：18-20评论，每15秒独立检查一次。');
   console.log('[Recheck] NORMAL：0-17评论，持续处理到期队列，不阻塞HOT。');
 
   async function runHotLoop() {
@@ -5530,7 +5530,8 @@ async function runMode2DualForever() {
         );
       } else {
         console.log(
-          '[Recheck][HOT] 本轮超过30秒，立即开始下一轮。'
+          '[Recheck][HOT] 本轮超过15秒，立即开始下一轮。'
+
         );
       }
     }
@@ -5638,7 +5639,7 @@ async function runLightModeForever(mode) {
         .catch(error => ({ type: 'error', error }));
 
     /*
-     * Mode2 不再用30秒硬切上一轮。
+     * Mode2 不再用15秒硬切上一轮。
      * 如果本轮到期数据很多，就完整处理完；超过30秒后下一轮立即开始。
      */
     if (mode === '2') {
@@ -5673,7 +5674,7 @@ async function runLightModeForever(mode) {
         await sleep(waitMs);
       } else {
         console.log(
-          '[Recheck] 模式2 本轮耗时已超过30秒，立即开始下一轮到期检查。'
+          '[Recheck] 模式2 本轮耗时已超过15秒，立即开始下一轮到期检查。'
         );
       }
 
