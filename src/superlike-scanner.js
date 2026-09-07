@@ -2200,17 +2200,17 @@ async function checkUserSuperLikeByProfileInner(
   );
 
   let profileContext = null;
+  let profilePage = null;
 
   try {
     /*
-     * Profile 查询统一使用独立游客 Context：
-     * - 不继承持久化微博登录账号 Cookie / localStorage
-     * - 不打开 m.weibo.cn 首页
-     * - 不创建 Page，不走 window.fetch
-     * - 直接使用匿名 Context 的 request.get()
+     * 游客 Profile 查询：
+     * - 独立匿名 BrowserContext，不继承登录 Cookie/localStorage
+     * - 不先打开微博首页
+     * - 直接用真实 Page 导航到 profile_inpage API
+     * - 从 navigation Response 读取原始 body
      *
-     * Browser 仍沿用当前轮的代理/本地网络出口。
-     * Scanner / Mode1 / Mode3 都共用这个函数。
+     * 这样既保持游客身份，又避免 APIRequestContext 被微博返回 HTML。
      */
     const parentBrowser =
       context.browser();
@@ -2227,15 +2227,23 @@ async function checkUserSuperLikeByProfileInner(
     }
 
     profileContext =
-      await parentBrowser.newContext();
+      await parentBrowser.newContext({
+        viewport: {
+          width: 1280,
+          height: 900
+        }
+      });
+
+    profilePage =
+      await profileContext.newPage();
 
     console.log(
-      `[SuperLike][Profile游客模式] UID=${uid} 匿名Context直接request.get，不携带登录账号Cookie`
+      `[SuperLike][Profile游客模式] UID=${uid} 匿名Page直接打开Profile API，不携带登录账号Cookie`
     );
 
     const maxAttempts = 2;
     const retryDelayMs = 500;
-    const requestTimeoutMs = 5000;
+    const navigationTimeoutMs = 5000;
 
     let result = null;
 
@@ -2249,21 +2257,21 @@ async function checkUserSuperLikeByProfileInner(
 
       try {
         const response =
-          await profileContext.request.get(
+          await profilePage.goto(
             url,
             {
-              headers: {
-                'Accept':
-                  'application/json, text/plain, */*',
-                'Referer':
-                  'https://m.weibo.cn/'
-              },
+              waitUntil:
+                'domcontentloaded',
               timeout:
-                requestTimeoutMs,
-              failOnStatusCode:
-                false
+                navigationTimeoutMs
             }
           );
+
+        if (!response) {
+          throw new Error(
+            'Profile navigation 没有 Response'
+          );
+        }
 
         const status =
           response.status();
@@ -2293,9 +2301,7 @@ async function checkUserSuperLikeByProfileInner(
         );
 
         /*
-         * 418 / 403 不在这里重复撞。
-         * - 418 交给上层代理/冷却逻辑
-         * - 403 保留原 profile_status，不标 PROFILE_FAILED
+         * HTTP 418/403 不重复撞。
          */
         if (
           status === 418
@@ -2305,8 +2311,19 @@ async function checkUserSuperLikeByProfileInner(
           break;
         }
 
+        /*
+         * HTTP 2xx 但返回 HTML：
+         * 这次视为失败，允许再试一次。
+         */
+        const returnedHtml =
+          text
+            .trimStart()
+            .startsWith('<');
+
         if (
           result.ok
+          &&
+          !returnedHtml
         ) {
           break;
         }
@@ -2315,15 +2332,11 @@ async function checkUserSuperLikeByProfileInner(
           attempt < maxAttempts
         ) {
           console.log(
-            `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=${status} | ${retryDelayMs}ms后重试`
+            `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=${status} | ${returnedHtml ? '返回HTML' : 'HTTP异常'} | ${retryDelayMs}ms后重试`
           );
 
-          await new Promise(
-            resolve =>
-              setTimeout(
-                resolve,
-                retryDelayMs
-              )
+          await profilePage.waitForTimeout(
+            retryDelayMs
           );
         }
 
@@ -2349,12 +2362,8 @@ async function checkUserSuperLikeByProfileInner(
             `[SuperLike][Profile请求重试] ${attempt}/${maxAttempts} 失败 | status=- | error=${error.message} | ${retryDelayMs}ms后重试`
           );
 
-          await new Promise(
-            resolve =>
-              setTimeout(
-                resolve,
-                retryDelayMs
-              )
+          await profilePage.waitForTimeout(
+            retryDelayMs
           );
 
           continue;
@@ -2555,6 +2564,18 @@ async function checkUserSuperLikeByProfileInner(
     };
 
   } finally {
+    if (
+      profilePage
+      &&
+      !profilePage.isClosed()
+    ) {
+      try {
+        await profilePage.close();
+      } catch {
+        // ignore
+      }
+    }
+
     if (profileContext) {
       try {
         await profileContext.close();
