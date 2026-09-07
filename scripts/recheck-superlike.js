@@ -1748,6 +1748,16 @@ async function recheckOneMonitor(
           `[Recheck][Profile失败] UID=${uid} | ${profileMessage}`
         );
 
+        markProfileChecked(
+          monitor.id,
+          uid,
+          'PROFILE_FAILED'
+        );
+
+        console.log(
+          `[Recheck][Profile状态] UID=${uid} -> PROFILE_FAILED`
+        );
+
 
         /*
          * 代理/网络连接类错误不能在这里直接 continue。
@@ -3118,6 +3128,16 @@ async function runLightSuperLikeRecheck(signal = null) {
           console.log(
             `[轻量Profile ${i + 1}/${users.length}] ` +
             `UID=${uid} | 失败 | ${message}`
+          );
+
+          markProfileChecked(
+            monitor.id,
+            uid,
+            'PROFILE_FAILED'
+          );
+
+          console.log(
+            `[模式3][Profile状态] UID=${uid} -> PROFILE_FAILED`
           );
 
           const proxyConnectionFailed =
