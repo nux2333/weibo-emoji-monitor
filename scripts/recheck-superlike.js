@@ -290,7 +290,8 @@ const MODE3_ROUND_INTERVAL_MS =
 /*
  * Mode3 Profile：
  * 00:00-18:59 每2分钟一轮，每轮最多30个 UID。
- * 按“最久未检查”顺序循环覆盖 superlike_posts 中全部候选 UID。
+ * 按当前 experience_7d 从高到低优先扫描；同分数再按最久未检查排序。
+ * 每次成功 Profile 后实时回写最新 experience_7d。
  * 19:00 后暂停，Mode4 优先。
  */
 const PROFILE_VERIFY_BATCH_SIZE =
@@ -2717,10 +2718,9 @@ function getDistinctUsersForLightProfile(
    * 全量 UID 分批轮询：
    * - superlike_posts 中所有尚未确认 SuperLike 的 UID 都进入队列
    * - 同一个 UID 无论有多少帖子，Profile 只检查一次
-   * - PROFILE_FAILED 的 UID 最优先
-   * - 其次有已搬运帖子的 UID 优先
-   * - 同一状态下，从未检查过的 UID 优先
-   * - 之后按 profile_last_checked_at 最旧的优先
+   * - experience_7d 有值的优先，按分数从高到低
+   * - 同分数时 PROFILE_FAILED 优先重试
+   * - 再按从未检查 / 最久未检查排序
    * - 每轮最多 PROFILE_VERIFY_BATCH_SIZE 个
    *
    * 这样不会每轮暴力扫全库，但只要程序持续运行，
@@ -2734,7 +2734,8 @@ function getDistinctUsersForLightProfile(
       MAX(COALESCE(p.moved_flag, 0)) AS has_moved_post,
       MAX(p.id) AS latest_id,
       MIN(p.first_seen_at) AS first_seen_at,
-      MAX(p.profile_last_checked_at) AS profile_last_checked_at
+      MAX(p.profile_last_checked_at) AS profile_last_checked_at,
+      MAX(p.experience_7d) AS experience_7d
     FROM superlike_posts p
     WHERE p.monitor_id = ?
       AND p.uid IS NOT NULL
@@ -2750,11 +2751,16 @@ function getDistinctUsersForLightProfile(
     GROUP BY p.uid
     ORDER BY
       CASE
+        WHEN MAX(p.experience_7d) IS NULL
+        THEN 1
+        ELSE 0
+      END ASC,
+      MAX(p.experience_7d) DESC,
+      CASE
         WHEN UPPER(COALESCE(MAX(p.profile_status), '')) = 'PROFILE_FAILED'
         THEN 0
         ELSE 1
       END ASC,
-      has_moved_post DESC,
       CASE
         WHEN MAX(p.profile_last_checked_at) IS NULL
         THEN 0
@@ -2786,6 +2792,48 @@ function markProfileChecked(
     status,
     monitorId,
     uid
+  );
+}
+
+
+function updateMode3Experience7d(
+  monitorId,
+  uid,
+  experience7d
+) {
+  if (
+    experience7d === null
+    ||
+    experience7d === undefined
+    ||
+    experience7d === ''
+    ||
+    !Number.isFinite(
+      Number(experience7d)
+    )
+  ) {
+    return 0;
+  }
+
+  const value =
+    Number(experience7d);
+
+  const result =
+    db.prepare(`
+      UPDATE superlike_posts
+      SET
+        experience_7d = ?,
+        last_seen_at = CURRENT_TIMESTAMP
+      WHERE monitor_id = ?
+        AND uid = ?
+    `).run(
+      value,
+      monitorId,
+      uid
+    );
+
+  return Number(
+    result.changes || 0
   );
 }
 
@@ -3274,8 +3322,23 @@ async function runLightSuperLikeRecheck(signal = null) {
 
       console.log('');
       console.log(
-        `[轻量Profile] Monitor=${monitor.name} | UID=${users.length}`
+        `[轻量Profile] Monitor=${monitor.name} | UID=${users.length} | 顺序=jyz DESC`
       );
+
+      if (
+        users.length > 0
+      ) {
+        console.log(
+          '[模式3][队列TOP] ' +
+          users
+            .slice(0, 10)
+            .map(
+              item =>
+                `${item.uid}(jyz=${item.experience_7d ?? '-'})`
+            )
+            .join(' | ')
+        );
+      }
 
       let firstProbeResult = null;
 
@@ -3534,6 +3597,44 @@ async function runLightSuperLikeRecheck(signal = null) {
         }
 
         stats.checked++;
+
+        const oldExperience =
+          user.experience_7d === null
+          ||
+          user.experience_7d === undefined
+            ? null
+            : Number(
+                user.experience_7d
+              );
+
+        const newExperience =
+          result.experience7d === null
+          ||
+          result.experience7d === undefined
+            ? null
+            : Number(
+                result.experience7d
+              );
+
+        if (
+          Number.isFinite(
+            newExperience
+          )
+        ) {
+          updateMode3Experience7d(
+            monitor.id,
+            uid,
+            newExperience
+          );
+
+          console.log(
+            `[模式3][经验值实时更新] UID=${uid} | ${Number.isFinite(oldExperience) ? oldExperience : '-'} -> ${newExperience}`
+          );
+        } else {
+          console.log(
+            `[模式3][经验值实时更新] UID=${uid} | 本次未取得有效jyz，保留数据库原值=${Number.isFinite(oldExperience) ? oldExperience : '-'}`
+          );
+        }
 
         markProfileChecked(
           monitor.id,
@@ -5846,7 +5947,7 @@ function askRecheckMode() {
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
-    console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；最久未检查优先；晚19点后暂停）');
+    console.log('3 = Profile全量UID分批轮询（每2分钟最多30个；jyz最高优先；实时更新jyz；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续一直扫到上次last_uid边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
