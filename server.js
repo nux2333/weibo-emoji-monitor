@@ -1,5 +1,6 @@
 const express = require('express');
 const path = require('path');
+const fs = require('fs');
 
 const {
   db,
@@ -148,6 +149,178 @@ app.get('/api-responses', (req, res) =>
 app.get('/superlike', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'superlike.html'))
 );
+
+app.get('/logs-live', (req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'logs-live.html'))
+);
+
+/*
+ * 实时日志（仅本机/内网管理员页面）。
+ * SSE 每秒检查 logs 下最新 .log；新一轮生成新文件时自动切换。
+ */
+function findLatestLogFile() {
+  const roots = [
+    path.join(__dirname, 'logs'),
+    path.join(__dirname, 'log')
+  ].filter(p => fs.existsSync(p));
+
+  let best = null;
+
+  function walk(dir, depth = 0) {
+    if (depth > 5) return;
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+
+      if (!entry.isFile() || !/\.log$/i.test(entry.name)) {
+        continue;
+      }
+
+      try {
+        const stat = fs.statSync(full);
+        if (!best || stat.mtimeMs > best.mtimeMs) {
+          best = { path: full, mtimeMs: stat.mtimeMs, size: stat.size };
+        }
+      } catch {
+        // 文件可能正在轮转，下一次再读
+      }
+    }
+  }
+
+  for (const root of roots) walk(root);
+
+  return best;
+}
+
+function readLogTail(filePath, maxBytes = 128 * 1024) {
+  const stat = fs.statSync(filePath);
+  const start = Math.max(0, stat.size - maxBytes);
+  const length = stat.size - start;
+  if (length <= 0) return '';
+
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const buffer = Buffer.alloc(length);
+    fs.readSync(fd, buffer, 0, length, start);
+    let text = buffer.toString('utf8');
+    if (start > 0) {
+      const nl = text.indexOf('\n');
+      if (nl >= 0) text = text.slice(nl + 1);
+    }
+    return text;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+app.get('/api/admin/live-log/status', checkAdmin, (req, res) => {
+  try {
+    const latest = findLatestLogFile();
+    res.json({
+      success: true,
+      data: latest
+        ? {
+            file: path.relative(__dirname, latest.path),
+            updatedAt: new Date(latest.mtimeMs).toISOString(),
+            size: latest.size
+          }
+        : null
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
+  res.set({
+    'Content-Type': 'text/event-stream; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  res.flushHeaders?.();
+
+  let currentFile = '';
+  let offset = 0;
+  let closed = false;
+
+  const send = (event, data) => {
+    if (closed) return;
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const tick = () => {
+    if (closed) return;
+
+    try {
+      const latest = findLatestLogFile();
+
+      if (!latest) {
+        send('status', { state: 'waiting', message: '等待日志文件...' });
+        return;
+      }
+
+      if (latest.path !== currentFile) {
+        currentFile = latest.path;
+        const tail = readLogTail(currentFile);
+        offset = fs.statSync(currentFile).size;
+
+        send('switch', {
+          file: path.relative(__dirname, currentFile),
+          text: tail
+        });
+        return;
+      }
+
+      const stat = fs.statSync(currentFile);
+
+      if (stat.size < offset) {
+        offset = 0;
+      }
+
+      if (stat.size > offset) {
+        const length = stat.size - offset;
+        const fd = fs.openSync(currentFile, 'r');
+
+        try {
+          const buffer = Buffer.alloc(length);
+          fs.readSync(fd, buffer, 0, length, offset);
+          offset = stat.size;
+          send('append', { text: buffer.toString('utf8') });
+        } finally {
+          fs.closeSync(fd);
+        }
+      }
+    } catch (error) {
+      send('error', { message: error.message });
+    }
+  };
+
+  tick();
+  const timer = setInterval(tick, 1000);
+  const heartbeat = setInterval(() => {
+    if (!closed) res.write(': ping\n\n');
+  }, 15000);
+
+  req.on('close', () => {
+    closed = true;
+    clearInterval(timer);
+    clearInterval(heartbeat);
+  });
+});
 
 /* 普通 API */
 app.get('/api/monitors', (req, res) => {
