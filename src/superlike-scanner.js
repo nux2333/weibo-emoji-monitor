@@ -61,9 +61,9 @@ const {
  *      page
  *      since_id
  *      max_id
- * 7. “最新发帖”fresh / 多个分区 tag_status_sort 并发采集列表页
- * 8. 所有 fresh 来源汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
- * 9. “最新发帖”与每个 tag_status_sort 分区都独立维护 Resume
+ * 7. “最新发帖”fresh / 多个分区 tag_status_sort 优先抓最新10/30页
+ * 8. fresh 汇总后立即统一处理，Profile/经验值默认2并发
+ * 9. 历史 Resume 不阻塞 fresh；单轮历史预算默认5分钟
  * 10. UID不在 superlike_users + feed/Profile无chao_like + jyz<=80 + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
@@ -159,14 +159,23 @@ const NIGHT_FRESH_FIRST_PAGES =
   || 30;
 
 /*
- * 历史 Resume 每轮最多补 15 分钟。
+ * 历史 Resume 每轮最多补 5 分钟。
  * 到时保存下一页断点并结束当前轮，让下一轮重新先抓最新数据。
  */
 const RESUME_TIME_BUDGET_MS =
   Number(
     process.env.SUPERLIKE_RESUME_TIME_BUDGET_MS
   )
-  || 15 * 60 * 1000;
+  || 5 * 60 * 1000;
+
+const SCAN_PROFILE_CONCURRENCY =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_PROFILE_CONCURRENCY
+    )
+    || 2
+  );
 
 const EXISTING_STOP_THRESHOLD =
   Number(process.env.SUPERLIKE_EXISTING_STOP_THRESHOLD)
@@ -4752,20 +4761,77 @@ async function scanOneSuperLikeMonitor(
         return;
       }
 
-      const freshStats =
-        await processPagePosts(
-          monitor.id,
-          null,
-          seenThisRun,
-          seenUidThisRun,
-          deleteUidSet,
-          null,
-          browser,
-          config,
-          profileCache,
-          scanVisitorContext,
-          posts
-        );
+      const freshStats = {
+        found: 0,
+        duplicateInRun: 0,
+        duplicateUidInRun: 0,
+        existingInDb: 0,
+        unknownComments: 0,
+        commentsFull: 0,
+        hasSuperLike: 0,
+        deleteQueued: 0,
+        target: 0,
+        inserted: 0,
+        replaced: 0,
+        profileChecked: 0,
+        profileCached: 0,
+        profileSuperLike: 0,
+        profileFailed: 0
+      };
+
+      console.log(
+        `[SuperLike][统一处理] Profile/jyz并发=${SCAN_PROFILE_CONCURRENCY}`
+      );
+
+      for (
+        let i = 0;
+        i < posts.length;
+        i += SCAN_PROFILE_CONCURRENCY
+      ) {
+        const chunk =
+          posts.slice(
+            i,
+            i + SCAN_PROFILE_CONCURRENCY
+          );
+
+        const results =
+          await Promise.all(
+            chunk.map(
+              post =>
+                processPagePosts(
+                  monitor.id,
+                  null,
+                  seenThisRun,
+                  seenUidThisRun,
+                  deleteUidSet,
+                  null,
+                  browser,
+                  config,
+                  profileCache,
+                  scanVisitorContext,
+                  [post]
+                )
+            )
+          );
+
+        for (
+          const result
+          of results
+        ) {
+          for (
+            const key
+            of Object.keys(freshStats)
+          ) {
+            if (
+              typeof result?.[key]
+              === 'number'
+            ) {
+              freshStats[key] +=
+                result[key];
+            }
+          }
+        }
+      }
 
       for (
         const key
@@ -4847,12 +4913,10 @@ async function scanOneSuperLikeMonitor(
           }
 
           const sectionFreshPages =
-            sourceResume
-              ? Math.min(
-                  freshFirstPages,
-                  TAG_SECTION_PAGES
-                )
-              : TAG_SECTION_PAGES;
+            Math.min(
+              freshFirstPages,
+              TAG_SECTION_PAGES
+            );
 
           console.log(
             sourceResume
@@ -4965,8 +5029,9 @@ async function scanOneSuperLikeMonitor(
             }
 
             /*
-             * 有旧 Resume 时，fresh 区段只负责补最新数据。
-             * fresh 达到 10/30 页后，切回该分区自己的历史 cursor。
+             * 分区 fresh 永远优先：
+             * 有旧 Resume 时，本轮先只抓最新 10/30 页。
+             * 历史 cursor 保持不变，不让深扫阻塞 fresh 的统一处理。
              */
             if (
               phase === 'fresh'
@@ -4976,71 +5041,17 @@ async function scanOneSuperLikeMonitor(
               sectionPageIndex >=
                 sectionFreshPages
             ) {
-              const resumeParams = {
-                page:
-                  sourceResume.next_page,
-                since_id:
-                  sourceResume.next_since_id,
-                max_id:
-                  sourceResume.next_max_id
-                  ?? '0',
-                count:
-                  sourceResume.next_count
-                  ?? '15',
-                page_common_ext:
-                  sourceResume.next_page_common_ext
-                  ?? 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
-              };
-
-              const resumeUrl =
-                buildTagSectionUrl(
-                  source.flowId,
-                  resumeParams
-                );
-
               console.log(
-                `[SuperLike][分区Resume] ${source.name} fresh已完成 ${sectionFreshPages} 页，切回历史 cursor：${resumeParams.since_id}`
+                `[SuperLike][分区Fresh完成] ${source.name} 已抓最新 ${sectionFreshPages} 页；历史Resume继续保留：${sourceResume.next_since_id || '-'}`
               );
 
-              const resumeResult =
-                await fetchChaohuaInPage(
-                  page,
-                  resumeUrl,
-                  requestHeaders
-                );
-
-              if (
-                resumeResult.httpStatus === 418
-              ) {
-                throw new Weibo418Error(
-                  `${source.name} Resume 返回 HTTP 418`
-                );
-              }
-
-              if (!resumeResult.ok) {
-                console.log(
-                  `[SuperLike][分区Resume失败] ${source.name} | HTTP=${resumeResult.httpStatus ?? '-'} | 保留旧Resume，下轮继续。`
-                );
-
-                break;
-              }
-
-              currentUrl =
-                resumeUrl;
-
-              currentResult =
-                resumeResult;
-
-              phase =
-                'resume';
-
-              continue;
+              break;
             }
 
             /*
              * 第一次没有 Resume：
-             * 当前页处理成功后，始终把 next cursor 保存下来。
-             * 扫到100页或中途失败时，下轮即可进入“fresh + Resume”模式。
+             * 只抓最新 10/30 页，保存下一页 cursor 后结束 fresh。
+             * 不再第一轮硬扫100页。
              */
             if (
               phase === 'fresh'
@@ -5053,6 +5064,17 @@ async function scanOneSuperLikeMonitor(
                 source.flowId,
                 nextParams
               );
+
+              if (
+                sectionPageIndex >=
+                  sectionFreshPages
+              ) {
+                console.log(
+                  `[SuperLike][分区Fresh完成] ${source.name} 已抓最新 ${sectionFreshPages} 页；历史cursor已保存，下轮继续补。`
+                );
+
+                break;
+              }
             }
 
             if (
