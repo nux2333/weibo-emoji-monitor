@@ -363,9 +363,8 @@ app.get('/api/superlike-posts', (req, res) => {
     `).all(...params);
 
     /*
-     * 顶部“候选帖子”表示候选池当前真实有效帖子总数，
-     * 不受页面的 today / moved / 黑名单 / 搜索 / monitor 等筛选影响。
-     * 页面列表本身仍继续使用上面的 whereSql。
+     * 顶部统计与当前页面过滤条件保持一致。
+     * 候选帖子 = 当前筛选后实际列表对应的记录数。
      */
     const stats = db.prepare(`
       SELECT
@@ -379,9 +378,8 @@ app.get('/api/superlike-posts', (req, res) => {
           END
         ) AS experience_known
       FROM superlike_posts sp
-      WHERE COALESCE(sp.current_has_superlike, 0) = 0
-        AND COALESCE(sp.comments_count, 0) < 22
-    `).get();
+      ${whereSql}
+    `).get(...params);
 
     const monitors = db.prepare(`
       SELECT id,name
