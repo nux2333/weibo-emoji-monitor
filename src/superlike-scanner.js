@@ -296,83 +296,6 @@ const SCAN_PROXY_POOL =
   });
 
 
-async function importSharedWeiboLoginState(
-  context
-) {
-  if (
-    !context
-    ||
-    !fs.existsSync(
-      WEIBO_LOGIN_STATE_FILE
-    )
-  ) {
-    console.log(
-      `[SuperLike][登录态] 未找到共享登录态：${WEIBO_LOGIN_STATE_FILE}；jyz请求继续使用当前worker自身Cookie。`
-    );
-
-    return false;
-  }
-
-  try {
-    const raw =
-      await fs.promises.readFile(
-        WEIBO_LOGIN_STATE_FILE,
-        'utf8'
-      );
-
-    const state =
-      JSON.parse(
-        raw
-      );
-
-    const cookies =
-      Array.isArray(
-        state?.cookies
-      )
-        ? state.cookies
-        : [];
-
-    if (
-      cookies.length === 0
-    ) {
-      console.log(
-        `[SuperLike][登录态] 共享文件没有Cookie：${WEIBO_LOGIN_STATE_FILE}`
-      );
-
-      return false;
-    }
-
-    await context.addCookies(
-      cookies
-    );
-
-    const weiboCookies =
-      cookies.filter(
-        cookie =>
-          String(
-            cookie?.domain
-            || ''
-          ).includes(
-            'weibo'
-          )
-      );
-
-    console.log(
-      `[SuperLike][登录态] 已导入共享Cookie：总数=${cookies.length} | weibo相关=${weiboCookies.length} | jyz将使用主登录态`
-    );
-
-    return true;
-
-  } catch (error) {
-    console.log(
-      `[SuperLike][登录态] 导入失败：${error?.message || error}`
-    );
-
-    return false;
-  }
-}
-
-
 async function acquireScanProxyWaiting() {
   while (true) {
     const assignment =
@@ -2676,69 +2599,6 @@ function pickProfileReplacementPost(profilePosts) {
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
 const SCAN_EXPERIENCE_TIMEOUT_MS = 7000;
 
-let experienceBrowser = null;
-let experienceContext = null;
-
-async function getExperienceContext() {
-  if (
-    experienceContext
-    &&
-    experienceBrowser
-  ) {
-    return experienceContext;
-  }
-
-  if (
-    !fs.existsSync(
-      WEIBO_LOGIN_STATE_FILE
-    )
-  ) {
-    return null;
-  }
-
-  experienceBrowser =
-    await chromium.launch({
-      headless:
-        process.env.SUPERLIKE_HEADLESS !== '0'
-    });
-
-  experienceContext =
-    await experienceBrowser.newContext({
-      storageState:
-        WEIBO_LOGIN_STATE_FILE,
-      viewport: {
-        width: 1280,
-        height: 900
-      }
-    });
-
-  console.log(
-    '[SuperLike][经验值登录Context] 已创建本地直连Context（不使用Scan代理），并加载共享登录态。'
-  );
-
-  return experienceContext;
-}
-
-async function closeExperienceContext() {
-  if (experienceContext) {
-    try {
-      await experienceContext.close();
-    } catch {
-      // ignore
-    }
-    experienceContext = null;
-  }
-
-  if (experienceBrowser) {
-    try {
-      await experienceBrowser.close();
-    } catch {
-      // ignore
-    }
-    experienceBrowser = null;
-  }
-}
-
 function extractExperience7d(currentInfo) {
   const text =
     String(currentInfo || '').trim();
@@ -2773,133 +2633,47 @@ async function fetchSuperLikeExperience7d(
   config,
   uid
 ) {
-  let page = null;
-
   try {
-    /*
-     * 第一优先：JYZ专用本机服务。
-     * 它持有独立 persistent profile，完整保存 huati SSO。
-     * 4个 Fresh worker 只通过 localhost 查询，不再各自复制登录态。
-     */
-    try {
-      const serviceUrl =
-        new URL(
-          process.env.WEIBO_JYZ_SERVICE_URL
-          || 'http://127.0.0.1:3011/jyz'
-        );
-
-      serviceUrl.searchParams.set(
-        'topicHash',
-        config.topicHash
-      );
-
-      serviceUrl.searchParams.set(
-        'uid',
-        String(uid)
-      );
-
-      const serviceResponse =
-        await fetch(
-          serviceUrl.toString(),
-          {
-            signal:
-              AbortSignal.timeout(
-                12000
-              )
-          }
-        );
-
-      const serviceJson =
-        await serviceResponse
-          .json()
-          .catch(
-            () => null
-          );
-
-      if (
-        serviceJson?.ok
-        &&
-        Number.isFinite(
-          Number(
-            serviceJson.experience7d
-          )
-        )
-      ) {
-        return {
-          ok: true,
-          experience7d:
-            Number(
-              serviceJson.experience7d
-            ),
-          currentInfo:
-            serviceJson.currentInfo
-            || '',
-          status:
-            serviceResponse.status,
-          source:
-            'jyz-service'
-        };
-      }
-
-      if (serviceJson) {
-        return {
-          ok: false,
-          experience7d: null,
-          status:
-            serviceResponse.status,
-          message:
-            `JYZ Service：${serviceJson.message || 'unknown'}`
-        };
-      }
-    } catch (serviceError) {
-      console.log(
-        `[SuperLike][经验值服务] 本机JYZ Service不可用，回退旧方式：${serviceError?.message || serviceError}`
-      );
-    }
-
-    const localExperienceContext =
-      await getExperienceContext();
-
-    const effectiveContext =
-      localExperienceContext
-      || context;
-
     if (
-      !effectiveContext
+      !context
       ||
-      typeof effectiveContext.newPage !== 'function'
+      !context.request
+      ||
+      typeof context.request.get
+        !== 'function'
     ) {
       return {
         ok: false,
         experience7d: null,
-        message: '当前BrowserContext不支持newPage'
+        message:
+          '当前scanner persistent BrowserContext不支持request.get'
       };
     }
 
     const pageId =
       `100808${config.topicHash}`;
 
-    const apiUrl =
+    const url =
       new URL(
         'https://huati.weibo.cn/aj/setting/icon/getconfig'
       );
 
-    apiUrl.searchParams.set(
+    url.searchParams.set(
       'type',
       '1'
     );
 
-    apiUrl.searchParams.set(
+    url.searchParams.set(
       'union_id',
       'chao_like'
     );
 
-    apiUrl.searchParams.set(
+    url.searchParams.set(
       'page_id',
       pageId
     );
 
-    apiUrl.searchParams.set(
+    url.searchParams.set(
       'param_uid',
       String(uid)
     );
@@ -2930,148 +2704,39 @@ async function fetchSuperLikeExperience7d(
     );
 
     /*
-     * 经验值接口现在会校验 huati.weibo.cn 的真实登录会话。
-     * 不再使用 context.request.get() 直接请求。
-     *
-     * 先在 persistent context 中打开真实 huati 设置页，
-     * 让微博自己完成跨域登录/SSO Cookie 初始化；
-     * 然后在页面同源环境里 fetch API，credentials=include。
+     * JYZ 回到最初方案：
+     * 直接使用当前 scanner 的 persistent BrowserContext.request。
+     * 这样继承该 worker 自己的 Cookie / 登录态 / 代理环境。
+     * Profile 校验仍继续使用独立游客 Context。
      */
-    page =
-      await effectiveContext.newPage();
-
-    const navigation =
-      await page.goto(
-        referer.toString(),
+    const response =
+      await context.request.get(
+        url.toString(),
         {
-          waitUntil:
-            'domcontentloaded',
           timeout:
-            SCAN_EXPERIENCE_TIMEOUT_MS
-        }
-      )
-      .catch(
-        () => null
-      );
-
-    await page.waitForTimeout(
-      500
-    );
-
-    const finalUrl =
-      page.url();
-
-    if (
-      /passport\.weibo\.(cn|com)/i.test(
-        finalUrl
-      )
-      ||
-      /login/i.test(
-        finalUrl
-      )
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        status:
-          navigation?.status?.()
-          || null,
-        message:
-          `huati登录态未生效，页面跳转到登录页：${finalUrl}`
-      };
-    }
-
-    const result =
-      await page.evaluate(
-        async url => {
-          try {
-            const controller =
-              new AbortController();
-
-            const timer =
-              setTimeout(
-                () => controller.abort(),
-                7000
-              );
-
-            try {
-              const response =
-                await fetch(
-                  url,
-                  {
-                    method:
-                      'GET',
-                    credentials:
-                      'include',
-                    cache:
-                      'no-store',
-                    headers: {
-                      Accept:
-                        'application/json, text/plain, */*',
-                      'X-Requested-With':
-                        'XMLHttpRequest'
-                    },
-                    signal:
-                      controller.signal
-                  }
-                );
-
-              const text =
-                await response.text();
-
-              return {
-                ok: true,
-                status:
-                  response.status,
-                text,
-                finalUrl:
-                  response.url
-              };
-            } finally {
-              clearTimeout(
-                timer
-              );
-            }
-          } catch (error) {
-            return {
-              ok: false,
-              status: null,
-              text: '',
-              finalUrl: url,
-              error:
-                error?.message
-                || String(error)
-            };
+            SCAN_EXPERIENCE_TIMEOUT_MS,
+          failOnStatusCode:
+            false,
+          headers: {
+            'Accept':
+              'application/json, text/plain, */*',
+            'X-Requested-With':
+              'XMLHttpRequest',
+            'Referer':
+              referer.toString(),
+            'User-Agent':
+              'Mozilla/5.0 (Linux; Android 14) '
+              + 'AppleWebKit/537.36 (KHTML, like Gecko) '
+              + 'Mobile Safari/537.36 _weibo_'
           }
-        },
-        apiUrl.toString()
+        }
       );
-
-    if (
-      !result?.ok
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        status:
-          result?.status
-          ?? null,
-        message:
-          result?.error
-          || '页面内fetch失败'
-      };
-    }
 
     const status =
-      Number(
-        result.status
-      );
+      response.status();
 
     const text =
-      String(
-        result.text
-        || ''
-      );
+      await response.text();
 
     if (
       status < 200
@@ -3123,32 +2788,12 @@ async function fetchSuperLikeExperience7d(
         json?.code
       ) !== 100000
     ) {
-      const cookies =
-        await effectiveContext.cookies(
-          [
-            'https://weibo.com',
-            'https://m.weibo.cn',
-            'https://huati.weibo.cn'
-          ]
-        )
-          .catch(
-            () => []
-          );
-
-      const cookieNames =
-        cookies
-          .map(
-            item => item.name
-          )
-          .filter(Boolean)
-          .join(',');
-
       return {
         ok: false,
         experience7d: null,
         status,
         message:
-          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'} | huati最终页=${finalUrl} | Cookie=${cookieNames || '-'}`
+          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'}`
       };
     }
 
@@ -3178,7 +2823,9 @@ async function fetchSuperLikeExperience7d(
       ok: true,
       experience7d,
       currentInfo,
-      status
+      status,
+      source:
+        'scanner-persistent-context'
     };
 
   } catch (error) {
@@ -3190,18 +2837,6 @@ async function fetchSuperLikeExperience7d(
         error?.message
         || String(error)
     };
-  } finally {
-    if (
-      page
-      &&
-      !page.isClosed()
-    ) {
-      try {
-        await page.close();
-      } catch {
-        // ignore
-      }
-    }
   }
 }
 
@@ -4792,14 +4427,6 @@ async function scanOneSuperLikeMonitor(
             }
           }
         );
-
-    /*
-     * 先把主浏览器导出的微博登录 Cookie 灌进当前 worker 的 persistent context。
-     * Profile 仍使用下面独立的游客 Context；只有 jyz 的 context.request 会继承这里的登录态。
-     */
-    await importSharedWeiboLoginState(
-      browser
-    );
 
     /*
      * Scan 本 Monitor 全程共享一个匿名游客 Context：
@@ -7856,10 +7483,7 @@ process.on(
       '[SuperLike] Batch停止。'
     );
 
-    void closeExperienceContext()
-      .finally(
-        () => process.exit(0)
-      );
+    process.exit(0);
   }
 );
 
