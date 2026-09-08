@@ -363,8 +363,9 @@ app.get('/api/superlike-posts', (req, res) => {
     `).all(...params);
 
     /*
-     * 顶部统计与当前过滤条件保持一致，
-     * 避免“页面只显示柠檬水，但统计还是全库”的错觉。
+     * 顶部“候选帖子”表示候选池当前真实有效帖子总数，
+     * 不受页面的 today / moved / 黑名单 / 搜索 / monitor 等筛选影响。
+     * 页面列表本身仍继续使用上面的 whereSql。
      */
     const stats = db.prepare(`
       SELECT
@@ -378,8 +379,9 @@ app.get('/api/superlike-posts', (req, res) => {
           END
         ) AS experience_known
       FROM superlike_posts sp
-      ${whereSql}
-    `).get(...params);
+      WHERE COALESCE(sp.current_has_superlike, 0) = 0
+        AND COALESCE(sp.comments_count, 0) < 22
+    `).get();
 
     const monitors = db.prepare(`
       SELECT id,name
