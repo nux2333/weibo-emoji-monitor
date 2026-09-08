@@ -16,7 +16,8 @@
     "start:test": "node scripts/start-test.js",
     "test-db:refresh": "node scripts/refresh-test-db.js",
     "scan-superlike:test": "node scripts/run-test-scan.js",
-    "scan-superlike:legacy": "node src/superlike-scanner.js"
+    "scan-superlike:legacy": "node src/superlike-scanner.js",
+    "export-weibo-login": "node scripts/export-weibo-login-state.js"
   },
   "dependencies": {
     "express": "^5.1.0",
