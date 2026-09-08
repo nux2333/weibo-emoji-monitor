@@ -579,16 +579,70 @@ async function fetchRelayglassCandidates() {
 }
 
 
+async function fetchPlainProxySources(sources) {
+  const results = [];
+
+  for (const [url, scheme] of sources) {
+    try {
+      const text = await fetchText(url);
+
+      results.push(
+        ...text
+          .split(/\r?\n/)
+          .map(line => normalizeProxy(line, scheme))
+          .filter(Boolean)
+      );
+    } catch (error) {
+      console.log(
+        `[新代理源] ${url} 获取失败：${error.message}`
+      );
+    }
+  }
+
+  return shuffle(
+    Array.from(new Set(results))
+  ).slice(0, MAX_CANDIDATES_PER_SOURCE);
+}
+
+async function fetchProxyScrapeCandidates() {
+  return fetchPlainProxySources([
+    ['https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/protocols/http/data.txt', 'http'],
+    ['https://cdn.jsdelivr.net/gh/proxyscrape/free-proxy-list@main/proxies/protocols/socks5/data.txt', 'socks5']
+  ]);
+}
+
+async function fetchProxiflyCandidates() {
+  return fetchPlainProxySources([
+    ['https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt', 'http'],
+    ['https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt', 'socks5']
+  ]);
+}
+
+async function fetchIPLocateCandidates() {
+  return fetchPlainProxySources([
+    ['https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt', 'socks5']
+  ]);
+}
+
+async function fetchDatabayCandidates() {
+  return fetchPlainProxySources([
+    ['https://cdn.jsdelivr.net/gh/databay-labs/free-proxy-list/http.txt', 'http'],
+    ['https://cdn.jsdelivr.net/gh/databay-labs/free-proxy-list/socks5.txt', 'socks5']
+  ]);
+}
+
+
 async function collectSources() {
   const sourceFetchers = [
     ['SCDN', fetchScdnCandidates],
     ['ProxyClean', fetchProxyCleanCandidates],
-    ['89ip', fetch89IpCandidates],
-    ['ProxyHub-CN', fetchProxyHubCandidates],
-    ['fate0', fetchFate0Candidates],
-    ['proxio', fetchProxioCandidates],
     ['Proxmint', fetchProxmintCandidates],
-    ['Relayglass', fetchRelayglassCandidates]
+    ['Relayglass', fetchRelayglassCandidates],
+    ['ProxyScrape', fetchProxyScrapeCandidates],
+    ['Proxifly', fetchProxiflyCandidates],
+    ['IPLocate', fetchIPLocateCandidates],
+    ['Databay', fetchDatabayCandidates]
   ];
 
   const all = [];
@@ -889,7 +943,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[补池] 当前健康代理=${healthySet.size}，开始从8个免费源补充...`
+      `[补池] 当前健康代理=${healthySet.size}，开始从多源免费代理池补充...`
     );
 
     const candidates =
