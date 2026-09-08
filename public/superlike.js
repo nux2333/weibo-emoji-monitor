@@ -36,9 +36,7 @@ function saveSearchState() {
             ?.value
             || 'unmoved',
         pageSize,
-        currentPage,
-        sortKey,
-        sortDirection
+        currentPage
       })
     );
   } catch {
@@ -157,31 +155,17 @@ function restoreSearchState() {
         );
     }
 
-    if (
-      [
-        'post_created_at',
-        'comments_count',
-        'uid',
-        'username',
-        'experience_7d'
-      ].includes(
-        state.sortKey
-      )
-    ) {
-      sortKey =
-        state.sortKey;
-    }
+    /*
+     * 排序不从 localStorage 恢复。
+     * 每次进入页面都固定使用页面默认：
+     * post_created_at DESC（帖子发布日期最新在前）。
+     */
+    sortKey =
+      'post_created_at';
 
-    if (
-      state.sortDirection
-        === 'asc'
-      ||
-      state.sortDirection
-        === 'desc'
-    ) {
-      sortDirection =
-        state.sortDirection;
-    }
+    sortDirection =
+      'desc';
+
   } catch {
     // 保存内容损坏时使用页面默认值。
   }
