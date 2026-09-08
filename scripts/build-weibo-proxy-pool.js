@@ -35,8 +35,26 @@ function appendLog(level, args) {
 
 const originalConsoleLog = console.log.bind(console);
 const originalConsoleError = console.error.bind(console);
-console.log = (...args) => { originalConsoleLog(...args); appendLog('INFO', args); };
-console.error = (...args) => { originalConsoleError(...args); appendLog('ERROR', args); };
+
+function consolePrefix(level) {
+  return '[' + formatChinaTime() + '] [' + level + ']';
+}
+
+console.log = (...args) => {
+  originalConsoleLog(
+    consolePrefix('INFO'),
+    ...args
+  );
+  appendLog('INFO', args);
+};
+
+console.error = (...args) => {
+  originalConsoleError(
+    consolePrefix('ERROR'),
+    ...args
+  );
+  appendLog('ERROR', args);
+};
 
 const GOOD_POOL_FILE =
   process.env.WEIBO_GOOD_PROXY_FILE
