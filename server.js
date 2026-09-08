@@ -1,6 +1,7 @@
 const express = require('express');
 const path = require('path');
 const fs = require('fs');
+const { execFile } = require('child_process');
 
 const {
   db,
@@ -152,6 +153,10 @@ app.get('/superlike', (req, res) =>
 
 app.get('/logs-live', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'logs-live.html'))
+);
+
+app.get('/scripts', (req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'scripts.html'))
 );
 
 /*
@@ -524,6 +529,345 @@ app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
     clearInterval(timer);
     clearInterval(heartbeat);
   });
+});
+
+/*
+ * ============================================================
+ * PM2 脚本管理
+ *
+ * 只允许固定白名单脚本，绝不接受前端传入任意命令/路径。
+ * ============================================================
+ */
+const PM2_COMMAND =
+  process.platform === 'win32'
+    ? 'pm2.cmd'
+    : 'pm2';
+
+const SCRIPT_DEFINITIONS = [
+  {
+    key: 'scan',
+    name: 'SuperLike Scan',
+    pm2Name: 'superlike-scan',
+    script: 'src/superlike-scanner.js',
+    env: {},
+    oneShot: false
+  },
+  {
+    key: 'mode1',
+    name: 'Mode1',
+    pm2Name: 'superlike-mode1',
+    script: 'scripts/recheck-superlike.js',
+    env: { SUPERLIKE_RECHECK_MODE: '1' },
+    oneShot: false
+  },
+  {
+    key: 'mode2',
+    name: 'Mode2',
+    pm2Name: 'superlike-mode2',
+    script: 'scripts/recheck-superlike.js',
+    env: { SUPERLIKE_RECHECK_MODE: '2' },
+    oneShot: false
+  },
+  {
+    key: 'mode3',
+    name: 'Mode3',
+    pm2Name: 'superlike-mode3',
+    script: 'scripts/recheck-superlike.js',
+    env: { SUPERLIKE_RECHECK_MODE: '3' },
+    oneShot: false
+  },
+  {
+    key: 'mode4',
+    name: 'Mode4',
+    pm2Name: 'superlike-mode4',
+    script: 'scripts/recheck-superlike.js',
+    env: { SUPERLIKE_RECHECK_MODE: '4' },
+    oneShot: false
+  },
+  {
+    key: 'proxy-pool',
+    name: '代理池维护',
+    pm2Name: 'weibo-proxy-pool',
+    script: 'scripts/build-weibo-proxy-pool.js',
+    env: {},
+    oneShot: true
+  }
+];
+
+function runPm2(args, extraEnv = {}) {
+  return new Promise((resolve, reject) => {
+    execFile(
+      PM2_COMMAND,
+      args,
+      {
+        cwd: __dirname,
+        windowsHide: true,
+        env: {
+          ...process.env,
+          ...extraEnv
+        },
+        maxBuffer: 8 * 1024 * 1024
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          error.stdout = stdout;
+          error.stderr = stderr;
+          reject(error);
+          return;
+        }
+
+        resolve({
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
+        });
+      }
+    );
+  });
+}
+
+async function getPm2Processes() {
+  const result = await runPm2(['jlist']);
+
+  try {
+    return JSON.parse(result.stdout || '[]');
+  } catch (error) {
+    throw new Error(
+      'PM2 状态解析失败：'
+      + error.message
+    );
+  }
+}
+
+function getScriptDefinition(key) {
+  return SCRIPT_DEFINITIONS.find(
+    item => item.key === String(key || '')
+  ) || null;
+}
+
+function normalizePm2Status(proc) {
+  const env = proc?.pm2_env || {};
+
+  return {
+    pm2Name: proc?.name || '',
+    pid: Number(proc?.pid || 0) || null,
+    status: String(env.status || 'unknown'),
+    restartCount: Number(env.restart_time || 0),
+    startedAt:
+      Number(env.pm_uptime || 0) > 0
+        ? new Date(Number(env.pm_uptime)).toISOString()
+        : null,
+    uptimeMs:
+      Number(env.pm_uptime || 0) > 0
+        ? Math.max(0, Date.now() - Number(env.pm_uptime))
+        : 0,
+    memory:
+      Number(proc?.monit?.memory || 0),
+    cpu:
+      Number(proc?.monit?.cpu || 0)
+  };
+}
+
+app.get('/api/admin/scripts', checkAdmin, async (req, res) => {
+  try {
+    const processes =
+      await getPm2Processes();
+
+    const byName =
+      new Map(
+        processes.map(proc => [
+          String(proc?.name || ''),
+          proc
+        ])
+      );
+
+    const data =
+      SCRIPT_DEFINITIONS.map(def => {
+        const proc =
+          byName.get(def.pm2Name);
+
+        return {
+          key: def.key,
+          name: def.name,
+          pm2Name: def.pm2Name,
+          oneShot: def.oneShot,
+          ...(proc
+            ? normalizePm2Status(proc)
+            : {
+                pid: null,
+                status: 'not_created',
+                restartCount: 0,
+                startedAt: null,
+                uptimeMs: 0,
+                memory: 0,
+                cpu: 0
+              })
+        };
+      });
+
+    const serverProc =
+      byName.get('weibo-server');
+
+    res.json({
+      success: true,
+      server: serverProc
+        ? normalizePm2Status(serverProc)
+        : null,
+      data
+    });
+
+  } catch (error) {
+    console.error('[PM2] 读取状态失败：', error);
+    res.status(500).json({
+      success: false,
+      message:
+        error.message
+        + (error.stderr
+          ? ' | ' + String(error.stderr).trim()
+          : '')
+    });
+  }
+});
+
+app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
+  try {
+    const def =
+      getScriptDefinition(
+        req.params.key
+      );
+
+    if (!def) {
+      return res.status(404).json({
+        success: false,
+        message: '未知脚本'
+      });
+    }
+
+    const action =
+      String(req.params.action || '');
+
+    if (
+      ![
+        'start',
+        'stop',
+        'restart',
+        'delete'
+      ].includes(action)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: '不支持的操作'
+      });
+    }
+
+    const processes =
+      await getPm2Processes();
+
+    const exists =
+      processes.some(
+        proc =>
+          String(proc?.name || '')
+          === def.pm2Name
+      );
+
+    if (action === 'start') {
+      if (exists) {
+        await runPm2(
+          [
+            'start',
+            def.pm2Name,
+            '--update-env'
+          ],
+          def.env
+        );
+      } else {
+        const args = [
+          'start',
+          def.script,
+          '--name',
+          def.pm2Name
+        ];
+
+        if (def.oneShot) {
+          args.push(
+            '--no-autorestart'
+          );
+        }
+
+        await runPm2(
+          args,
+          def.env
+        );
+      }
+
+    } else if (action === 'restart') {
+      if (exists) {
+        await runPm2(
+          [
+            'restart',
+            def.pm2Name,
+            '--update-env'
+          ],
+          def.env
+        );
+      } else {
+        const args = [
+          'start',
+          def.script,
+          '--name',
+          def.pm2Name
+        ];
+
+        if (def.oneShot) {
+          args.push(
+            '--no-autorestart'
+          );
+        }
+
+        await runPm2(
+          args,
+          def.env
+        );
+      }
+
+    } else if (action === 'stop') {
+      if (exists) {
+        await runPm2([
+          'stop',
+          def.pm2Name
+        ]);
+      }
+
+    } else if (action === 'delete') {
+      if (exists) {
+        await runPm2([
+          'delete',
+          def.pm2Name
+        ]);
+      }
+    }
+
+    console.log(
+      `[PM2管理] ${def.pm2Name} action=${action}`
+    );
+
+    res.json({
+      success: true,
+      key: def.key,
+      action
+    });
+
+  } catch (error) {
+    console.error('[PM2] 操作失败：', error);
+
+    res.status(500).json({
+      success: false,
+      message:
+        error.message
+        + (error.stderr
+          ? ' | ' + String(error.stderr).trim()
+          : '')
+    });
+  }
 });
 
 /* 普通 API */
