@@ -5004,6 +5004,11 @@ async function scanOneSuperLikeMonitor(
       );
 
       if (posts.length === 0) {
+        console.log(
+          '[SuperLike][统一处理] fresh池为空，直接进入历史Resume预算。'
+        );
+
+        await scanTagSectionHistoryBudget();
         return;
       }
 
