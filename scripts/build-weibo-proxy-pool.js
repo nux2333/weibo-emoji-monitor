@@ -180,6 +180,43 @@ function writeGoodPool(items) {
   );
 }
 
+function appendGoodProxy(proxy) {
+  const normalized =
+    normalizeProxy(proxy);
+
+  if (!normalized) {
+    return false;
+  }
+
+  const current =
+    readGoodPool();
+
+  if (
+    current.includes(
+      normalized
+    )
+  ) {
+    return false;
+  }
+
+  fs.mkdirSync(
+    path.dirname(
+      GOOD_POOL_FILE
+    ),
+    {
+      recursive: true
+    }
+  );
+
+  fs.appendFileSync(
+    GOOD_POOL_FILE,
+    normalized + '\n',
+    'utf8'
+  );
+
+  return true;
+}
+
 async function fetchText(url, timeoutMs = 20000) {
   const controller =
     new AbortController();
@@ -1082,6 +1119,17 @@ async function testMany(
             || 'unknown'
         });
 
+        const writtenNow =
+          appendGoodProxy(
+            item.proxy
+          );
+
+        if (writtenNow) {
+          console.log(
+            `[健康池实时写入] ${item.proxy} | 当前文件代理=${readGoodPool().length}`
+          );
+        }
+
         console.log(
           `[${label} ${done}/${list.length}] PASS | ${item.proxy} | source=${item.source || '-'} | exit=${result.exitIp || '-'} | ${result.ms}ms`
         );
@@ -1244,10 +1292,30 @@ async function main() {
         TARGET_GOOD_COUNT
       );
 
-  writeGoodPool(
-    healthy.map(
-      item => item.proxy
+  /*
+   * PASS 时已经实时写入文件。
+   * 本轮结束再整理一次，但要和磁盘当前内容合并，
+   * 避免并发 worker 已写入的代理被最终覆盖掉。
+   */
+  const diskPool =
+    readGoodPool();
+
+  const finalPool =
+    Array.from(
+      new Set([
+        ...healthy.map(
+          item => item.proxy
+        ),
+        ...diskPool
+      ])
     )
+      .slice(
+        0,
+        TARGET_GOOD_COUNT
+      );
+
+  writeGoodPool(
+    finalPool
   );
 
   const sourceStats = {};
