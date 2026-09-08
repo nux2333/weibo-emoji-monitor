@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>实时日志</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="container wide">
+  <header class="page-header">
+    <div>
+      <h1>实时日志</h1>
+      <p><span id="dot" class="live-dot"></span><span id="status">未连接</span> · <span id="file">-</span></p>
+    </div>
+    <div class="actions">
+      <a class="button" href="/admin">返回后台</a>
+      <button class="button" id="pauseBtn" onclick="togglePause()">暂停滚动</button>
+      <button class="button" onclick="clearView()">清空画面</button>
+    </div>
+  </header>
+
+  <section class="card">
+    <div class="row">
+      <input id="filter" placeholder="筛选，例如 Fresh进度 / 新增 / ERROR / Checkpoint" oninput="render()">
+      <label><input id="autoScroll" type="checkbox" checked> 自动滚动</label>
+    </div>
+  </section>
+
+  <section class="card log-card">
+    <pre id="log" class="live-log">请输入管理员 Token 后连接。</pre>
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <input id="token" type="password" placeholder="ADMIN_TOKEN">
+      <button class="button primary" onclick="connect()">连接实时日志</button>
+    </div>
+  </section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+let source=null;
+let raw='';
+let paused=false;
+const MAX_CHARS=500000;
+
+$('token').value=localStorage.getItem('admin_token')||'';
+
+function setStatus(text,ok=false){
+  $('status').textContent=text;
+  $('dot').classList.toggle('ok',ok);
+}
+
+function render(){
+  const q=$('filter').value.trim().toLowerCase();
+  let text=raw;
+  if(q){
+    text=raw.split(/\r?\n/).filter(line=>line.toLowerCase().includes(q)).join('\n');
+  }
+  $('log').textContent=text||'暂无匹配日志';
+  if(!paused&&$('autoScroll').checked){
+    $('log').scrollTop=$('log').scrollHeight;
+  }
+}
+
+function add(text){
+  raw+=String(text||'');
+  if(raw.length>MAX_CHARS) raw=raw.slice(-MAX_CHARS);
+  render();
+}
+
+function togglePause(){
+  paused=!paused;
+  $('pauseBtn').textContent=paused?'继续滚动':'暂停滚动';
+}
+
+function clearView(){
+  raw='';
+  render();
+}
+
+function connect(){
+  const token=$('token').value.trim();
+  if(!token){alert('请输入 ADMIN_TOKEN');return;}
+  localStorage.setItem('admin_token',token);
+  source?.close();
+
+  raw='';
+  render();
+  setStatus('连接中...');
+
+  source=new EventSource('/api/admin/live-log/stream?token='+encodeURIComponent(token));
+
+  source.addEventListener('switch',e=>{
+    const data=JSON.parse(e.data);
+    $('file').textContent=data.file||'-';
+    raw=data.text||'';
+    setStatus('实时连接',true);
+    render();
+  });
+
+  source.addEventListener('append',e=>{
+    const data=JSON.parse(e.data);
+    add(data.text);
+    setStatus('实时连接',true);
+  });
+
+  source.addEventListener('status',e=>{
+    const data=JSON.parse(e.data);
+    setStatus(data.message||'等待中');
+  });
+
+  source.onerror=()=>{
+    setStatus('连接中断，自动重连...');
+  };
+}
+
+if($('token').value) connect();
+</script>
+</body>
+</html>
