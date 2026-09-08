@@ -91,7 +91,7 @@ let consecutive418 = 0;
 
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
-  || 100;
+  || 30;
 
 /*
  * 最新评论 _feed 不再作为帖子扫描数据源。
@@ -111,7 +111,7 @@ const TAG_SECTION_PAGES =
   Number(
     process.env.SUPERLIKE_TAG_SECTION_PAGES
   )
-  || 100;
+  || 30;
 
 const TAG_SECTION_CONCURRENCY =
   Math.max(
