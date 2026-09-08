@@ -904,22 +904,18 @@ function updateScore(scores, proxy, result, source) {
 
 async function collectSources() {
   const sourceFetchers = [
-    // 旧源恢复：昨天/今天实际跑下来仍然能贡献健康代理。
-    ['SCDN', fetchScdnCandidates],
+    // 微博实测成功率较高的源优先保留。
     ['ProxyClean', fetchProxyCleanCandidates],
     ['Proxmint', fetchProxmintCandidates],
+    ['Relayglass', fetchRelayglassCandidates],
+    ['Databay', fetchDatabayCandidates],
+    ['Proxifly', fetchProxiflyCandidates],
+    ['ProxyScrape', fetchProxyScrapeCandidates],
 
-    // 新增源继续保留，最终统一以“能否访问微博”实测筛选。
+    // 暂无足够微博实测样本，先保留观察。
     ['DocIP', fetchDocIpCandidates],
     ['GoodIPs', fetchGoodIpsCandidates],
-    ['Proxifly', fetchProxiflyCandidates],
-    ['Geonode', fetchGeoNodeCandidates],
-    ['89ip', fetch89IpCandidates],
-    ['RoundProxies', fetchRoundProxiesCandidates],
-    ['Relayglass', fetchRelayglassCandidates],
-    ['ProxyScrape', fetchProxyScrapeCandidates],
-    ['IPLocate', fetchIPLocateCandidates],
-    ['Databay', fetchDatabayCandidates]
+    ['RoundProxies', fetchRoundProxiesCandidates]
   ];
 
   const all = [];
