@@ -5156,6 +5156,8 @@ async function scanOneSuperLikeMonitor(
           let newestSourceThisRound =
             null;
 
+          let sourceOldTimePageStreak = 0;
+
           if (
             sourceResume
             &&
@@ -5178,7 +5180,7 @@ async function scanOneSuperLikeMonitor(
 
           console.log(
             sourceCheckpoint
-              ? `[SuperLike][分区Fresh] ${source.name} 上轮checkpoint=${sourceCheckpoint.latest_post_id}；从第一页追到该帖子，最多 ${TAG_SECTION_PAGES} 页。`
+              ? `[SuperLike][分区Fresh] ${source.name} 上轮时间checkpoint=${sourceCheckpoint.latest_created_at || '-'}；PostID=${sourceCheckpoint.latest_post_id}仅作辅助，连续4个完整旧页即停止。`
               : `[SuperLike][分区Fresh] ${source.name} 首次运行；先扫描 ${freshFirstPages} 页建立checkpoint，历史由Resume继续补。`
           );
 
@@ -5251,26 +5253,62 @@ async function scanOneSuperLikeMonitor(
                 sectionStats.newestSeen;
             }
 
-            if (
-              sourceCheckpoint
-              &&
-              sectionStats.checkpointReached
-            ) {
-              if (newestSourceThisRound) {
-                saveScanSourceCheckpoint(
-                  monitor.id,
-                  source.key,
-                  newestSourceThisRound.postId,
-                  newestSourceThisRound.createdAt,
-                  newestSourceThisRound.createdAtMs
+            if (sourceCheckpoint) {
+              if (sectionStats.checkpointReached) {
+                if (newestSourceThisRound) {
+                  saveScanSourceCheckpoint(
+                    monitor.id,
+                    source.key,
+                    newestSourceThisRound.postId,
+                    newestSourceThisRound.createdAt,
+                    newestSourceThisRound.createdAtMs
+                  );
+                }
+
+                console.log(
+                  `[SuperLike][分区Checkpoint] ${source.name} 辅助PostID命中 ${sourceCheckpoint.latest_post_id}；Fresh停止，新checkpoint=${newestSourceThisRound?.postId || '-'}。`
                 );
+
+                break;
               }
 
-              console.log(
-                `[SuperLike][分区Checkpoint] ${source.name} 已命中上一轮边界 ${sourceCheckpoint.latest_post_id}；Fresh停止，新checkpoint=${newestSourceThisRound?.postId || '-'}。`
-              );
+              const oldTimePage =
+                sectionStats.pageFullyAtOrBeforeCheckpoint
+                || sectionStats.pageHasNoPosts;
 
-              break;
+              if (oldTimePage) {
+                sourceOldTimePageStreak++;
+
+                console.log(
+                  `[SuperLike][分区时间Checkpoint] ${source.name} 第${sectionPageIndex}页${sectionStats.pageHasNoPosts ? '为空页' : `全部 <= ${sourceCheckpoint.latest_created_at || '-'}`}；连续旧页=${sourceOldTimePageStreak}/4`
+                );
+              } else {
+                if (sourceOldTimePageStreak > 0) {
+                  console.log(
+                    `[SuperLike][分区时间Checkpoint] ${source.name} 第${sectionPageIndex}页仍出现较新帖子；连续旧页 ${sourceOldTimePageStreak} -> 0`
+                  );
+                }
+
+                sourceOldTimePageStreak = 0;
+              }
+
+              if (sourceOldTimePageStreak >= 4) {
+                if (newestSourceThisRound) {
+                  saveScanSourceCheckpoint(
+                    monitor.id,
+                    source.key,
+                    newestSourceThisRound.postId,
+                    newestSourceThisRound.createdAt,
+                    newestSourceThisRound.createdAtMs
+                  );
+                }
+
+                console.log(
+                  `[SuperLike][分区时间Checkpoint] ${source.name} 连续4页已跨过上一轮时间边界 ${sourceCheckpoint.latest_created_at || '-'}；Fresh停止，新checkpoint=${newestSourceThisRound?.createdAt || '-'} / ${newestSourceThisRound?.postId || '-'}。`
+                );
+
+                break;
+              }
             }
 
             console.log(
@@ -5372,7 +5410,7 @@ async function scanOneSuperLikeMonitor(
               );
 
               console.log(
-                `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${TAG_SECTION_PAGES} 页仍未命中旧checkpoint；旧边界不推进，保存cursor后下轮继续。`
+                `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${TAG_SECTION_PAGES} 页仍未安全跨过旧时间checkpoint；旧边界不推进，保存cursor后下轮继续。`
               );
 
               break;
@@ -5685,8 +5723,9 @@ async function scanOneSuperLikeMonitor(
       `[SuperLike][并发采集] 已启动来源：最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')} | 分区并发=${TAG_SECTION_CONCURRENCY} | 请求超时=30秒`
     );
 
-    // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
-    const CHECKPOINT_OLD_PAGE_THRESHOLD = 3;
+    // Fresh 以发帖时间为主边界：连续4个完整旧页即可认为已跨过上一轮时间checkpoint。
+    // post_id 仍作为更快的辅助命中；不要求微博必须再次返回同一个 post_id。
+    const CHECKPOINT_OLD_PAGE_THRESHOLD = 4;
     let consecutiveOldCheckpointPages = 0;
 
 
@@ -5801,7 +5840,7 @@ async function scanOneSuperLikeMonitor(
         );
 
         console.log(
-          '[SuperLike][Checkpoint] 第一重兜底命中：当前页已完整处理，停止请求下一页。'
+          '[SuperLike][Checkpoint] 辅助PostID命中：当前页已完整处理，停止请求下一页。'
         );
 
         checkpointSafeToAdvance =
@@ -5821,13 +5860,13 @@ async function scanOneSuperLikeMonitor(
 
           console.log(
             pageStats.pageHasNoPosts
-              ? `[SuperLike][Checkpoint] 第二重兜底：第${pageNumber}页为空页，连续安全旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
-              : `[SuperLike][Checkpoint] 第二重兜底：第${pageNumber}页整页时间 <= checkpoint，连续安全旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
+              ? `[SuperLike][时间Checkpoint] 第${pageNumber}页为空页，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
+              : `[SuperLike][时间Checkpoint] 第${pageNumber}页全部 <= ${checkpoint.latest_created_at || '-'}，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
           );
         } else {
           if (consecutiveOldCheckpointPages > 0) {
             console.log(
-              `[SuperLike][Checkpoint] 第${pageNumber}页仍出现 checkpoint 之后的数据，连续安全旧页计数 ${consecutiveOldCheckpointPages} -> 0`
+              `[SuperLike][时间Checkpoint] 第${pageNumber}页仍有 > ${checkpoint.latest_created_at || '-'} 的帖子，连续旧页 ${consecutiveOldCheckpointPages} -> 0`
             );
           }
 
@@ -5839,10 +5878,10 @@ async function scanOneSuperLikeMonitor(
           CHECKPOINT_OLD_PAGE_THRESHOLD
         ) {
           stopReason =
-            `未找到 latest_post_id，但连续 ${CHECKPOINT_OLD_PAGE_THRESHOLD} 页均为空页或整页 <= checkpoint 时间`;
+            `连续 ${CHECKPOINT_OLD_PAGE_THRESHOLD} 页均为空页或整页 <= checkpoint 时间`;
 
           console.log(
-            `[SuperLike][Checkpoint] 第二重兜底命中：${stopReason}，停止请求下一页。`
+            `[SuperLike][时间Checkpoint] 已安全跨过上一轮时间边界：${checkpoint.latest_created_at || '-'}；${stopReason}，停止Fresh。`
           );
 
           checkpointSafeToAdvance =
