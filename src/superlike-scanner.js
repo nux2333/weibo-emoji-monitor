@@ -110,6 +110,15 @@ const TAG_SECTION_PAGES =
   )
   || 100;
 
+const TAG_SECTION_CONCURRENCY =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_TAG_SECTION_CONCURRENCY
+    )
+    || 2
+  );
+
 const TAG_SECTION_SOURCES = [
   {
     key: 'section-superlike',
@@ -1847,7 +1856,7 @@ async function fetchJsonInPageWithRetry(
     },
     maxAttempts = 3,
     retryDelaysMs = [500, 1000],
-    timeoutMs = 15000
+    timeoutMs = 30000
   } = {}
 ) {
   let lastResult = null;
@@ -5254,17 +5263,53 @@ async function scanOneSuperLikeMonitor(
       '[SuperLike][最新评论] 已禁用，不参与帖子采集。'
     );
 
+    /*
+     * 分区不再全部同时打到同一个 Page/代理。
+     * 默认最多 2 个分区并发；总最新仍独立同时运行。
+     */
+    const sectionQueue =
+      [...TAG_SECTION_SOURCES];
+
+    const sectionWorkers =
+      Array.from(
+        {
+          length:
+            Math.min(
+              TAG_SECTION_CONCURRENCY,
+              sectionQueue.length
+            )
+        },
+        async () => {
+          while (
+            sectionQueue.length > 0
+          ) {
+            const source =
+              sectionQueue.shift();
+
+            if (!source) {
+              break;
+            }
+
+            await scanTagSection(
+              source
+            );
+          }
+        }
+      );
+
     for (
-      const source
-      of TAG_SECTION_SOURCES
+      let workerIndex = 0;
+      workerIndex < sectionWorkers.length;
+      workerIndex++
     ) {
-      scanTagSection(
-        source
+      tagSectionPromises.set(
+        `__worker_${workerIndex}`,
+        sectionWorkers[workerIndex]
       );
     }
 
     console.log(
-      `[SuperLike][并发采集] 已启动来源：最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')}`
+      `[SuperLike][并发采集] 已启动来源：最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')} | 分区并发=${TAG_SECTION_CONCURRENCY} | 请求超时=30秒`
     );
 
     // 第二重兜底：连续 3 个空页/完整旧页即可认为已安全跨过旧边界。
