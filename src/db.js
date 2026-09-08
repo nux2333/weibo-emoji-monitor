@@ -467,6 +467,16 @@ function initDatabase() {
     );
 
     /*
+     * 候选池今日“毕业人数”累计。
+     * 不保存每个 UID，只保存每天累计人数。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_pool_exit_daily (
+      exit_date TEXT PRIMARY KEY,
+      user_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
+    );
+
+    /*
      * SuperLike 页面黑粉关键词。
      * 页面“ 不显示猪 ”筛选会检查：
      * username / post_text / icon_summary。
@@ -889,16 +899,6 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
       ? Number(experience7d)
       : null;
 
-  const hadCandidate =
-    !!db.prepare(`
-      SELECT 1
-      FROM superlike_posts
-      WHERE uid = ?
-      LIMIT 1
-    `).get(
-      normalizedUid
-    );
-
   const existed = !!db.prepare(`
     SELECT 1
     FROM superlike_users
@@ -932,27 +932,6 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
     date,
     normalizedExperience7d
   );
-
-  if (hadCandidate) {
-    db.prepare(`
-      INSERT OR IGNORE INTO superlike_pool_exit_events(
-        monitor_id,
-        uid,
-        exit_date,
-        reason,
-        exited_at
-      )
-      VALUES(
-        ?, ?,
-        date('now', '+8 hours'),
-        'BECAME_SUPERLIKE',
-        datetime('now', '+8 hours')
-      )
-    `).run(
-      normalizedMonitorId,
-      normalizedUid
-    );
-  }
 
   return !existed;
 }
@@ -1330,13 +1309,36 @@ function cleanupOldDailyExcludedUsers() {
 function cleanupSuperLikePostsByUsersTable() {
   initDatabase();
 
-  const result = db.prepare(`
-    DELETE FROM superlike_posts
-    WHERE uid IN (
-      SELECT uid
-      FROM superlike_users
-    )
-  `).run();
+  const matched =
+    db.prepare(`
+      SELECT
+        COUNT(DISTINCT uid) AS user_count
+      FROM superlike_posts
+      WHERE uid IN (
+        SELECT uid
+        FROM superlike_users
+      )
+    `).get();
+
+  const result =
+    db.prepare(`
+      DELETE FROM superlike_posts
+      WHERE uid IN (
+        SELECT uid
+        FROM superlike_users
+      )
+    `).run();
+
+  const deletedUsers =
+    Number(
+      matched?.user_count || 0
+    );
+
+  if (deletedUsers > 0) {
+    addSuperLikePoolExitCount(
+      deletedUsers
+    );
+  }
 
   return result.changes || 0;
 }
@@ -1614,20 +1616,62 @@ function clearScanSourceResume(
 }
 
 
+function addSuperLikePoolExitCount(
+  count
+) {
+  initDatabase();
+
+  const value =
+    Math.max(
+      0,
+      Math.floor(
+        Number(count) || 0
+      )
+    );
+
+  if (value <= 0) {
+    return getTodaySuperLikePoolExitCount();
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_pool_exit_daily(
+      exit_date,
+      user_count,
+      updated_at
+    )
+    VALUES(
+      date('now', '+8 hours'),
+      ?,
+      datetime('now', '+8 hours')
+    )
+    ON CONFLICT(exit_date)
+    DO UPDATE SET
+      user_count =
+        superlike_pool_exit_daily.user_count
+        + excluded.user_count,
+      updated_at =
+        datetime('now', '+8 hours')
+  `).run(
+    value
+  );
+
+  return getTodaySuperLikePoolExitCount();
+}
+
+
 function getTodaySuperLikePoolExitCount() {
   initDatabase();
 
   const row =
     db.prepare(`
-      SELECT
-        COUNT(DISTINCT uid) AS count
-      FROM superlike_pool_exit_events
-      WHERE exit_date = date('now', '+8 hours')
-        AND reason = 'BECAME_SUPERLIKE'
+      SELECT user_count
+      FROM superlike_pool_exit_daily
+      WHERE exit_date =
+        date('now', '+8 hours')
     `).get();
 
   return Number(
-    row?.count || 0
+    row?.user_count || 0
   );
 }
 
@@ -2089,5 +2133,6 @@ module.exports = {
   getScanSourceResume,
   saveScanSourceResume,
   clearScanSourceResume,
+  addSuperLikePoolExitCount,
   getTodaySuperLikePoolExitCount
 };
