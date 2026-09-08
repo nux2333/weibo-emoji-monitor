@@ -7,7 +7,7 @@
     "dev": "node --watch server.js",
     "rebuild-comments": "node src/rebuild-comments.js",
     "recheck-superlike": "node scripts/recheck-superlike.js",
-    "scan-superlike": "node src/superlike-scanner.js",
+    "scan-superlike": "node scripts/start-superlike-workers.js",
     "setup-proxies": "node scripts/setup-webshare-proxies.js",
     "test-proxyclean": "node scripts/test-proxyclean.js",
     "build-weibo-proxies": "node scripts/build-weibo-proxy-pool.js",
@@ -15,7 +15,8 @@
     "start:prod": "node server.js",
     "start:test": "node scripts/start-test.js",
     "test-db:refresh": "node scripts/refresh-test-db.js",
-    "scan-superlike:test": "node scripts/run-test-scan.js"
+    "scan-superlike:test": "node scripts/run-test-scan.js",
+    "scan-superlike:legacy": "node src/superlike-scanner.js"
   },
   "dependencies": {
     "express": "^5.1.0",
