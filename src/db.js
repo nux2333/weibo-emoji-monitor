@@ -561,16 +561,42 @@ function initDatabase() {
 
   db.exec(`
     UPDATE superlike_posts
-    SET inserted_at = COALESCE(
-      inserted_at,
-      CASE
-        WHEN first_seen_at IS NOT NULL
-          THEN datetime(first_seen_at, '+8 hours')
-        ELSE datetime('now', '+8 hours')
-      END
-    )
+    SET inserted_at = CASE
+      WHEN first_seen_at IS NOT NULL
+        THEN datetime(first_seen_at, '+8 hours')
+      ELSE datetime('now', '+8 hours')
+    END
     WHERE inserted_at IS NULL
-       OR inserted_at = ''
+       OR TRIM(inserted_at) = ''
+  `);
+
+  /*
+   * 旧数据库通过 ALTER TABLE 添加 inserted_at 时，SQLite 无法给该列补
+   * datetime() 动态 DEFAULT。为了保证任何脚本/未来代码路径写入后都绝不为空，
+   * 再加数据库级兜底 Trigger。
+   */
+  db.exec(`
+    CREATE TRIGGER IF NOT EXISTS trg_superlike_posts_inserted_at_after_insert
+    AFTER INSERT ON superlike_posts
+    FOR EACH ROW
+    WHEN NEW.inserted_at IS NULL
+      OR TRIM(NEW.inserted_at) = ''
+    BEGIN
+      UPDATE superlike_posts
+      SET inserted_at = datetime('now', '+8 hours')
+      WHERE id = NEW.id;
+    END;
+
+    CREATE TRIGGER IF NOT EXISTS trg_superlike_posts_inserted_at_after_update
+    AFTER UPDATE OF inserted_at ON superlike_posts
+    FOR EACH ROW
+    WHEN NEW.inserted_at IS NULL
+      OR TRIM(NEW.inserted_at) = ''
+    BEGIN
+      UPDATE superlike_posts
+      SET inserted_at = datetime('now', '+8 hours')
+      WHERE id = NEW.id;
+    END;
   `);
 
     ensureColumn('superlike_posts', 'comment_last_checked_at', 'TEXT');
@@ -1155,6 +1181,7 @@ function saveSuperLikeTargetPost(data = {}) {
       experience_7d,
       initial_experience_7d,
       post_created_at,
+      inserted_at,
       first_seen_at,
       last_seen_at,
       profile_last_checked_at,
@@ -1168,6 +1195,7 @@ function saveSuperLikeTargetPost(data = {}) {
       ?,
       ?,
       ?,
+      datetime('now', '+8 hours'),
       CURRENT_TIMESTAMP,
       CURRENT_TIMESTAMP,
       CASE WHEN ? = 'UNKNOWN' THEN NULL ELSE CURRENT_TIMESTAMP END,
