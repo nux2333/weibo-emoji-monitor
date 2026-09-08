@@ -17,6 +17,7 @@ const {
   setSuperLikePostMoved,
   setSuperLikePostsMoved,
   deletePostsByUidSet,
+  addSuperLikePoolExitCount,
   getTodaySuperLikePoolExitCount
 } = require('./src/db');
 
@@ -468,9 +469,13 @@ app.post('/api/superlike-mark-user', (req, res) => {
         new Set([uid])
       );
 
+    if (deleted > 0) {
+      addSuperLikePoolExitCount(1);
+    }
+
     console.log(
       `[SuperLike][人工确认] UID=${uid} 已标记SuperLike | ` +
-      `${inserted ? '新增用户' : '用户已存在'} | 删除候选=${deleted}`
+      `${inserted ? '新增用户' : '用户已存在'} | 删除候选=${deleted} | 今日毕业+${deleted > 0 ? 1 : 0}`
     );
 
     res.json({
