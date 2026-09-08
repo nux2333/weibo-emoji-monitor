@@ -5,9 +5,21 @@ const {
 let batchLogger = null;
 
 if (require.main === module) {
+  const workerLabel =
+    String(
+      process.env.SUPERLIKE_SCAN_WORKER_LABEL
+      || process.env.SUPERLIKE_SCAN_WORKER_SOURCE
+      || process.env.SUPERLIKE_SCAN_WORKER_MODE
+      || 'legacy'
+    )
+      .replace(
+        /[^a-zA-Z0-9_-]/g,
+        '_'
+      );
+
   batchLogger =
     createBatchLogger(
-      'scan-superlike'
+      `scan-superlike-${workerLabel}`
     );
 }
 
