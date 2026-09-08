@@ -16,7 +16,8 @@ const {
   saveSuperLikeUser,
   setSuperLikePostMoved,
   setSuperLikePostsMoved,
-  deletePostsByUidSet
+  deletePostsByUidSet,
+  getTodaySuperLikePoolExitCount
 } = require('./src/db');
 
 const { syncMonitorsFromConfig } = require('./src/config');
@@ -405,6 +406,8 @@ app.get('/api/superlike-posts', (req, res) => {
       stats: {
         total: Number(stats?.total || 0),
         user_count: Number(stats?.user_count || 0),
+        today_became_superlike:
+          getTodaySuperLikePoolExitCount(),
         experience_known: Number(stats?.experience_known || 0)
       },
       filters: {
