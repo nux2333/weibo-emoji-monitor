@@ -457,6 +457,22 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
+    /*
+     * 分区 Fresh 边界：
+     * 记录每个分区上一轮“最新的一条 post_id”。
+     * 下一轮从第一页开始一直扫到碰见这个 post_id 为止。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_scan_source_checkpoint (
+      monitor_id INTEGER NOT NULL,
+      source_key TEXT NOT NULL,
+      latest_post_id TEXT NOT NULL,
+      latest_created_at TEXT,
+      latest_created_at_ms INTEGER,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(monitor_id, source_key),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS superlike_pool_exit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       monitor_id INTEGER NOT NULL,
@@ -1563,6 +1579,81 @@ function clearScanResume(monitorId) {
 }
 
 
+function getScanSourceCheckpoint(
+  monitorId,
+  sourceKey
+) {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      source_key,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms,
+      updated_at
+    FROM superlike_scan_source_checkpoint
+    WHERE monitor_id = ?
+      AND source_key = ?
+  `).get(
+    Number(monitorId),
+    String(sourceKey)
+  ) || null;
+}
+
+
+function saveScanSourceCheckpoint(
+  monitorId,
+  sourceKey,
+  latestPostId,
+  latestCreatedAt,
+  latestCreatedAtMs
+) {
+  initDatabase();
+
+  if (
+    !monitorId
+    ||
+    !sourceKey
+    ||
+    !latestPostId
+  ) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_scan_source_checkpoint(
+      monitor_id,
+      source_key,
+      latest_post_id,
+      latest_created_at,
+      latest_created_at_ms,
+      updated_at
+    )
+    VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(monitor_id, source_key)
+    DO UPDATE SET
+      latest_post_id = excluded.latest_post_id,
+      latest_created_at = excluded.latest_created_at,
+      latest_created_at_ms = excluded.latest_created_at_ms,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    Number(monitorId),
+    String(sourceKey),
+    String(latestPostId),
+    latestCreatedAt || null,
+    Number.isFinite(
+      Number(latestCreatedAtMs)
+    )
+      ? Number(latestCreatedAtMs)
+      : null
+  );
+
+  return true;
+}
+
+
 function getScanSourceResume(
   monitorId,
   sourceKey
@@ -2195,6 +2286,8 @@ module.exports = {
   getScanResume,
   saveScanResume,
   clearScanResume,
+  getScanSourceCheckpoint,
+  saveScanSourceCheckpoint,
   getScanSourceResume,
   saveScanSourceResume,
   clearScanSourceResume,
