@@ -63,7 +63,7 @@ const {
  * 7. “最新发帖”fresh / 多个分区 tag_status_sort 并发采集列表页
  * 8. 所有 fresh 来源汇总唯一 Post 后，再统一做 UID 去重 / Profile / 经验值 / 入库
  * 9. “最新发帖”与每个 tag_status_sort 分区都独立维护 Resume
- * 10. UID不在 superlike_users + feed无chao_like + 评论<21 才入库
+ * 10. UID不在 superlike_users + feed/Profile无chao_like + jyz<=80 + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
  */
@@ -3845,6 +3845,49 @@ async function processPagePosts(
 
       continue;
     }
+
+    if (
+      profileResult?.ok
+      &&
+      profileResult.hasSuperLike === false
+      &&
+      Number.isFinite(
+        Number(
+          profileResult.experience7d
+        )
+      )
+      &&
+      Number(
+        profileResult.experience7d
+      ) > 80
+    ) {
+      stats.hasSuperLike++;
+
+      const userInserted =
+        saveSuperLikeUser(
+          monitorId,
+          uid
+        );
+
+      const deletedNow =
+        deletePostsByUidWithLog(
+          uid,
+          'SUPERLIKE_EXPERIENCE_GT_80'
+        );
+
+      if (!deleteUidSet.has(uid)) {
+        stats.deleteQueued++;
+      }
+
+      deleteUidSet.add(uid);
+
+      console.log(
+        `[SuperLike][经验值判定SuperLike] UID=${uid} | jyz=${profileResult.experience7d} > 80 | Profile虽未显示超LIKE，仍按SuperLike处理 | ${userInserted ? '写入' : '已存在'} superlike_users | 清理旧候选=${deletedNow}`
+      );
+
+      continue;
+    }
+
 
     if (
       profileResult
