@@ -320,6 +320,75 @@ function resolveSelectedLogFile(relativeFile) {
   return full;
 }
 
+app.get('/api/admin/live-log/tree', checkAdmin, (req, res) => {
+  try {
+    const requested =
+      String(req.query.path || '')
+        .replace(/\\/g, '/')
+        .replace(/^\/+|\/+$/g, '');
+
+    const roots = getLogRoots();
+    let target;
+
+    if (!requested) {
+      const data = roots.map(root => ({
+        name: path.basename(root),
+        path: path.relative(__dirname, root).replace(/\\/g, '/'),
+        type: 'directory'
+      }));
+
+      return res.json({ success: true, path: '', data });
+    }
+
+    target = path.resolve(__dirname, requested);
+
+    const allowed = roots.some(root => {
+      const rr = path.resolve(root);
+      return target === rr || target.startsWith(rr + path.sep);
+    });
+
+    if (!allowed || !fs.existsSync(target) || !fs.statSync(target).isDirectory()) {
+      return res.status(400).json({ success: false, message: '目录无效或不存在' });
+    }
+
+    const data = fs.readdirSync(target, { withFileTypes: true })
+      .filter(entry => entry.isDirectory() || (entry.isFile() && /\.log$/i.test(entry.name)))
+      .map(entry => {
+        const full = path.join(target, entry.name);
+        let updatedAt = null;
+        let size = null;
+        try {
+          const stat = fs.statSync(full);
+          updatedAt = new Date(stat.mtimeMs).toISOString();
+          if (entry.isFile()) size = stat.size;
+        } catch {}
+
+        return {
+          name: entry.name,
+          path: path.relative(__dirname, full).replace(/\\/g, '/'),
+          type: entry.isDirectory() ? 'directory' : 'file',
+          updatedAt,
+          size
+        };
+      })
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'directory' ? -1 : 1;
+        return a.name.localeCompare(b.name, 'zh-CN', { numeric: true });
+      });
+
+    res.json({
+      success: true,
+      path: requested,
+      parent: path.dirname(requested).replace(/\\/g, '/') === '.'
+        ? ''
+        : path.dirname(requested).replace(/\\/g, '/'),
+      data
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 app.get('/api/admin/live-log/files', checkAdmin, (req, res) => {
   try {
     res.json({
