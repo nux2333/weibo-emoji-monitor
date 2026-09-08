@@ -705,21 +705,23 @@ async function fetchDocIpCandidates() {
 }
 
 async function fetchGoodIpsCandidates() {
-  // 谷德代理公开页。只提取 IPv4:Port，最终仍由微博实测决定是否入池。
-  const urls = [
-    'https://www.goodips.com/',
-    'https://www.goodips.com/free-proxy'
-  ];
-  for (const url of urls) {
-    try {
-      const text = await fetchText(url);
-      const list = extractIpPorts(text, 'http');
-      if (list.length) return list;
-    } catch (error) {
-      console.log(`[GoodIPs] ${url} 获取失败：${error.message}`);
-    }
+  // 官方 ProxyPool 当前实现只抓首页；/free-proxy 已不存在。
+  try {
+    const text =
+      await fetchText(
+        'https://www.goodips.com/'
+      );
+
+    return extractIpPorts(
+      text,
+      'http'
+    );
+  } catch (error) {
+    console.log(
+      `[GoodIPs] 获取失败：${error.message}`
+    );
+    return [];
   }
-  return [];
 }
 
 async function fetchGeoNodeCandidates() {
@@ -753,48 +755,60 @@ async function fetchGeoNodeCandidates() {
 }
 
 async function fetchRoundProxiesCandidates() {
-  const urls = [
-    'https://roundproxies.com/api/proxies?limit=500&sortBy=lastChecked&sortType=desc',
-    'https://roundproxies.com/api/proxy-list?limit=500&sort_by=lastChecked&sort_type=desc'
-  ];
+  // 与 jhao104/proxy_pool 2026-06-09 当前实现保持一致。
+  const pageSize =
+    Math.min(
+      50,
+      MAX_CANDIDATES_PER_SOURCE
+    );
 
-  for (const url of urls) {
-    try {
-      const text = await fetchText(url);
-      let list = [];
-      try {
-        const json = JSON.parse(text);
-        const rows =
-          Array.isArray(json?.data) ? json.data :
-          Array.isArray(json?.proxies) ? json.proxies :
-          Array.isArray(json) ? json : [];
+  const url =
+    'https://roundproxies.com/api/get-free-proxies/'
+    + '?limit=' + pageSize
+    + '&page=1'
+    + '&sort_by=lastChecked'
+    + '&sort_type=desc';
 
-        list = rows.map(item => {
-          if (typeof item === 'string') return normalizeProxy(item, 'http');
-          const host = String(item?.ip || item?.host || '').trim();
-          const port = Number(item?.port);
-          const protocol = String(
-            item?.protocol || item?.type || 'http'
-          ).toLowerCase();
-          if (!host || !port) return null;
-          return normalizeProxy(
-            host + ':' + port,
-            protocol === 'socks5' ? 'socks5' : 'http'
-          );
-        }).filter(Boolean);
-      } catch {
-        list = extractIpPorts(text, 'http');
-      }
+  try {
+    const json =
+      JSON.parse(
+        await fetchText(url)
+      );
 
-      if (list.length) {
-        return Array.from(new Set(list)).slice(0, MAX_CANDIDATES_PER_SOURCE);
-      }
-    } catch (error) {
-      console.log(`[RoundProxies] ${url} 获取失败：${error.message}`);
-    }
+    const rows =
+      Array.isArray(json?.data)
+        ? json.data
+        : [];
+
+    return rows
+      .map(item => {
+        const host =
+          String(item?.ip || '').trim();
+
+        const port =
+          Number(item?.port);
+
+        if (!host || !port) {
+          return null;
+        }
+
+        return normalizeProxy(
+          host + ':' + port,
+          'http'
+        );
+      })
+      .filter(Boolean)
+      .slice(
+        0,
+        MAX_CANDIDATES_PER_SOURCE
+      );
+
+  } catch (error) {
+    console.log(
+      `[RoundProxies] 获取失败：${error.message}`
+    );
+    return [];
   }
-
-  return [];
 }
 
 function readScores() {
