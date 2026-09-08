@@ -22,23 +22,30 @@
 
   <section class="card">
     <div class="row">
-      <select id="fileSelect" onchange="connectSelected()">
-        <option value="">加载日志文件...</option>
-      </select>
-      <button class="button" onclick="loadFiles()">刷新文件列表</button>
       <input id="filter" placeholder="筛选，例如 Fresh进度 / 新增 / ERROR / Checkpoint" oninput="render()">
       <label><input id="autoScroll" type="checkbox" checked> 自动滚动</label>
     </div>
   </section>
 
-  <section class="card log-card">
-    <pre id="log" class="live-log">请输入管理员 Token 后连接。</pre>
-  </section>
+  <div class="log-layout">
+    <section class="card log-card">
+      <pre id="log" class="live-log">请从右侧选择日志文件。</pre>
+    </section>
+
+    <aside class="card log-browser">
+      <div class="log-browser-head">
+        <strong>日志目录</strong>
+        <button class="button" onclick="loadDirectory(currentDir)">刷新</button>
+      </div>
+      <div id="breadcrumb" class="log-breadcrumb"></div>
+      <div id="tree" class="log-tree">请输入管理员 Token 后加载目录。</div>
+    </aside>
+  </div>
 
   <section class="card">
     <div class="row">
       <input id="token" type="password" placeholder="ADMIN_TOKEN">
-      <button class="button primary" onclick="connect()">连接实时日志</button>
+      <button class="button primary" onclick="loadDirectory('')">加载日志目录</button>
     </div>
   </section>
 </main>
@@ -48,6 +55,7 @@ let source=null;
 let raw='';
 let paused=false;
 let selectedFile='';
+let currentDir='';
 const MAX_CHARS=500000;
 
 $('token').value=localStorage.getItem('admin_token')||'';
@@ -85,7 +93,7 @@ function clearView(){
   render();
 }
 
-async function loadFiles(){
+async function loadDirectory(dir=''){
   const token=$('token').value.trim();
   if(!token){
     setStatus('请输入 ADMIN_TOKEN');
@@ -95,32 +103,57 @@ async function loadFiles(){
   localStorage.setItem('admin_token',token);
 
   try{
-    const r=await fetch('/api/admin/live-log/files?token='+encodeURIComponent(token));
+    const params=new URLSearchParams({token});
+    if(dir) params.set('path',dir);
+
+    const r=await fetch('/api/admin/live-log/tree?'+params.toString());
     const j=await r.json();
     if(!r.ok||j.success===false) throw new Error(j.message||('HTTP '+r.status));
 
-    const current=$('fileSelect').value||selectedFile;
-    $('fileSelect').innerHTML=
-      '<option value="">请选择日志文件</option>'+
-      (j.data||[]).map(item=>{
-        const d=new Date(item.updatedAt);
-        const label=item.file+' · '+d.toLocaleString();
-        return '<option value="'+escapeHtml(item.file)+'">'+escapeHtml(label)+'</option>';
-      }).join('');
+    currentDir=j.path||'';
+    renderBreadcrumb();
 
-    if(current && [...$('fileSelect').options].some(o=>o.value===current)){
-      $('fileSelect').value=current;
-    }else if(j.data?.length){
-      $('fileSelect').value=j.data[0].file;
-    }
+    const rows=(j.data||[]).map(item=>{
+      if(item.type==='directory'){
+        return '<button class="log-tree-item folder" data-path="'+escapeHtml(item.path)+'">📁 <span>'+escapeHtml(item.name)+'</span></button>';
+      }
 
-    selectedFile=$('fileSelect').value||'';
-    if(selectedFile && !source){
-      connectSelected();
-    }
+      const active=item.path===selectedFile?' active':'';
+      return '<button class="log-tree-item file'+active+'" data-file="'+escapeHtml(item.path)+'">📄 <span>'+escapeHtml(item.name)+'</span></button>';
+    }).join('');
+
+    $('tree').innerHTML=rows||'<div class="log-tree-empty">这个目录里没有日志</div>';
+
+    $('tree').querySelectorAll('[data-path]').forEach(el=>{
+      el.onclick=()=>loadDirectory(el.dataset.path);
+    });
+
+    $('tree').querySelectorAll('[data-file]').forEach(el=>{
+      el.onclick=()=>{
+        selectedFile=el.dataset.file;
+        connect();
+        loadDirectory(currentDir);
+      };
+    });
   }catch(e){
-    setStatus('日志文件列表加载失败：'+e.message);
+    setStatus('日志目录加载失败：'+e.message);
   }
+}
+
+function renderBreadcrumb(){
+  const parts=currentDir?currentDir.split('/'):[];
+  let built='';
+  const buttons=['<button data-dir="">根目录</button>'];
+
+  for(const part of parts){
+    built=built?built+'/'+part:part;
+    buttons.push('<span>›</span><button data-dir="'+escapeHtml(built)+'">'+escapeHtml(part)+'</button>');
+  }
+
+  $('breadcrumb').innerHTML=buttons.join('');
+  $('breadcrumb').querySelectorAll('[data-dir]').forEach(el=>{
+    el.onclick=()=>loadDirectory(el.dataset.dir);
+  });
 }
 
 function escapeHtml(v){
@@ -130,11 +163,6 @@ function escapeHtml(v){
     .replaceAll('>','&gt;')
     .replaceAll('"','&quot;')
     .replaceAll("'","&#39;");
-}
-
-function connectSelected(){
-  selectedFile=$('fileSelect').value||'';
-  connect();
 }
 
 function connect(){
@@ -179,7 +207,7 @@ function connect(){
 }
 
 if($('token').value){
-  loadFiles();
+  loadDirectory('');
 }
 </script>
 </body>
