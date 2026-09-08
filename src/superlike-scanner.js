@@ -38,7 +38,8 @@ const {
   clearScanResume,
   getScanSourceResume,
   saveScanSourceResume,
-  clearScanSourceResume
+  clearScanSourceResume,
+  addSuperLikePoolExitCount
 } = require('./db');
 
 /**
@@ -408,8 +409,25 @@ function deletePostsByUidWithLog(
       new Set([normalizedUid])
     );
 
+  const superLikeReason =
+    String(reason || '')
+      .toUpperCase()
+      .startsWith('SUPERLIKE_')
+    ||
+    String(reason || '')
+      .toUpperCase()
+      === 'FEED_SUPERLIKE_ICON';
+
+  if (
+    superLikeReason
+    &&
+    deleted > 0
+  ) {
+    addSuperLikePoolExitCount(1);
+  }
+
   console.log(
-    `[DB删除][UID=${normalizedUid}] 原因=${reason || 'UNSPECIFIED'} | 删除=${deleted}`
+    `[DB删除][UID=${normalizedUid}] 原因=${reason || 'UNSPECIFIED'} | 删除=${deleted} | 今日毕业+${superLikeReason && deleted > 0 ? 1 : 0}`
   );
 
   return deleted;
