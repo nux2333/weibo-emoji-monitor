@@ -353,6 +353,47 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.icon_summary,
         sp.experience_7d,
         sp.initial_experience_7d,
+        CASE
+          WHEN sp.initial_experience_7d IS NULL THEN NULL
+          WHEN sp.initial_experience_7d >= 80 THEN 0
+          WHEN COALESCE(sp.initial_comments_count, 0) < 5 THEN
+            CASE
+              WHEN sp.initial_experience_7d + 1 >= 80
+                THEN 5 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 3 >= 80
+                THEN 10 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 6 >= 80
+                THEN 15 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 10 >= 80
+                THEN 20 - COALESCE(sp.initial_comments_count, 0)
+              ELSE -1
+            END
+          WHEN COALESCE(sp.initial_comments_count, 0) < 10 THEN
+            CASE
+              WHEN sp.initial_experience_7d + 2 >= 80
+                THEN 10 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 5 >= 80
+                THEN 15 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 9 >= 80
+                THEN 20 - COALESCE(sp.initial_comments_count, 0)
+              ELSE -1
+            END
+          WHEN COALESCE(sp.initial_comments_count, 0) < 15 THEN
+            CASE
+              WHEN sp.initial_experience_7d + 3 >= 80
+                THEN 15 - COALESCE(sp.initial_comments_count, 0)
+              WHEN sp.initial_experience_7d + 7 >= 80
+                THEN 20 - COALESCE(sp.initial_comments_count, 0)
+              ELSE -1
+            END
+          WHEN COALESCE(sp.initial_comments_count, 0) < 20 THEN
+            CASE
+              WHEN sp.initial_experience_7d + 4 >= 80
+                THEN 20 - COALESCE(sp.initial_comments_count, 0)
+              ELSE -1
+            END
+          ELSE -1
+        END AS comments_needed_for_80,
         sp.post_created_at,
         sp.inserted_at,
         sp.first_seen_at,
