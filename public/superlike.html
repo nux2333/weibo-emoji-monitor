@@ -175,9 +175,22 @@
       width: 220px;
     }
 
-    /* Link */
+    /* 差几评 */
+    th:nth-child(7),
+    td:nth-child(7) {
+      width: 92px;
+      text-align: center;
+    }
+
+    /* 当前Icon */
     th:nth-child(8),
     td:nth-child(8) {
+      width: 150px;
+    }
+
+    /* Link */
+    th:nth-child(9),
+    td:nth-child(9) {
       width: 90px;
       text-align: center;
     }
@@ -429,9 +442,12 @@
       /* 发帖时间 */
       th:nth-child(4),
       td:nth-child(4),
-      /* 当前Icon */
+      /* 差几评（仅电脑端显示） */
       th:nth-child(7),
-      td:nth-child(7) {
+      td:nth-child(7),
+      /* 当前Icon */
+      th:nth-child(8),
+      td:nth-child(8) {
         display: none;
       }
 
@@ -462,8 +478,8 @@
       }
 
       /* Link + 🐷按钮 */
-      th:nth-child(8),
-      td:nth-child(8) {
+      th:nth-child(9),
+      td:nth-child(9) {
         width: 15%;
         text-align: center;
       }
@@ -838,6 +854,18 @@
           >
             <div class="th-sort">
               <span>jyz</span>
+              <span class="sort-indicator">↕</span>
+            </div>
+          </th>
+
+          <th
+            class="desktop-comments-needed sortable"
+            data-sort-key="comments_needed_for_80"
+            onclick="sortBy('comments_needed_for_80')"
+            title="根据入库时评论数和jyz计算"
+          >
+            <div class="th-sort">
+              <span>差几评</span>
               <span class="sort-indicator">↕</span>
             </div>
           </th>
