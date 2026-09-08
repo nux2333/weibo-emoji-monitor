@@ -591,45 +591,119 @@ async function queryJyzLocal(
       };
     }
 
-    const result =
-      await page.evaluate(
-        async url => {
-          try {
-            const response =
-              await fetch(
-                url,
-                {
-                  credentials:
-                    'include',
-                  cache:
-                    'no-store',
-                  headers: {
-                    Accept:
-                      'application/json, text/plain, */*',
-                    'X-Requested-With':
-                      'XMLHttpRequest'
-                  }
-                }
-              );
+    let result = null;
 
-            return {
-              status:
-                response.status,
-              text:
-                await response.text()
-            };
-          } catch (error) {
-            return {
-              status: null,
-              text: '',
-              error:
-                error?.message
-                || String(error)
-            };
+    for (
+      let evaluateAttempt = 1;
+      evaluateAttempt <= 2;
+      evaluateAttempt++
+    ) {
+      try {
+        result =
+          await page.evaluate(
+            async url => {
+              try {
+                const response =
+                  await fetch(
+                    url,
+                    {
+                      credentials:
+                        'include',
+                      cache:
+                        'no-store',
+                      headers: {
+                        Accept:
+                          'application/json, text/plain, */*',
+                        'X-Requested-With':
+                          'XMLHttpRequest'
+                      }
+                    }
+                  );
+
+                return {
+                  status:
+                    response.status,
+                  text:
+                    await response.text()
+                };
+              } catch (error) {
+                return {
+                  status: null,
+                  text: '',
+                  error:
+                    error?.message
+                    || String(error)
+                };
+              }
+            },
+            apiUrl.toString()
+          );
+
+        break;
+
+      } catch (error) {
+        const message =
+          error?.message
+          || String(error);
+
+        if (
+          /Execution context was destroyed/i.test(
+            message
+          )
+          ||
+          /Cannot find context with specified id/i.test(
+            message
+          )
+        ) {
+          console.log(
+            '[JYZ补数][页面重试] UID='
+            + uid
+            + ' | 页面执行上下文失效，重新打开huati页面 | '
+            + evaluateAttempt
+            + '/2'
+          );
+
+          if (
+            page
+            &&
+            !page.isClosed()
+          ) {
+            await page.close()
+              .catch(
+                () => {}
+              );
           }
-        },
-        apiUrl.toString()
-      );
+
+          page =
+            await context.newPage();
+
+          await page.goto(
+            referer.toString(),
+            {
+              waitUntil:
+                'domcontentloaded',
+              timeout:
+                15000
+            }
+          )
+            .catch(
+              () => null
+            );
+
+          await page.waitForTimeout(
+            500
+          );
+
+          if (
+            evaluateAttempt < 2
+          ) {
+            continue;
+          }
+        }
+
+        throw error;
+      }
+    }
 
     if (
       !result
