@@ -610,6 +610,12 @@ const SCRIPT_DEFINITIONS = [
   }
 ];
 
+const PM2_BATCH_CONFIG =
+  path.join(
+    __dirname,
+    'ecosystem.batches.config.js'
+  );
+
 function runPm2(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
     const options = {
@@ -831,21 +837,13 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
           def.env
         );
       } else {
-        const args = [
-          'start',
-          def.script,
-          '--name',
-          def.pm2Name
-        ];
-
-        if (def.oneShot) {
-          args.push(
-            '--no-autorestart'
-          );
-        }
-
         await runPm2(
-          args,
+          [
+            'start',
+            PM2_BATCH_CONFIG,
+            '--only',
+            def.pm2Name
+          ],
           def.env
         );
       }
@@ -861,21 +859,13 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
           def.env
         );
       } else {
-        const args = [
-          'start',
-          def.script,
-          '--name',
-          def.pm2Name
-        ];
-
-        if (def.oneShot) {
-          args.push(
-            '--no-autorestart'
-          );
-        }
-
         await runPm2(
-          args,
+          [
+            'start',
+            PM2_BATCH_CONFIG,
+            '--only',
+            def.pm2Name
+          ],
           def.env
         );
       }
