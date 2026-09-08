@@ -16,6 +16,13 @@ const SCANNER =
     'superlike-scanner.js'
   );
 
+const JYZ_SERVICE =
+  path.join(
+    ROOT,
+    'scripts',
+    'jyz-service.js'
+  );
+
 const workers = [
   {
     label: 'fresh-latest',
@@ -47,8 +54,67 @@ const workers = [
 const children =
   new Map();
 
+let jyzServiceChild =
+  null;
+
 let stopping =
   false;
+
+function startJyzService() {
+  if (
+    stopping
+    ||
+    jyzServiceChild
+  ) {
+    return;
+  }
+
+  console.log(
+    '[SuperLikeWorkers] 启动 JYZ Service'
+  );
+
+  const child =
+    spawn(
+      process.execPath,
+      [JYZ_SERVICE],
+      {
+        cwd:
+          ROOT,
+        env:
+          process.env,
+        stdio:
+          'inherit'
+      }
+    );
+
+  jyzServiceChild =
+    child;
+
+  child.once(
+    'exit',
+    (
+      code,
+      signal
+    ) => {
+      jyzServiceChild =
+        null;
+
+      console.log(
+        `[SuperLikeWorkers] JYZ Service 已退出 | code=${code ?? '-'} | signal=${signal || '-'}`
+      );
+
+      if (stopping) {
+        return;
+      }
+
+      setTimeout(
+        startJyzService,
+        5000
+      );
+    }
+  );
+}
+
 
 function startWorker(
   spec
@@ -139,6 +205,16 @@ function stopAll() {
     '[SuperLikeWorkers] 正在停止全部 worker...'
   );
 
+  if (jyzServiceChild) {
+    try {
+      jyzServiceChild.kill(
+        'SIGINT'
+      );
+    } catch {
+      // ignore
+    }
+  }
+
   for (
     const child
     of children.values()
@@ -195,6 +271,9 @@ console.log(
   '# History: 1 worker'
 );
 console.log(
+  '# JYZ: 1 local persistent-profile service'
+);
+console.log(
   '# SQLite: 共用同一个 WAL DB'
 );
 console.log(
@@ -204,6 +283,8 @@ console.log(
   '################################################'
 );
 console.log('');
+
+startJyzService();
 
 for (
   const spec
