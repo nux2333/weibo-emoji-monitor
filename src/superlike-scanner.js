@@ -4734,6 +4734,11 @@ async function scanOneSuperLikeMonitor(
               monitor.id,
               uid
             );
+
+            deletePostsByUidWithLog(
+              uid,
+              'FEED_SUPERLIKE_ICON'
+            );
           }
 
           stats.filteredSuperLike++;
