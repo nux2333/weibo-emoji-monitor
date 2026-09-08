@@ -4618,6 +4618,9 @@ async function scanOneSuperLikeMonitor(
     const tagSectionPromises =
       new Map();
 
+    let tagHistoryResumeDone =
+      false;
+
     function collectFreshPage(
       json,
       source,
@@ -4722,6 +4725,249 @@ async function scanOneSuperLikeMonitor(
 
       return stats;
     }
+
+    async function scanTagSectionHistoryBudget() {
+      if (tagHistoryResumeDone) {
+        return;
+      }
+
+      tagHistoryResumeDone = true;
+
+      const deadline =
+        Date.now()
+        + RESUME_TIME_BUDGET_MS;
+
+      const queue =
+        TAG_SECTION_SOURCES
+          .map(
+            source => ({
+              source,
+              resume:
+                getScanSourceResume(
+                  monitor.id,
+                  source.key
+                )
+            })
+          )
+          .filter(
+            item =>
+              item.resume
+              &&
+              item.resume.next_since_id
+          );
+
+      if (queue.length === 0) {
+        console.log(
+          '[SuperLike][分区历史Resume] 当前没有需要补扫的分区历史。'
+        );
+        return;
+      }
+
+      console.log(
+        `[SuperLike][分区历史Resume] fresh已入库；开始补历史，${queue.length}个分区共享${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算。`
+      );
+
+      const requestHeaders =
+        firstSortTimeResult.requestHeaders
+        || feedResult.requestHeaders
+        || {};
+
+      async function worker() {
+        while (
+          queue.length > 0
+          &&
+          Date.now() < deadline
+        ) {
+          const item =
+            queue.shift();
+
+          if (!item) {
+            break;
+          }
+
+          const {
+            source
+          } = item;
+
+          let resume =
+            item.resume;
+
+          let historyPage = 0;
+
+          while (
+            resume
+            &&
+            resume.next_since_id
+            &&
+            Date.now() < deadline
+          ) {
+            historyPage++;
+
+            const params = {
+              page:
+                resume.next_page,
+              since_id:
+                resume.next_since_id,
+              max_id:
+                resume.next_max_id
+                ?? '0',
+              count:
+                resume.next_count
+                ?? '15',
+              page_common_ext:
+                resume.next_page_common_ext
+                ?? 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
+            };
+
+            const url =
+              buildTagSectionUrl(
+                source.flowId,
+                params
+              );
+
+            const result =
+              await fetchChaohuaInPage(
+                page,
+                url,
+                requestHeaders
+              );
+
+            if (
+              result.httpStatus === 418
+            ) {
+              throw new Weibo418Error(
+                `${source.name} 历史Resume返回 HTTP 418`
+              );
+            }
+
+            if (!result.ok) {
+              console.log(
+                `[SuperLike][分区历史Resume失败] ${source.name} | HTTP=${result.httpStatus ?? '-'} | 保留cursor，下轮继续。`
+              );
+              break;
+            }
+
+            pagesScanned++;
+
+            await saveScanResponseJson(
+              result.json,
+              `${source.key}-resume`
+            );
+
+            const pageStats =
+              await processPagePosts(
+                monitor.id,
+                result.json,
+                seenThisRun,
+                seenUidThisRun,
+                deleteUidSet,
+                null,
+                browser,
+                config,
+                profileCache,
+                scanVisitorContext
+              );
+
+            for (
+              const key
+              of Object.keys(total)
+            ) {
+              if (
+                typeof pageStats[key]
+                === 'number'
+              ) {
+                total[key] +=
+                  pageStats[key]
+                  || 0;
+              }
+            }
+
+            const nextParams =
+              extractTagNextPageParams(
+                result.json
+              );
+
+            console.log(
+              [
+                `[分区历史Resume ${source.name} #${historyPage}]`,
+                `Post=${pageStats.found}`,
+                `Profile查=${pageStats.profileChecked}`,
+                `新增=${pageStats.inserted}`,
+                `更新UID=${pageStats.replaced}`,
+                `剩余预算=${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}秒`
+              ].join(' | ')
+            );
+
+            if (!nextParams) {
+              clearScanSourceResume(
+                monitor.id,
+                source.key
+              );
+
+              console.log(
+                `[SuperLike][分区历史Resume完成] ${source.name} 已无下一页，清除Resume。`
+              );
+
+              break;
+            }
+
+            saveScanSourceResume(
+              monitor.id,
+              source.key,
+              source.flowId,
+              nextParams
+            );
+
+            resume =
+              getScanSourceResume(
+                monitor.id,
+                source.key
+              );
+
+            if (
+              PAGE_DELAY_MS > 0
+              &&
+              Date.now() < deadline
+            ) {
+              await page.waitForTimeout(
+                Math.min(
+                  PAGE_DELAY_MS,
+                  Math.max(
+                    0,
+                    deadline - Date.now()
+                  )
+                )
+              );
+            }
+          }
+        }
+      }
+
+      const workers =
+        Array.from(
+          {
+            length:
+              Math.min(
+                TAG_SECTION_CONCURRENCY,
+                queue.length
+              )
+          },
+          () => worker()
+        );
+
+      await Promise.all(
+        workers
+      );
+
+      if (
+        Date.now() >= deadline
+      ) {
+        console.log(
+          '[SuperLike][分区历史Resume] 5分钟预算已到，保留各分区当前cursor，下轮继续。'
+        );
+      }
+    }
+
 
     async function flushFreshPool(trigger) {
       if (freshPoolFlushed) {
@@ -4861,6 +5107,8 @@ async function scanOneSuperLikeMonitor(
           `更新UID=${freshStats.replaced}`
         ].join(' | ')
       );
+
+      await scanTagSectionHistoryBudget();
     }
 
     function scanTagSection(
