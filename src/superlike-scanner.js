@@ -4633,6 +4633,8 @@ async function scanOneSuperLikeMonitor(
         found: posts.length,
         collected: 0,
         duplicateInPool: 0,
+        filteredSuperLike: 0,
+        filteredKnownSuperLike: 0,
         checkpointReached: false,
         pageFullyAtOrBeforeCheckpoint: false,
         pageHasNoPosts: posts.length === 0,
@@ -4712,6 +4714,41 @@ async function scanOneSuperLikeMonitor(
           )
         ) {
           stats.duplicateInPool++;
+          continue;
+        }
+
+        /*
+         * Fresh Pool 前置过滤：
+         * 1. feed 已明确带 chao_like -> 不进入 Fresh Pool；
+         * 2. UID 已经在 superlike_users -> 不进入 Fresh Pool。
+         *
+         * 注意：checkpoint / 时间边界统计在上面的原始 posts 循环中完成，
+         * 所以前置过滤不会影响 Fresh 是否已经跨过上一轮边界的判断。
+         */
+        if (hasSuperLike(post)) {
+          const uid =
+            getUid(post);
+
+          if (uid) {
+            saveSuperLikeUser(
+              monitor.id,
+              uid
+            );
+          }
+
+          stats.filteredSuperLike++;
+          continue;
+        }
+
+        const uid =
+          getUid(post);
+
+        if (
+          uid
+          &&
+          isSuperLikeUser(uid)
+        ) {
+          stats.filteredKnownSuperLike++;
           continue;
         }
 
@@ -5317,6 +5354,8 @@ async function scanOneSuperLikeMonitor(
                 `Post=${sectionStats.found}`,
                 `新收集=${sectionStats.collected}`,
                 `池内重复=${sectionStats.duplicateInPool}`,
+                `过滤超LIKE=${sectionStats.filteredSuperLike}`,
+                `过滤已知UID=${sectionStats.filteredKnownSuperLike}`,
                 `fresh池=${freshCollectedPosts.length}`
               ].join(' | ')
             );
