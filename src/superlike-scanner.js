@@ -2676,6 +2676,69 @@ function pickProfileReplacementPost(profilePosts) {
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
 const SCAN_EXPERIENCE_TIMEOUT_MS = 7000;
 
+let experienceBrowser = null;
+let experienceContext = null;
+
+async function getExperienceContext() {
+  if (
+    experienceContext
+    &&
+    experienceBrowser
+  ) {
+    return experienceContext;
+  }
+
+  if (
+    !fs.existsSync(
+      WEIBO_LOGIN_STATE_FILE
+    )
+  ) {
+    return null;
+  }
+
+  experienceBrowser =
+    await chromium.launch({
+      headless:
+        process.env.SUPERLIKE_HEADLESS !== '0'
+    });
+
+  experienceContext =
+    await experienceBrowser.newContext({
+      storageState:
+        WEIBO_LOGIN_STATE_FILE,
+      viewport: {
+        width: 1280,
+        height: 900
+      }
+    });
+
+  console.log(
+    '[SuperLike][经验值登录Context] 已创建本地直连Context（不使用Scan代理），并加载共享登录态。'
+  );
+
+  return experienceContext;
+}
+
+async function closeExperienceContext() {
+  if (experienceContext) {
+    try {
+      await experienceContext.close();
+    } catch {
+      // ignore
+    }
+    experienceContext = null;
+  }
+
+  if (experienceBrowser) {
+    try {
+      await experienceBrowser.close();
+    } catch {
+      // ignore
+    }
+    experienceBrowser = null;
+  }
+}
+
 function extractExperience7d(currentInfo) {
   const text =
     String(currentInfo || '').trim();
@@ -2713,10 +2776,17 @@ async function fetchSuperLikeExperience7d(
   let page = null;
 
   try {
+    const localExperienceContext =
+      await getExperienceContext();
+
+    const effectiveContext =
+      localExperienceContext
+      || context;
+
     if (
-      !context
+      !effectiveContext
       ||
-      typeof context.newPage !== 'function'
+      typeof effectiveContext.newPage !== 'function'
     ) {
       return {
         ok: false,
@@ -2787,7 +2857,7 @@ async function fetchSuperLikeExperience7d(
      * 然后在页面同源环境里 fetch API，credentials=include。
      */
     page =
-      await context.newPage();
+      await effectiveContext.newPage();
 
     const navigation =
       await page.goto(
@@ -2973,7 +3043,7 @@ async function fetchSuperLikeExperience7d(
       ) !== 100000
     ) {
       const cookies =
-        await context.cookies(
+        await effectiveContext.cookies(
           [
             'https://weibo.com',
             'https://m.weibo.cn',
@@ -7660,7 +7730,10 @@ process.on(
       '[SuperLike] Batch停止。'
     );
 
-    process.exit(0);
+    void closeExperienceContext()
+      .finally(
+        () => process.exit(0)
+      );
   }
 );
 
