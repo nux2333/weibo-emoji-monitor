@@ -1,6 +1,9 @@
 const path = require('path');
 const { chromium } = require('playwright');
 const {
+  ProxyPool
+} = require('../src/proxy-pool');
+const {
   db,
   initDatabase
 } = require('../src/db');
@@ -30,6 +33,34 @@ const JYZ_PROFILE_DIR =
         'weibo-jyz-browser-profile'
       );
 
+const USE_PROXY =
+  process.env.JYZ_BACKFILL_USE_PROXY !== '0';
+
+const PROXY_POOL =
+  new ProxyPool({
+    filePath:
+      process.env.WEIBO_GOOD_PROXY_FILE
+      || path.join(
+        ROOT,
+        'data',
+        'weibo-good-proxies.txt'
+      ),
+    rawPool:
+      process.env.JYZ_BACKFILL_PROXY_POOL
+      || '',
+    fallback:
+      process.env.JYZ_BACKFILL_PROXY
+      || process.env.WEIBO_PROXY
+      || '',
+    cooldownMs:
+      Number(
+        process.env.JYZ_BACKFILL_PROXY_COOLDOWN_MS
+      )
+      || 30 * 60 * 1000,
+    name:
+      'jyz-backfill'
+  });
+
 const BATCH_SIZE =
   Number(
     process.env.JYZ_BACKFILL_BATCH_SIZE
@@ -49,6 +80,7 @@ const REQUEST_DELAY_MS =
   || 300;
 
 let localContext = null;
+let currentProxyAssignment = null;
 
 function sleep(ms) {
   return new Promise(
@@ -265,13 +297,165 @@ async function queryJyzService(
   }
 }
 
+function isProxyConnectionError(
+  message
+) {
+  return (
+    /ERR_TUNNEL_CONNECTION_FAILED/i.test(message)
+    ||
+    /ERR_PROXY_CONNECTION_FAILED/i.test(message)
+    ||
+    /ERR_SOCKS_CONNECTION_FAILED/i.test(message)
+    ||
+    /ERR_CONNECTION_RESET/i.test(message)
+    ||
+    /ERR_CONNECTION_CLOSED/i.test(message)
+    ||
+    /ERR_CONNECTION_REFUSED/i.test(message)
+    ||
+    /ERR_TIMED_OUT/i.test(message)
+    ||
+    /proxy/i.test(message)
+  );
+}
+
+async function closeLocalContext() {
+  if (localContext) {
+    try {
+      await localContext.close();
+    } catch {
+      // ignore
+    }
+
+    localContext = null;
+  }
+}
+
+async function acquireBackfillProxy() {
+  if (!USE_PROXY) {
+    return {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
+  }
+
+  while (true) {
+    const assignment =
+      await PROXY_POOL.acquire();
+
+    if (
+      assignment?.proxy
+      &&
+      !assignment.allCoolingDown
+    ) {
+      return assignment;
+    }
+
+    if (
+      assignment?.allCoolingDown
+      &&
+      Number.isFinite(
+        Number(
+          assignment.nextReadyAt
+        )
+      )
+    ) {
+      const waitMs =
+        Math.max(
+          1000,
+          Number(
+            assignment.nextReadyAt
+          )
+          - Date.now()
+        );
+
+      console.log(
+        '[JYZ补数][代理] 全部代理冷却中，等待 '
+        + Math.ceil(
+            waitMs / 1000
+          )
+        + ' 秒...'
+      );
+
+      await sleep(
+        waitMs
+      );
+
+      continue;
+    }
+
+    console.log(
+      '[JYZ补数][代理] 健康代理池为空，暂时使用本地IP。'
+    );
+
+    return {
+      configured: false,
+      raw: null,
+      proxy: null,
+      masked: 'LOCAL'
+    };
+  }
+}
+
+async function rotateBackfillProxy(
+  reason,
+  remove = false
+) {
+  if (
+    currentProxyAssignment?.raw
+  ) {
+    if (remove) {
+      PROXY_POOL.remove(
+        currentProxyAssignment.raw
+      );
+    } else {
+      PROXY_POOL.markBlocked(
+        currentProxyAssignment.raw
+      );
+    }
+
+    console.log(
+      '[JYZ补数][代理] 当前代理 '
+      + currentProxyAssignment.masked
+      + ' 因 '
+      + reason
+      + (
+        remove
+          ? ' 已移除'
+          : ' 已进入冷却'
+      )
+    );
+  }
+
+  await closeLocalContext();
+
+  currentProxyAssignment =
+    null;
+}
+
+
 async function ensureLocalContext() {
   if (localContext) {
     return localContext;
   }
 
+  if (
+    !currentProxyAssignment
+  ) {
+    currentProxyAssignment =
+      await acquireBackfillProxy();
+  }
+
   console.log(
-    '[JYZ补数] 本机JYZ Service不可用，尝试直接启动已登录JYZ persistent profile。'
+    '[JYZ补数] 启动已登录JYZ persistent profile'
+    + (
+      currentProxyAssignment?.proxy
+        ? ' | 代理='
+          + currentProxyAssignment.masked
+        : ' | 本地IP'
+    )
   );
 
   localContext =
@@ -282,6 +466,16 @@ async function ensureLocalContext() {
           headless:
             process.env.JYZ_BACKFILL_HEADLESS
             !== '0',
+
+          ...(
+            currentProxyAssignment?.proxy
+              ? {
+                  proxy:
+                    currentProxyAssignment.proxy
+                }
+              : {}
+          ),
+
           viewport: {
             width: 1280,
             height: 900
@@ -289,13 +483,9 @@ async function ensureLocalContext() {
         }
       );
 
-  console.log(
-    '[JYZ补数] 已启动JYZ profile：'
-    + JYZ_PROFILE_DIR
-  );
-
   return localContext;
 }
+
 
 async function queryJyzLocal(
   uid
@@ -454,6 +644,40 @@ async function queryJyzLocal(
       };
     }
 
+    if (
+      Number(
+        result.status
+      ) === 418
+    ) {
+      return {
+        ok: false,
+        status: 418,
+        message:
+          'HTTP 418'
+      };
+    }
+
+    if (
+      Number(
+        result.status
+      ) < 200
+      ||
+      Number(
+        result.status
+      ) >= 300
+    ) {
+      return {
+        ok: false,
+        status:
+          Number(
+            result.status
+          ),
+        message:
+          'HTTP '
+          + result.status
+      };
+    }
+
     let json;
 
     try {
@@ -529,25 +753,148 @@ async function queryJyzLocal(
 async function queryJyz(
   uid
 ) {
-  const serviceResult =
-    await queryJyzService(
-      uid
+  /*
+   * 默认补数全部走代理。
+   * 如需临时恢复旧行为，可设置 JYZ_BACKFILL_USE_PROXY=0。
+   */
+  if (!USE_PROXY) {
+    const serviceResult =
+      await queryJyzService(
+        uid
+      );
+
+    if (
+      serviceResult.ok
+    ) {
+      return serviceResult;
+    }
+
+    if (
+      !serviceResult.unavailable
+    ) {
+      return serviceResult;
+    }
+  }
+
+  const maxAttempts =
+    Math.max(
+      1,
+      Number(
+        process.env.JYZ_BACKFILL_PROXY_RETRIES
+      )
+      || 5
     );
 
-  if (
-    serviceResult.ok
+  let lastResult =
+    null;
+
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
   ) {
-    return serviceResult;
+    try {
+      const result =
+        await queryJyzLocal(
+          uid
+        );
+
+      lastResult =
+        result;
+
+      if (
+        result.ok
+      ) {
+        return result;
+      }
+
+      if (
+        Number(
+          result.status
+        ) === 418
+        ||
+        /HTTP 418/i.test(
+          result.message
+          || ''
+        )
+      ) {
+        await rotateBackfillProxy(
+          'HTTP 418',
+          false
+        );
+
+        console.log(
+          '[JYZ补数][重试] UID='
+          + uid
+          + ' | 418后换代理 | '
+          + attempt
+          + '/'
+          + maxAttempts
+        );
+
+        continue;
+      }
+
+      if (
+        isProxyConnectionError(
+          result.message
+          || ''
+        )
+      ) {
+        await rotateBackfillProxy(
+          result.message
+          || '代理连接失败',
+          true
+        );
+
+        console.log(
+          '[JYZ补数][重试] UID='
+          + uid
+          + ' | 代理连接失败后换代理 | '
+          + attempt
+          + '/'
+          + maxAttempts
+        );
+
+        continue;
+      }
+
+      return result;
+
+    } catch (error) {
+      const message =
+        error?.message
+        || String(error);
+
+      lastResult = {
+        ok: false,
+        message
+      };
+
+      if (
+        isProxyConnectionError(
+          message
+        )
+      ) {
+        await rotateBackfillProxy(
+          message,
+          true
+        );
+
+        continue;
+      }
+
+      throw error;
+    }
   }
 
-  if (
-    !serviceResult.unavailable
-  ) {
-    return serviceResult;
-  }
-
-  return await queryJyzLocal(
-    uid
+  return (
+    lastResult
+    || {
+      ok: false,
+      message:
+        '代理重试次数已用完'
+    }
   );
 }
 
@@ -634,6 +981,14 @@ async function queryJyz(
   );
   console.log(
     '# 仅更新：experience_7d'
+  );
+  console.log(
+    '# 网络：'
+    + (
+      USE_PROXY
+        ? '健康代理池（418自动换代理）'
+        : 'JYZ Service/本地'
+    )
   );
   console.log(
     '=============================================='
@@ -787,12 +1142,7 @@ async function queryJyz(
     + failed
   );
 
-  if (localContext) {
-    await localContext.close()
-      .catch(
-        () => {}
-      );
-  }
+  await closeLocalContext();
 })()
   .catch(
     async error => {
@@ -801,12 +1151,7 @@ async function queryJyz(
         error
       );
 
-      if (localContext) {
-        await localContext.close()
-          .catch(
-            () => {}
-          );
-      }
+      await closeLocalContext();
 
       process.exitCode = 1;
     }
