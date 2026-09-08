@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
+const os = require('os');
 
 const {
   db,
@@ -538,10 +539,25 @@ app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
  * 只允许固定白名单脚本，绝不接受前端传入任意命令/路径。
  * ============================================================
  */
-const PM2_COMMAND =
-  process.platform === 'win32'
-    ? 'pm2.cmd'
-    : 'pm2';
+function findPm2Command() {
+  if (process.platform !== 'win32') {
+    return 'pm2';
+  }
+
+  const candidates = [
+    process.env.APPDATA
+      ? path.join(process.env.APPDATA, 'npm', 'pm2.cmd')
+      : '',
+    process.env.USERPROFILE
+      ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm', 'pm2.cmd')
+      : '',
+    path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'pm2.cmd')
+  ].filter(Boolean);
+
+  return candidates.find(file => fs.existsSync(file)) || 'pm2.cmd';
+}
+
+const PM2_COMMAND = findPm2Command();
 
 const SCRIPT_DEFINITIONS = [
   {
@@ -596,18 +612,39 @@ const SCRIPT_DEFINITIONS = [
 
 function runPm2(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    execFile(
-      PM2_COMMAND,
-      args,
-      {
-        cwd: __dirname,
-        windowsHide: true,
-        env: {
-          ...process.env,
-          ...extraEnv
-        },
-        maxBuffer: 8 * 1024 * 1024
+    const options = {
+      cwd: __dirname,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...extraEnv
       },
+      maxBuffer: 8 * 1024 * 1024
+    };
+
+    // Windows 的 .cmd 不能稳定地直接交给 execFile。
+    // 通过 cmd.exe /d /s /c 调用，同时保持 windowsHide，避免弹黑窗口。
+    const command =
+      process.platform === 'win32'
+        ? (process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe')
+        : PM2_COMMAND;
+
+    const commandArgs =
+      process.platform === 'win32'
+        ? [
+            '/d',
+            '/s',
+            '/c',
+            '"' + PM2_COMMAND + '" ' + args.map(arg =>
+              '"' + String(arg).replace(/"/g, '""') + '"'
+            ).join(' ')
+          ]
+        : args;
+
+    execFile(
+      command,
+      commandArgs,
+      options,
       (error, stdout, stderr) => {
         if (error) {
           error.stdout = stdout;
