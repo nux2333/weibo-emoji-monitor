@@ -64,7 +64,7 @@ const {
  *      since_id
  *      max_id
  * 7. Fresh 从第一页开始追到上一轮 checkpoint；最多100页兜底
- * 8. fresh 汇总后立即统一处理，Profile/经验值默认2并发
+ * 8. Fresh按“最新发帖10页 + 三个专区各10页”分批即时处理，Profile/经验值默认2并发
  * 9. 历史 Resume 不阻塞 fresh；单轮历史预算默认5分钟
  * 10. UID不在 superlike_users + feed/Profile无chao_like + jyz<=80 + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
@@ -3991,7 +3991,7 @@ async function processPagePosts(
             );
 
           console.log(
-            `[SuperLike][主页无可用帖] UID=${uid} 原Post=${postId} 不在主页，且30天内没有评论<4的帖子；不保留该用户，清理旧候选=${deletedNow}`
+            `[SuperLike][PROFILE_NO_USABLE_POST][本来应该入库→被扔掉] UID=${uid} | FeedPost=${postId} | Feed评论=${commentsCount} | 原帖不在Profile主页 | 30天内无评论1~4替代帖 | 原逻辑保持：不入库并清理旧候选=${deletedNow}`
           );
 
           continue;
@@ -4623,6 +4623,38 @@ async function scanOneSuperLikeMonitor(
     const tagSectionPromises =
       new Map();
 
+    /*
+     * Fresh Pool 分批即时处理：
+     * 最新发帖每10页 + 三个专区各10页视为一个批次。
+     * 达到 10/20/30... 页屏障时，立即处理截至当时尚未处理的 Fresh Pool。
+     * 某来源若因 checkpoint / 无下一页提前结束，则视为该来源已就绪，
+     * 避免其它来源永远等不到屏障。
+     */
+    const FRESH_BATCH_PAGES = 10;
+
+    const freshSourcePages = {
+      'latest-posts': 0,
+      ...Object.fromEntries(
+        TAG_SECTION_SOURCES.map(
+          source => [source.key, 0]
+        )
+      )
+    };
+
+    const freshSourceDone = {
+      'latest-posts': false,
+      ...Object.fromEntries(
+        TAG_SECTION_SOURCES.map(
+          source => [source.key, false]
+        )
+      )
+    };
+
+    let freshProcessedIndex = 0;
+    let freshBatchNumber = 0;
+    let freshBatchProcessing =
+      Promise.resolve();
+
     let tagHistoryResumeDone =
       false;
 
@@ -5016,19 +5048,211 @@ async function scanOneSuperLikeMonitor(
     }
 
 
+    function freshBatchReady(
+      targetPages
+    ) {
+      return Object.keys(
+        freshSourcePages
+      ).every(
+        key =>
+          freshSourceDone[key]
+          ||
+          freshSourcePages[key] >= targetPages
+      );
+    }
+
+
+    async function processFreshPoolSlice(
+      trigger,
+      force = false
+    ) {
+      /*
+       * 串行化多个来源几乎同时触发的 flush，
+       * 防止同一批 Fresh Post 被重复处理。
+       */
+      freshBatchProcessing =
+        freshBatchProcessing.then(
+          async () => {
+            const nextTargetPages =
+              (freshBatchNumber + 1)
+              * FRESH_BATCH_PAGES;
+
+            if (
+              !force
+              &&
+              !freshBatchReady(
+                nextTargetPages
+              )
+            ) {
+              return;
+            }
+
+            const endIndex =
+              freshCollectedPosts.length;
+
+            if (
+              endIndex <= freshProcessedIndex
+            ) {
+              if (!force) {
+                freshBatchNumber++;
+              }
+
+              console.log(
+                `[SuperLike][Fresh批次] trigger=${trigger} | 批次=${freshBatchNumber || 'final'} | 没有新增Fresh Post需要处理`
+              );
+
+              return;
+            }
+
+            const posts =
+              freshCollectedPosts
+                .slice(
+                  freshProcessedIndex,
+                  endIndex
+                )
+                .map(
+                  item => item.post
+                );
+
+            const startIndex =
+              freshProcessedIndex;
+
+            /*
+             * 先锁定本批边界。
+             * 其它采集协程可以继续向 freshCollectedPosts 尾部追加，
+             * 新追加的数据留给下一批，不会和本批重复。
+             */
+            freshProcessedIndex =
+              endIndex;
+
+            if (!force) {
+              freshBatchNumber++;
+            }
+
+            console.log(
+              [
+                '[SuperLike][Fresh批次开始]',
+                `trigger=${trigger}`,
+                `批次=${force ? 'final' : freshBatchNumber}`,
+                `本批Post=${posts.length}`,
+                `池区间=${startIndex + 1}-${endIndex}`,
+                `页进度=${Object.entries(freshSourcePages).map(([key, value]) => `${key}:${value}`).join(',')}`
+              ].join(' | ')
+            );
+
+            const freshStats = {
+              found: 0,
+              duplicateInRun: 0,
+              duplicateUidInRun: 0,
+              existingInDb: 0,
+              unknownComments: 0,
+              commentsFull: 0,
+              hasSuperLike: 0,
+              deleteQueued: 0,
+              target: 0,
+              inserted: 0,
+              replaced: 0,
+              profileChecked: 0,
+              profileCached: 0,
+              profileSuperLike: 0,
+              profileFailed: 0
+            };
+
+            for (
+              let i = 0;
+              i < posts.length;
+              i += SCAN_PROFILE_CONCURRENCY
+            ) {
+              const chunk =
+                posts.slice(
+                  i,
+                  i + SCAN_PROFILE_CONCURRENCY
+                );
+
+              const results =
+                await Promise.all(
+                  chunk.map(
+                    post =>
+                      processPagePosts(
+                        monitor.id,
+                        null,
+                        seenThisRun,
+                        seenUidThisRun,
+                        deleteUidSet,
+                        null,
+                        browser,
+                        config,
+                        profileCache,
+                        scanVisitorContext,
+                        [post]
+                      )
+                  )
+                );
+
+              for (
+                const result
+                of results
+              ) {
+                for (
+                  const key
+                  of Object.keys(freshStats)
+                ) {
+                  if (
+                    typeof result?.[key]
+                    === 'number'
+                  ) {
+                    freshStats[key] +=
+                      result[key]
+                      || 0;
+                  }
+                }
+              }
+            }
+
+            for (
+              const key
+              of Object.keys(total)
+            ) {
+              if (
+                typeof freshStats[key]
+                === 'number'
+              ) {
+                total[key] +=
+                  freshStats[key]
+                  || 0;
+              }
+            }
+
+            console.log(
+              [
+                '[SuperLike][Fresh批次完成]',
+                `批次=${force ? 'final' : freshBatchNumber}`,
+                `Post=${freshStats.found}`,
+                `评论>=21=${freshStats.commentsFull}`,
+                `SuperLike=${freshStats.hasSuperLike}`,
+                `Profile查=${freshStats.profileChecked}`,
+                `Profile命中=${freshStats.profileSuperLike}`,
+                `Profile失败=${freshStats.profileFailed}`,
+                `新增=${freshStats.inserted}`,
+                `更新UID=${freshStats.replaced}`
+              ].join(' | ')
+            );
+          }
+        );
+
+      return freshBatchProcessing;
+    }
+
+
     async function flushFreshPool(trigger) {
       if (freshPoolFlushed) {
         return;
       }
 
-      if (latestCommentsPromise) {
-        await latestCommentsPromise;
-
-        if (latestCommentsError) {
-          throw latestCommentsError;
-        }
-      }
-
+      /*
+       * 最终 flush 才等待所有分区结束。
+       * 中途的 10页屏障不会再等 30 页全部采集完。
+       */
       if (
         tagSectionPromises.size > 0
       ) {
@@ -5039,139 +5263,27 @@ async function scanOneSuperLikeMonitor(
         );
       }
 
+      freshSourceDone['latest-posts'] =
+        true;
+
+      for (
+        const source
+        of TAG_SECTION_SOURCES
+      ) {
+        freshSourceDone[source.key] =
+          true;
+      }
+
+      await processFreshPoolSlice(
+        trigger,
+        true
+      );
+
       freshPoolFlushed = true;
-
-      const posts =
-        freshCollectedPosts.map(
-          item => item.post
-        );
-
-      console.log(
-        `[SuperLike][统一处理] trigger=${trigger} | fresh唯一Post=${posts.length}`
-      );
-
-      if (posts.length === 0) {
-        console.log(
-          '[SuperLike][统一处理] fresh池为空，直接进入历史Resume预算。'
-        );
-
-        await scanTagSectionHistoryBudget();
-        return;
-      }
-
-      const freshStats = {
-        found: 0,
-        duplicateInRun: 0,
-        duplicateUidInRun: 0,
-        existingInDb: 0,
-        unknownComments: 0,
-        commentsFull: 0,
-        hasSuperLike: 0,
-        deleteQueued: 0,
-        target: 0,
-        inserted: 0,
-        replaced: 0,
-        profileChecked: 0,
-        profileCached: 0,
-        profileSuperLike: 0,
-        profileFailed: 0
-      };
-
-      console.log(
-        `[SuperLike][统一处理] Profile/jyz并发=${SCAN_PROFILE_CONCURRENCY}`
-      );
-
-      for (
-        let i = 0;
-        i < posts.length;
-        i += SCAN_PROFILE_CONCURRENCY
-      ) {
-        const chunk =
-          posts.slice(
-            i,
-            i + SCAN_PROFILE_CONCURRENCY
-          );
-
-        const results =
-          await Promise.all(
-            chunk.map(
-              post =>
-                processPagePosts(
-                  monitor.id,
-                  null,
-                  seenThisRun,
-                  seenUidThisRun,
-                  deleteUidSet,
-                  null,
-                  browser,
-                  config,
-                  profileCache,
-                  scanVisitorContext,
-                  [post]
-                )
-            )
-          );
-
-        for (
-          const result
-          of results
-        ) {
-          for (
-            const key
-            of Object.keys(freshStats)
-          ) {
-            if (
-              typeof result?.[key]
-              === 'number'
-            ) {
-              freshStats[key] +=
-                result[key];
-            }
-          }
-        }
-
-        const processedCount =
-          Math.min(
-            i + chunk.length,
-            posts.length
-          );
-
-        console.log(
-          `[SuperLike][Fresh进度] 已处理=${processedCount}/${posts.length} | 剩余=${Math.max(0, posts.length - processedCount)}`
-        );
-      }
-
-      for (
-        const key
-        of Object.keys(total)
-      ) {
-        if (
-          typeof freshStats[key]
-          === 'number'
-        ) {
-          total[key] +=
-            freshStats[key]
-            || 0;
-        }
-      }
-
-      console.log(
-        [
-          '[SuperLike][统一处理完成]',
-          `Post=${freshStats.found}`,
-          `同UID重复=${freshStats.duplicateUidInRun}`,
-          `评论>=21=${freshStats.commentsFull}`,
-          `SuperLike=${freshStats.hasSuperLike}`,
-          `Profile查=${freshStats.profileChecked}`,
-          `Profile命中=${freshStats.profileSuperLike}`,
-          `Profile失败=${freshStats.profileFailed}`,
-          `新增=${freshStats.inserted}`,
-          `更新UID=${freshStats.replaced}`
-        ].join(' | ')
-      );
 
       await scanTagSectionHistoryBudget();
     }
+
 
     function scanTagSection(
       source
@@ -5293,6 +5405,16 @@ async function scanOneSuperLikeMonitor(
                 source.key,
                 sourceCheckpoint
               );
+
+            freshSourcePages[source.key] =
+              Number(
+                freshSourcePages[source.key]
+                || 0
+              ) + 1;
+
+            await processFreshPoolSlice(
+              `${source.key}-page-${sectionPageIndex}`
+            );
 
             if (
               sectionStats.newestSeen
@@ -5530,6 +5652,20 @@ async function scanOneSuperLikeMonitor(
             }
 
             return null;
+          }
+        )
+        .finally(
+          async () => {
+            freshSourceDone[source.key] =
+              true;
+
+            console.log(
+              `[SuperLike][Fresh批次] 来源完成：${source.name} | 页数=${freshSourcePages[source.key] || 0}`
+            );
+
+            await processFreshPoolSlice(
+              `${source.key}-done`
+            );
           }
         );
 
@@ -5826,6 +5962,18 @@ async function scanOneSuperLikeMonitor(
               profileCache,
               scanVisitorContext
             );
+
+      if (collectingFresh) {
+        freshSourcePages['latest-posts'] =
+          Number(
+            freshSourcePages['latest-posts']
+            || 0
+          ) + 1;
+
+        await processFreshPoolSlice(
+          `latest-posts-page-${pageNumber}`
+        );
+      }
 
       if (!collectingFresh) {
         for (
@@ -6348,6 +6496,13 @@ async function scanOneSuperLikeMonitor(
      * 如果 sort_time 因 checkpoint / 无下一页等原因提前结束，
      * 仍保证最新评论在本轮至少扫描一次。
      */
+    freshSourceDone['latest-posts'] =
+      true;
+
+    await processFreshPoolSlice(
+      'latest-posts-done'
+    );
+
     await flushFreshPool(
       'latest-posts-finished'
     );
