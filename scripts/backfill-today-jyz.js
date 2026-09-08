@@ -30,11 +30,11 @@ const JYZ_PROFILE_DIR =
     : path.join(
         ROOT,
         'data',
-        'weibo-jyz-browser-profile'
+        'superlike-browser-profile-scan'
       );
 
 const USE_PROXY =
-  process.env.JYZ_BACKFILL_USE_PROXY !== '0';
+  process.env.JYZ_BACKFILL_USE_PROXY === '1';
 
 const PROXY_POOL =
   new ProxyPool({
@@ -449,7 +449,7 @@ async function ensureLocalContext() {
   }
 
   console.log(
-    '[JYZ补数] 启动已登录JYZ persistent profile'
+    '[JYZ补数] 启动老主浏览器 persistent profile'
     + (
       currentProxyAssignment?.proxy
         ? ' | 代理='
@@ -986,8 +986,8 @@ async function queryJyz(
     '# 网络：'
     + (
       USE_PROXY
-        ? '健康代理池（418自动换代理）'
-        : 'JYZ Service/本地'
+        ? '健康代理池（显式开启）'
+        : '老主浏览器 profile：data/superlike-browser-profile-scan'
     )
   );
   console.log(
