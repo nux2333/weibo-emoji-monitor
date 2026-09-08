@@ -131,9 +131,47 @@ const WEIBO_LOGIN_STATE_FILE =
         'weibo-login-state.json'
       );
 
-const MAX_PAGES =
-  Number(process.env.SUPERLIKE_MAX_PAGES)
-  || 30;
+/*
+ * 单轮扫描页数：
+ * - 白天（中国时间 00:00-18:59）：100页
+ * - 晚高峰（中国时间 19:00-23:59）：30页
+ * SUPERLIKE_MAX_PAGES 仍可显式覆盖。
+ */
+function getScanMaxPages() {
+  const configured =
+    Number(
+      process.env.SUPERLIKE_MAX_PAGES
+    );
+
+  if (
+    Number.isFinite(configured)
+    &&
+    configured > 0
+  ) {
+    return configured;
+  }
+
+  const chinaHour =
+    Number(
+      new Intl.DateTimeFormat(
+        'en-US',
+        {
+          timeZone:
+            'Asia/Shanghai',
+          hour:
+            '2-digit',
+          hour12:
+            false
+        }
+      ).format(
+        new Date()
+      )
+    );
+
+  return chinaHour >= 19
+    ? 30
+    : 100;
+}
 
 /*
  * 最新评论 _feed 不再作为帖子扫描数据源。
@@ -4229,6 +4267,9 @@ async function scanOneSuperLikeMonitor(
   proxyFailureCount = 0,
   local418FallbackError = null
 ) {
+  const MAX_PAGES =
+    getScanMaxPages();
+
   const config =
     parseTopicHomepage(
       monitor.url
