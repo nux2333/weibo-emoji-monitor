@@ -2776,6 +2776,87 @@ async function fetchSuperLikeExperience7d(
   let page = null;
 
   try {
+    /*
+     * 第一优先：JYZ专用本机服务。
+     * 它持有独立 persistent profile，完整保存 huati SSO。
+     * 4个 Fresh worker 只通过 localhost 查询，不再各自复制登录态。
+     */
+    try {
+      const serviceUrl =
+        new URL(
+          process.env.WEIBO_JYZ_SERVICE_URL
+          || 'http://127.0.0.1:3011/jyz'
+        );
+
+      serviceUrl.searchParams.set(
+        'topicHash',
+        config.topicHash
+      );
+
+      serviceUrl.searchParams.set(
+        'uid',
+        String(uid)
+      );
+
+      const serviceResponse =
+        await fetch(
+          serviceUrl.toString(),
+          {
+            signal:
+              AbortSignal.timeout(
+                12000
+              )
+          }
+        );
+
+      const serviceJson =
+        await serviceResponse
+          .json()
+          .catch(
+            () => null
+          );
+
+      if (
+        serviceJson?.ok
+        &&
+        Number.isFinite(
+          Number(
+            serviceJson.experience7d
+          )
+        )
+      ) {
+        return {
+          ok: true,
+          experience7d:
+            Number(
+              serviceJson.experience7d
+            ),
+          currentInfo:
+            serviceJson.currentInfo
+            || '',
+          status:
+            serviceResponse.status,
+          source:
+            'jyz-service'
+        };
+      }
+
+      if (serviceJson) {
+        return {
+          ok: false,
+          experience7d: null,
+          status:
+            serviceResponse.status,
+          message:
+            `JYZ Service：${serviceJson.message || 'unknown'}`
+        };
+      }
+    } catch (serviceError) {
+      console.log(
+        `[SuperLike][经验值服务] 本机JYZ Service不可用，回退旧方式：${serviceError?.message || serviceError}`
+      );
+    }
+
     const localExperienceContext =
       await getExperienceContext();
 
