@@ -5126,6 +5126,16 @@ async function scanOneSuperLikeMonitor(
             }
           }
         }
+
+        const processedCount =
+          Math.min(
+            i + chunk.length,
+            posts.length
+          );
+
+        console.log(
+          `[SuperLike][Fresh进度] 已处理=${processedCount}/${posts.length} | 剩余=${Math.max(0, posts.length - processedCount)}`
+        );
       }
 
       for (
