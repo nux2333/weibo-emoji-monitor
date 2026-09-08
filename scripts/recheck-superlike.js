@@ -190,7 +190,8 @@ const {
   initDatabase,
   saveSuperLikeUser,
   markDailyExcludedUser,
-  isDailyExcludedUser
+  isDailyExcludedUser,
+  addSuperLikePoolExitCount
 } = require('../src/db');
 
 const {
@@ -471,8 +472,21 @@ function deleteAllPostsByUid(
   const deleted =
     Number(result.changes || 0);
 
+  const superLikeReason =
+    String(reason || '')
+      .toUpperCase()
+      .startsWith('SUPERLIKE_');
+
+  if (
+    superLikeReason
+    &&
+    deleted > 0
+  ) {
+    addSuperLikePoolExitCount(1);
+  }
+
   console.log(
-    `[DB删除][UID=${uid}] Monitor=${monitorId} | 原因=${reason} | 删除=${deleted}`
+    `[DB删除][UID=${uid}] Monitor=${monitorId} | 原因=${reason} | 删除=${deleted} | 今日毕业+${superLikeReason && deleted > 0 ? 1 : 0}`
   );
 
   return deleted;
@@ -1044,6 +1058,46 @@ function deletePostsByUidSet(
 
   const CHUNK_SIZE = 500;
   let deleted = 0;
+  let deletedUsers = 0;
+
+  /*
+   * Mode4 的 uidSet 全部来自“超LIKE用户List”。
+   * 删除前先数候选池里真正命中的 DISTINCT UID，
+   * 删除成功后把这个人数加到今日累计。
+   */
+  for (
+    let i = 0;
+    i < uids.length;
+    i += CHUNK_SIZE
+  ) {
+    const chunk =
+      uids.slice(
+        i,
+        i + CHUNK_SIZE
+      );
+
+    const placeholders =
+      chunk
+        .map(() => '?')
+        .join(',');
+
+    const row =
+      db.prepare(`
+        SELECT
+          COUNT(DISTINCT uid) AS user_count
+        FROM superlike_posts
+        WHERE monitor_id = ?
+          AND uid IN (${placeholders})
+      `).get(
+        monitorId,
+        ...chunk
+      );
+
+    deletedUsers +=
+      Number(
+        row?.user_count || 0
+      );
+  }
 
   db.exec('BEGIN');
 
@@ -1090,6 +1144,16 @@ function deletePostsByUidSet(
 
     throw error;
   }
+
+  if (deletedUsers > 0) {
+    addSuperLikePoolExitCount(
+      deletedUsers
+    );
+  }
+
+  console.log(
+    `[模式4][今日毕业] 候选UID=${deletedUsers} | 今日累计已增加`
+  );
 
   return deleted;
 }
