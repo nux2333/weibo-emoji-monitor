@@ -6092,6 +6092,22 @@ async function scanOneSuperLikeMonitor(
      * 分区不再全部同时打到同一个 Page/代理。
      * 默认最多 2 个分区并发；总最新仍独立同时运行。
      */
+    if (SCAN_WORKER_MODE === 'history') {
+      console.log('[SuperLike][History Worker] 只处理 Resume，不扫描 Fresh。');
+      await scanLatestHistoryBudget();
+      await scanTagSectionHistoryBudget();
+      stopReason = 'History Worker 本轮预算完成';
+      return;
+    }
+
+    if (
+      SCAN_WORKER_MODE === 'fresh'
+      &&
+      SCAN_WORKER_SOURCE !== 'latest-posts'
+    ) {
+      freshSourceDone['latest-posts'] = true;
+    }
+
     const sectionQueue =
       [...TAG_SECTION_SOURCES];
 
@@ -6136,22 +6152,6 @@ async function scanOneSuperLikeMonitor(
     console.log(
       `[SuperLike][并发采集] WorkerMode=${SCAN_WORKER_MODE} Source=${SCAN_WORKER_SOURCE || '-'} | 最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')} | 分区并发=${TAG_SECTION_CONCURRENCY} | 请求超时=30秒`
     );
-
-    if (
-      SCAN_WORKER_MODE === 'history'
-    ) {
-      console.log(
-        '[SuperLike][History Worker] 只处理 Resume，不扫描 Fresh。'
-      );
-
-      await scanLatestHistoryBudget();
-      await scanTagSectionHistoryBudget();
-
-      stopReason =
-        'History Worker 本轮预算完成';
-
-      return;
-    }
 
     if (
       SCAN_WORKER_MODE === 'fresh'
