@@ -84,3 +84,17 @@
 .live-log{height:68vh;max-height:none;margin:0;overflow:auto;white-space:pre-wrap;word-break:break-all;font-family:Consolas,"SFMono-Regular",monospace;font-size:12px;line-height:1.55}
 .row label{display:flex;align-items:center;gap:6px;white-space:nowrap}
 .row label input[type="checkbox"]{width:auto}
+
+.log-layout{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:14px;align-items:stretch}
+.log-layout .log-card{min-width:0}
+.log-browser{height:calc(68vh + 20px);overflow:hidden;display:flex;flex-direction:column}
+.log-browser-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.log-breadcrumb{display:flex;align-items:center;gap:5px;flex-wrap:wrap;padding:7px 0;border-bottom:1px solid #e5e7eb;font-size:12px}
+.log-breadcrumb button{border:0;background:none;padding:2px 3px;cursor:pointer;color:#2563eb}
+.log-tree{overflow:auto;flex:1;padding-top:7px}
+.log-tree-item{width:100%;display:flex;align-items:center;gap:7px;text-align:left;border:0;background:transparent;padding:7px 6px;border-radius:6px;cursor:pointer;font-size:12px}
+.log-tree-item:hover{background:rgba(127,127,127,.10)}
+.log-tree-item.active{font-weight:700;background:rgba(127,127,127,.14)}
+.log-tree-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.log-tree-empty{padding:12px 6px;opacity:.65;font-size:12px}
+@media(max-width:800px){.log-layout{grid-template-columns:1fr}.log-browser{height:40vh}}
