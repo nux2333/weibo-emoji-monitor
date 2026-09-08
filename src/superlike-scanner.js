@@ -2710,45 +2710,45 @@ async function fetchSuperLikeExperience7d(
   config,
   uid
 ) {
+  let page = null;
+
   try {
     if (
       !context
       ||
-      !context.request
-      ||
-      typeof context.request.get !== 'function'
+      typeof context.newPage !== 'function'
     ) {
       return {
         ok: false,
         experience7d: null,
-        message: '当前BrowserContext不支持request.get'
+        message: '当前BrowserContext不支持newPage'
       };
     }
 
     const pageId =
       `100808${config.topicHash}`;
 
-    const url =
+    const apiUrl =
       new URL(
         'https://huati.weibo.cn/aj/setting/icon/getconfig'
       );
 
-    url.searchParams.set(
+    apiUrl.searchParams.set(
       'type',
       '1'
     );
 
-    url.searchParams.set(
+    apiUrl.searchParams.set(
       'union_id',
       'chao_like'
     );
 
-    url.searchParams.set(
+    apiUrl.searchParams.set(
       'page_id',
       pageId
     );
 
-    url.searchParams.set(
+    apiUrl.searchParams.set(
       'param_uid',
       String(uid)
     );
@@ -2778,34 +2778,149 @@ async function fetchSuperLikeExperience7d(
       String(uid)
     );
 
-    const response =
-      await context.request.get(
-        url.toString(),
+    /*
+     * 经验值接口现在会校验 huati.weibo.cn 的真实登录会话。
+     * 不再使用 context.request.get() 直接请求。
+     *
+     * 先在 persistent context 中打开真实 huati 设置页，
+     * 让微博自己完成跨域登录/SSO Cookie 初始化；
+     * 然后在页面同源环境里 fetch API，credentials=include。
+     */
+    page =
+      await context.newPage();
+
+    const navigation =
+      await page.goto(
+        referer.toString(),
         {
+          waitUntil:
+            'domcontentloaded',
           timeout:
-            SCAN_EXPERIENCE_TIMEOUT_MS,
-          failOnStatusCode:
-            false,
-          headers: {
-            'Accept':
-              'application/json, text/plain, */*',
-            'X-Requested-With':
-              'XMLHttpRequest',
-            'Referer':
-              referer.toString(),
-            'User-Agent':
-              'Mozilla/5.0 (Linux; Android 14) ' +
-              'AppleWebKit/537.36 (KHTML, like Gecko) ' +
-              'Mobile Safari/537.36 _weibo_'
-          }
+            SCAN_EXPERIENCE_TIMEOUT_MS
         }
+      )
+      .catch(
+        () => null
       );
 
+    await page.waitForTimeout(
+      500
+    );
+
+    const finalUrl =
+      page.url();
+
+    if (
+      /passport\.weibo\.(cn|com)/i.test(
+        finalUrl
+      )
+      ||
+      /login/i.test(
+        finalUrl
+      )
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status:
+          navigation?.status?.()
+          || null,
+        message:
+          `huati登录态未生效，页面跳转到登录页：${finalUrl}`
+      };
+    }
+
+    const result =
+      await page.evaluate(
+        async url => {
+          try {
+            const controller =
+              new AbortController();
+
+            const timer =
+              setTimeout(
+                () => controller.abort(),
+                7000
+              );
+
+            try {
+              const response =
+                await fetch(
+                  url,
+                  {
+                    method:
+                      'GET',
+                    credentials:
+                      'include',
+                    cache:
+                      'no-store',
+                    headers: {
+                      Accept:
+                        'application/json, text/plain, */*',
+                      'X-Requested-With':
+                        'XMLHttpRequest'
+                    },
+                    signal:
+                      controller.signal
+                  }
+                );
+
+              const text =
+                await response.text();
+
+              return {
+                ok: true,
+                status:
+                  response.status,
+                text,
+                finalUrl:
+                  response.url
+              };
+            } finally {
+              clearTimeout(
+                timer
+              );
+            }
+          } catch (error) {
+            return {
+              ok: false,
+              status: null,
+              text: '',
+              finalUrl: url,
+              error:
+                error?.message
+                || String(error)
+            };
+          }
+        },
+        apiUrl.toString()
+      );
+
+    if (
+      !result?.ok
+    ) {
+      return {
+        ok: false,
+        experience7d: null,
+        status:
+          result?.status
+          ?? null,
+        message:
+          result?.error
+          || '页面内fetch失败'
+      };
+    }
+
     const status =
-      response.status();
+      Number(
+        result.status
+      );
 
     const text =
-      await response.text();
+      String(
+        result.text
+        || ''
+      );
 
     if (
       status < 200
@@ -2839,7 +2954,9 @@ async function fetchSuperLikeExperience7d(
 
     try {
       json =
-        JSON.parse(text);
+        JSON.parse(
+          text
+        );
     } catch (error) {
       return {
         ok: false,
@@ -2851,15 +2968,36 @@ async function fetchSuperLikeExperience7d(
     }
 
     if (
-      Number(json?.code) !==
-      100000
+      Number(
+        json?.code
+      ) !== 100000
     ) {
+      const cookies =
+        await context.cookies(
+          [
+            'https://weibo.com',
+            'https://m.weibo.cn',
+            'https://huati.weibo.cn'
+          ]
+        )
+          .catch(
+            () => []
+          );
+
+      const cookieNames =
+        cookies
+          .map(
+            item => item.name
+          )
+          .filter(Boolean)
+          .join(',');
+
       return {
         ok: false,
         experience7d: null,
         status,
         message:
-          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'}`
+          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'} | huati最终页=${finalUrl} | Cookie=${cookieNames || '-'}`
       };
     }
 
@@ -2898,10 +3036,24 @@ async function fetchSuperLikeExperience7d(
       experience7d: null,
       status: null,
       message:
-        error.message
+        error?.message
+        || String(error)
     };
+  } finally {
+    if (
+      page
+      &&
+      !page.isClosed()
+    ) {
+      try {
+        await page.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 }
+
 
 async function checkUserSuperLikeByProfileInner(
   context,
