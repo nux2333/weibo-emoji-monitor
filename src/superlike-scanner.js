@@ -89,6 +89,24 @@ const RATE_LIMIT_BACKOFF_2_MS =
 
 let consecutive418 = 0;
 
+/*
+ * Worker 模式：
+ * - 默认 legacy：保持单进程旧行为，便于回滚。
+ * - fresh：由 SUPERLIKE_SCAN_WORKER_SOURCE 指定唯一 Fresh 来源。
+ * - history：只补 Resume，不参与 Fresh。
+ */
+const SCAN_WORKER_MODE =
+  String(
+    process.env.SUPERLIKE_SCAN_WORKER_MODE
+    || 'legacy'
+  ).trim().toLowerCase();
+
+const SCAN_WORKER_SOURCE =
+  String(
+    process.env.SUPERLIKE_SCAN_WORKER_SOURCE
+    || ''
+  ).trim();
+
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
   || 30;
@@ -122,7 +140,7 @@ const TAG_SECTION_CONCURRENCY =
     || 2
   );
 
-const TAG_SECTION_SOURCES = [
+const ALL_TAG_SECTION_SOURCES = [
   {
     key: 'section-superlike',
     name: '超like',
@@ -142,6 +160,17 @@ const TAG_SECTION_SOURCES = [
       '100808f1d33f71dff693a2708cb3e8ef584a44__5186483501006975_-_tag_status_sort'
   }
 ];
+
+const TAG_SECTION_SOURCES =
+  SCAN_WORKER_MODE === 'history'
+    ? ALL_TAG_SECTION_SOURCES
+    : SCAN_WORKER_MODE === 'fresh'
+      ? ALL_TAG_SECTION_SOURCES.filter(
+          source =>
+            source.key ===
+            SCAN_WORKER_SOURCE
+        )
+      : ALL_TAG_SECTION_SOURCES;
 
 /*
  * 白天：先抓最新10页，再补历史 Resume。
@@ -4122,13 +4151,21 @@ async function scanOneSuperLikeMonitor(
     );
 
 
+  const workerProfileSuffix =
+    SCAN_WORKER_MODE === 'fresh'
+      ? (
+          SCAN_WORKER_SOURCE
+          || 'fresh'
+        )
+      : SCAN_WORKER_MODE;
+
   const profileDir =
-	  path.join(
-	    __dirname,
-	    '..',
-	    'data',
-	    'superlike-browser-profile-scan'
-	  );
+    path.join(
+      __dirname,
+      '..',
+      'data',
+      `superlike-browser-profile-scan-${workerProfileSuffix}`
+    );
 
   let browser = null;
   let scanVisitorContext = null;
@@ -5283,7 +5320,177 @@ async function scanOneSuperLikeMonitor(
 
       freshPoolFlushed = true;
 
-      await scanTagSectionHistoryBudget();
+      if (
+        SCAN_WORKER_MODE !== 'fresh'
+      ) {
+        await scanTagSectionHistoryBudget();
+      }
+    }
+
+
+    async function scanLatestHistoryBudget() {
+      if (!resume) {
+        console.log(
+          '[SuperLike][History][latest-posts] 当前没有 Resume。'
+        );
+        return;
+      }
+
+      const deadline =
+        Date.now()
+        + RESUME_TIME_BUDGET_MS;
+
+      let latestResume =
+        getScanResume(
+          monitor.id
+        );
+
+      let historyPage = 0;
+
+      while (
+        latestResume
+        &&
+        Date.now() < deadline
+      ) {
+        historyPage++;
+
+        const params = {
+          page:
+            Number(
+              latestResume.next_page
+            ),
+          since_id:
+            latestResume.next_since_id
+            ?? null,
+          max_id:
+            latestResume.next_max_id
+            ?? '0'
+        };
+
+        const historyUrl =
+          buildChaohuaUrl(
+            latestResume.sort_time_flow_id
+            || sortTimeFlowId,
+            params,
+            latestResume.template_url
+            || sortTimeRequestTemplateUrl
+          );
+
+        const result =
+          await fetchChaohuaInPage(
+            page,
+            historyUrl,
+            sortTimeRequestTemplateHeaders
+          );
+
+        if (
+          result.httpStatus === 418
+        ) {
+          throw new Weibo418Error(
+            'History latest-posts 返回 HTTP 418'
+          );
+        }
+
+        if (!result.ok) {
+          console.log(
+            `[SuperLike][History][latest-posts失败] page=${params.page} | HTTP=${result.httpStatus ?? '-'} | ${result.error || result.text || '-'} | 保留Resume`
+          );
+          break;
+        }
+
+        pagesScanned++;
+
+        await saveScanResponseJson(
+          result.json,
+          'latest-posts-history'
+        );
+
+        const pageStats =
+          await processPagePosts(
+            monitor.id,
+            result.json,
+            seenThisRun,
+            seenUidThisRun,
+            deleteUidSet,
+            null,
+            browser,
+            config,
+            profileCache,
+            scanVisitorContext
+          );
+
+        for (
+          const key
+          of Object.keys(total)
+        ) {
+          if (
+            typeof pageStats[key]
+            === 'number'
+          ) {
+            total[key] +=
+              pageStats[key]
+              || 0;
+          }
+        }
+
+        console.log(
+          [
+            `[History latest-posts #${historyPage}]`,
+            `page=${params.page}`,
+            `Post=${pageStats.found}`,
+            `Profile查=${pageStats.profileChecked}`,
+            `新增=${pageStats.inserted}`,
+            `更新UID=${pageStats.replaced}`
+          ].join(' | ')
+        );
+
+        const nextParams =
+          extractNextPageParams(
+            result.json
+          );
+
+        if (!nextParams) {
+          clearScanResume(
+            monitor.id
+          );
+
+          console.log(
+            '[SuperLike][History][latest-posts] 已无下一页，清除Resume。'
+          );
+          break;
+        }
+
+        saveScanResume(
+          monitor.id,
+          checkpoint,
+          latestResume.sort_time_flow_id
+          || sortTimeFlowId,
+          latestResume.template_url
+          || sortTimeRequestTemplateUrl,
+          nextParams
+        );
+
+        latestResume =
+          getScanResume(
+            monitor.id
+          );
+
+        if (
+          PAGE_DELAY_MS > 0
+          &&
+          Date.now() < deadline
+        ) {
+          await page.waitForTimeout(
+            Math.min(
+              PAGE_DELAY_MS,
+              Math.max(
+                0,
+                deadline - Date.now()
+              )
+            )
+          );
+        }
+      }
     }
 
 
@@ -5915,8 +6122,54 @@ async function scanOneSuperLikeMonitor(
     }
 
     console.log(
-      `[SuperLike][并发采集] 已启动来源：最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')} | 分区并发=${TAG_SECTION_CONCURRENCY} | 请求超时=30秒`
+      `[SuperLike][并发采集] WorkerMode=${SCAN_WORKER_MODE} Source=${SCAN_WORKER_SOURCE || '-'} | 最新发帖 / ${TAG_SECTION_SOURCES.map(item => item.name).join(' / ')} | 分区并发=${TAG_SECTION_CONCURRENCY} | 请求超时=30秒`
     );
+
+    if (
+      SCAN_WORKER_MODE === 'history'
+    ) {
+      console.log(
+        '[SuperLike][History Worker] 只处理 Resume，不扫描 Fresh。'
+      );
+
+      await scanLatestHistoryBudget();
+      await scanTagSectionHistoryBudget();
+
+      stopReason =
+        'History Worker 本轮预算完成';
+
+      return;
+    }
+
+    if (
+      SCAN_WORKER_MODE === 'fresh'
+      &&
+      SCAN_WORKER_SOURCE !== 'latest-posts'
+    ) {
+      console.log(
+        `[SuperLike][Fresh Worker] 仅扫描来源：${SCAN_WORKER_SOURCE}`
+      );
+
+      await Promise.all(
+        sectionWorkers
+      );
+
+      freshSourceDone['latest-posts'] =
+        true;
+
+      await processFreshPoolSlice(
+        `${SCAN_WORKER_SOURCE}-worker-done`,
+        true
+      );
+
+      freshPoolFlushed =
+        true;
+
+      stopReason =
+        `Fresh Worker ${SCAN_WORKER_SOURCE} 本轮完成`;
+
+      return;
+    }
 
     // Fresh 以发帖时间为主边界：连续4个完整旧页即可认为已跨过上一轮时间checkpoint。
     // post_id 仍作为更快的辅助命中；不要求微博必须再次返回同一个 post_id。
