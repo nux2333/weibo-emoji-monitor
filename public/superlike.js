@@ -163,8 +163,7 @@ function restoreSearchState() {
         'comments_count',
         'uid',
         'username',
-        'experience_7d',
-        'comments_needed_for_80'
+        'experience_7d'
       ].includes(
         state.sortKey
       )
@@ -808,7 +807,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="9"
+          colspan="8"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -931,7 +930,10 @@ function renderTable() {
       <td
         class="post-text copy-post-link"
         data-post-link="${escapeHtml(row.post_link || '')}"
-        title="点击复制帖子链接并标记为已搬运"
+        data-comments-needed="${escapeHtml(
+          row.comments_needed_for_80 ?? ''
+        )}"
+        title="点击复制帖子链接 + 还差评论数，并标记为已搬运"
       >
         ${escapeHtml(
           row.post_text || ''
@@ -960,23 +962,6 @@ function renderTable() {
       <td class="experience-7d">
         ${escapeHtml(
           row.experience_7d ?? '-'
-        )}
-      </td>
-
-      <td class="comments-needed">
-        ${escapeHtml(
-          row.comments_needed_for_80 === null
-          || row.comments_needed_for_80 === undefined
-            ? '-'
-            : (
-                Number(row.comments_needed_for_80) < 0
-                  ? '20评论内不可达'
-                  : (
-                      Number(row.comments_needed_for_80) === 0
-                        ? '已达80'
-                        : `还差 ${row.comments_needed_for_80}`
-                    )
-              )
         )}
       </td>
 
@@ -1227,11 +1212,32 @@ async function copyPostLink(cell) {
     return;
   }
 
+  const rawNeeded =
+    cell?.dataset?.commentsNeeded;
+
+  const needed =
+    rawNeeded === ''
+    || rawNeeded === undefined
+      ? null
+      : Number(rawNeeded);
+
+  let copyText = link;
+
+  if (needed !== null && Number.isFinite(needed)) {
+    if (needed > 0) {
+      copyText += ` 还差${needed}个评论`;
+    } else if (needed === 0) {
+      copyText += ' 已达80';
+    } else {
+      copyText += ' 20评论内不可达80';
+    }
+  }
+
   try {
-    await navigator.clipboard.writeText(link);
+    await navigator.clipboard.writeText(copyText);
   } catch {
     const textarea = document.createElement('textarea');
-    textarea.value = link;
+    textarea.value = copyText;
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     document.body.appendChild(textarea);
