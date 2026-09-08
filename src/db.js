@@ -455,6 +455,17 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS superlike_pool_exit_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      monitor_id INTEGER NOT NULL,
+      uid TEXT NOT NULL,
+      exit_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
+      reason TEXT NOT NULL DEFAULT 'BECAME_SUPERLIKE',
+      exited_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      UNIQUE(uid, exit_date, reason),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
     /*
      * SuperLike 页面黑粉关键词。
      * 页面“ 不显示猪 ”筛选会检查：
@@ -878,6 +889,16 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
       ? Number(experience7d)
       : null;
 
+  const hadCandidate =
+    !!db.prepare(`
+      SELECT 1
+      FROM superlike_posts
+      WHERE uid = ?
+      LIMIT 1
+    `).get(
+      normalizedUid
+    );
+
   const existed = !!db.prepare(`
     SELECT 1
     FROM superlike_users
@@ -911,6 +932,27 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
     date,
     normalizedExperience7d
   );
+
+  if (hadCandidate) {
+    db.prepare(`
+      INSERT OR IGNORE INTO superlike_pool_exit_events(
+        monitor_id,
+        uid,
+        exit_date,
+        reason,
+        exited_at
+      )
+      VALUES(
+        ?, ?,
+        date('now', '+8 hours'),
+        'BECAME_SUPERLIKE',
+        datetime('now', '+8 hours')
+      )
+    `).run(
+      normalizedMonitorId,
+      normalizedUid
+    );
+  }
 
   return !existed;
 }
@@ -1572,6 +1614,24 @@ function clearScanSourceResume(
 }
 
 
+function getTodaySuperLikePoolExitCount() {
+  initDatabase();
+
+  const row =
+    db.prepare(`
+      SELECT
+        COUNT(DISTINCT uid) AS count
+      FROM superlike_pool_exit_events
+      WHERE exit_date = date('now', '+8 hours')
+        AND reason = 'BECAME_SUPERLIKE'
+    `).get();
+
+  return Number(
+    row?.count || 0
+  );
+}
+
+
 function getMonitors(onlyEnabled = true) {
   initDatabase();
   return onlyEnabled
@@ -2028,5 +2088,6 @@ module.exports = {
   clearScanResume,
   getScanSourceResume,
   saveScanSourceResume,
-  clearScanSourceResume
+  clearScanSourceResume,
+  getTodaySuperLikePoolExitCount
 };
