@@ -7421,7 +7421,7 @@ async function startSuperLikeBatch() {
   );
 
   console.log(
-    `# 最多 ${MAX_PAGES} 页`
+    '# 扫描页数：中国时间白天最多100页；晚高峰最多30页'
   );
 
   console.log(
