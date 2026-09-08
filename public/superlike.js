@@ -1228,8 +1228,6 @@ async function copyPostLink(cell) {
       copyText += ` 还差${needed}个评论`;
     } else if (needed === 0) {
       copyText += ' 已达80';
-    } else {
-      copyText += ' 20评论内不可达80';
     }
   }
 
