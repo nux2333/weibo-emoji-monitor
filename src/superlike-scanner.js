@@ -579,6 +579,8 @@ function isProxyConnectionError(error) {
     ||
     /ERR_PROXY_CONNECTION_FAILED/i.test(text)
     ||
+    /ERR_SOCKS_CONNECTION_FAILED/i.test(text)
+    ||
     /ERR_CONNECTION_RESET/i.test(text)
     ||
     /ERR_CONNECTION_CLOSED/i.test(text)
