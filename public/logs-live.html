@@ -22,6 +22,10 @@
 
   <section class="card">
     <div class="row">
+      <select id="fileSelect" onchange="connectSelected()">
+        <option value="">加载日志文件...</option>
+      </select>
+      <button class="button" onclick="loadFiles()">刷新文件列表</button>
       <input id="filter" placeholder="筛选，例如 Fresh进度 / 新增 / ERROR / Checkpoint" oninput="render()">
       <label><input id="autoScroll" type="checkbox" checked> 自动滚动</label>
     </div>
@@ -43,6 +47,7 @@ const $=id=>document.getElementById(id);
 let source=null;
 let raw='';
 let paused=false;
+let selectedFile='';
 const MAX_CHARS=500000;
 
 $('token').value=localStorage.getItem('admin_token')||'';
@@ -80,6 +85,58 @@ function clearView(){
   render();
 }
 
+async function loadFiles(){
+  const token=$('token').value.trim();
+  if(!token){
+    setStatus('请输入 ADMIN_TOKEN');
+    return;
+  }
+
+  localStorage.setItem('admin_token',token);
+
+  try{
+    const r=await fetch('/api/admin/live-log/files?token='+encodeURIComponent(token));
+    const j=await r.json();
+    if(!r.ok||j.success===false) throw new Error(j.message||('HTTP '+r.status));
+
+    const current=$('fileSelect').value||selectedFile;
+    $('fileSelect').innerHTML=
+      '<option value="">请选择日志文件</option>'+
+      (j.data||[]).map(item=>{
+        const d=new Date(item.updatedAt);
+        const label=item.file+' · '+d.toLocaleString();
+        return '<option value="'+escapeHtml(item.file)+'">'+escapeHtml(label)+'</option>';
+      }).join('');
+
+    if(current && [...$('fileSelect').options].some(o=>o.value===current)){
+      $('fileSelect').value=current;
+    }else if(j.data?.length){
+      $('fileSelect').value=j.data[0].file;
+    }
+
+    selectedFile=$('fileSelect').value||'';
+    if(selectedFile && !source){
+      connectSelected();
+    }
+  }catch(e){
+    setStatus('日志文件列表加载失败：'+e.message);
+  }
+}
+
+function escapeHtml(v){
+  return String(v??'')
+    .replaceAll('&','&amp;')
+    .replaceAll('<','&lt;')
+    .replaceAll('>','&gt;')
+    .replaceAll('"','&quot;')
+    .replaceAll("'","&#39;");
+}
+
+function connectSelected(){
+  selectedFile=$('fileSelect').value||'';
+  connect();
+}
+
 function connect(){
   const token=$('token').value.trim();
   if(!token){alert('请输入 ADMIN_TOKEN');return;}
@@ -90,7 +147,12 @@ function connect(){
   render();
   setStatus('连接中...');
 
-  source=new EventSource('/api/admin/live-log/stream?token='+encodeURIComponent(token));
+  const params=new URLSearchParams({token});
+  if(selectedFile){
+    params.set('file',selectedFile);
+  }
+
+  source=new EventSource('/api/admin/live-log/stream?'+params.toString());
 
   source.addEventListener('switch',e=>{
     const data=JSON.parse(e.data);
@@ -116,7 +178,9 @@ function connect(){
   };
 }
 
-if($('token').value) connect();
+if($('token').value){
+  loadFiles();
+}
 </script>
 </body>
 </html>
