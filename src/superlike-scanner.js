@@ -437,9 +437,12 @@ function deletePostsByUidWithLog(
     addSuperLikePoolExitCount(1);
   }
 
-  console.log(
-    `[DB删除][UID=${normalizedUid}] 原因=${reason || 'UNSPECIFIED'} | 删除=${deleted} | 今日毕业+${superLikeReason && deleted > 0 ? 1 : 0}`
-  );
+  // 没有实际删除候选帖时不打印日志，避免 FEED_SUPERLIKE_ICON 大量刷屏。
+  if (deleted > 0) {
+    console.log(
+      `[DB删除][UID=${normalizedUid}] 原因=${reason || 'UNSPECIFIED'} | 删除=${deleted} | 今日毕业+${superLikeReason ? 1 : 0}`
+    );
+  }
 
   return deleted;
 }
