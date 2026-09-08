@@ -83,10 +83,6 @@ const CONCURRENCY =
     || 8
   );
 
-const TEST_URL =
-  process.env.WEIBO_GOOD_PROXY_TEST_URL
-  || 'https://api.ipify.org';
-
 const WEIBO_URL =
   process.env.WEIBO_GOOD_PROXY_WEIBO_URL
   || 'https://weibo.com/p/100808f1d33f71dff693a2708cb3e8ef584a44';
@@ -857,6 +853,12 @@ function updateScore(scores, proxy, result, source) {
 
 async function collectSources() {
   const sourceFetchers = [
+    // 旧源恢复：昨天/今天实际跑下来仍然能贡献健康代理。
+    ['SCDN', fetchScdnCandidates],
+    ['ProxyClean', fetchProxyCleanCandidates],
+    ['Proxmint', fetchProxmintCandidates],
+
+    // 新增源继续保留，最终统一以“能否访问微博”实测筛选。
     ['DocIP', fetchDocIpCandidates],
     ['GoodIPs', fetchGoodIpsCandidates],
     ['Proxifly', fetchProxiflyCandidates],
@@ -944,33 +946,6 @@ async function testOne(proxy) {
     const page =
       await context.newPage();
 
-    const ipResponse =
-      await page.goto(
-        TEST_URL,
-        {
-          waitUntil:
-            'domcontentloaded',
-
-          timeout:
-            TIMEOUT_MS
-        }
-      );
-
-    if (
-      !ipResponse
-      || !ipResponse.ok()
-    ) {
-      throw new Error(
-        `ipify HTTP ${ipResponse ? ipResponse.status() : 'NO_RESPONSE'}`
-      );
-    }
-
-    const exitIp =
-      String(
-        await page.textContent('body')
-        || ''
-      ).trim();
-
     const weiboResponse =
       await page.goto(
         WEIBO_URL,
@@ -1000,7 +975,6 @@ async function testOne(proxy) {
     return {
       ok: true,
       proxy,
-      exitIp,
       status,
       ms:
         Date.now()
