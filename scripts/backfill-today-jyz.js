@@ -34,7 +34,7 @@ const JYZ_PROFILE_DIR =
       );
 
 const USE_PROXY =
-  process.env.JYZ_BACKFILL_USE_PROXY === '1';
+  process.env.JYZ_BACKFILL_USE_PROXY !== '0';
 
 const PROXY_POOL =
   new ProxyPool({
