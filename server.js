@@ -225,6 +225,116 @@ function readLogTail(filePath, maxBytes = 128 * 1024) {
   }
 }
 
+function getLogRoots() {
+  return [
+    path.join(__dirname, 'logs'),
+    path.join(__dirname, 'log')
+  ].filter(p => fs.existsSync(p));
+}
+
+function listLogFiles() {
+  const files = [];
+
+  function walk(dir, depth = 0) {
+    if (depth > 5) return;
+
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+
+      if (entry.isDirectory()) {
+        walk(full, depth + 1);
+        continue;
+      }
+
+      if (!entry.isFile() || !/\.log$/i.test(entry.name)) {
+        continue;
+      }
+
+      try {
+        const stat = fs.statSync(full);
+        files.push({
+          fullPath: full,
+          file: path.relative(__dirname, full).replace(/\\/g, '/'),
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          updatedAt: new Date(stat.mtimeMs).toISOString()
+        });
+      } catch {
+        // ignore transient rotation errors
+      }
+    }
+  }
+
+  for (const root of getLogRoots()) walk(root);
+
+  return files
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, 300);
+}
+
+function resolveSelectedLogFile(relativeFile) {
+  const normalized =
+    String(relativeFile || '')
+      .replace(/\\/g, '/')
+      .replace(/^\/+/, '');
+
+  if (!normalized || !/\.log$/i.test(normalized)) {
+    return null;
+  }
+
+  const full =
+    path.resolve(
+      __dirname,
+      normalized
+    );
+
+  const allowed =
+    getLogRoots().some(root => {
+      const resolvedRoot = path.resolve(root);
+      return (
+        full === resolvedRoot
+        ||
+        full.startsWith(resolvedRoot + path.sep)
+      );
+    });
+
+  if (!allowed) {
+    return null;
+  }
+
+  if (
+    !fs.existsSync(full)
+    ||
+    !fs.statSync(full).isFile()
+  ) {
+    return null;
+  }
+
+  return full;
+}
+
+app.get('/api/admin/live-log/files', checkAdmin, (req, res) => {
+  try {
+    res.json({
+      success: true,
+      data: listLogFiles().map(item => ({
+        file: item.file,
+        size: item.size,
+        updatedAt: item.updatedAt
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 app.get('/api/admin/live-log/status', checkAdmin, (req, res) => {
   try {
     const latest = findLatestLogFile();
@@ -244,6 +354,23 @@ app.get('/api/admin/live-log/status', checkAdmin, (req, res) => {
 });
 
 app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
+  const requestedFile =
+    String(req.query.file || '').trim();
+
+  const selectedFullPath =
+    requestedFile
+      ? resolveSelectedLogFile(requestedFile)
+      : null;
+
+  if (requestedFile && !selectedFullPath) {
+    return res
+      .status(400)
+      .json({
+        success: false,
+        message: '日志文件无效或不存在'
+      });
+  }
+
   res.set({
     'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache, no-transform',
@@ -266,21 +393,29 @@ app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
     if (closed) return;
 
     try {
-      const latest = findLatestLogFile();
+      const target =
+        selectedFullPath
+          ? {
+              path: selectedFullPath,
+              size: fs.statSync(selectedFullPath).size,
+              mtimeMs: fs.statSync(selectedFullPath).mtimeMs
+            }
+          : findLatestLogFile();
 
-      if (!latest) {
+      if (!target) {
         send('status', { state: 'waiting', message: '等待日志文件...' });
         return;
       }
 
-      if (latest.path !== currentFile) {
-        currentFile = latest.path;
+      if (target.path !== currentFile) {
+        currentFile = target.path;
         const tail = readLogTail(currentFile);
         offset = fs.statSync(currentFile).size;
 
         send('switch', {
-          file: path.relative(__dirname, currentFile),
-          text: tail
+          file: path.relative(__dirname, currentFile).replace(/\\/g, '/'),
+          text: tail,
+          fixed: Boolean(selectedFullPath)
         });
         return;
       }
