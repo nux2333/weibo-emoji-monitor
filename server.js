@@ -539,25 +539,25 @@ app.get('/api/admin/live-log/stream', checkAdmin, (req, res) => {
  * 只允许固定白名单脚本，绝不接受前端传入任意命令/路径。
  * ============================================================
  */
-function findPm2Command() {
+function findPm2CliScript() {
   if (process.platform !== 'win32') {
-    return 'pm2';
+    return null;
   }
 
   const candidates = [
     process.env.APPDATA
-      ? path.join(process.env.APPDATA, 'npm', 'pm2.cmd')
+      ? path.join(process.env.APPDATA, 'npm', 'node_modules', 'pm2', 'bin', 'pm2')
       : '',
     process.env.USERPROFILE
-      ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm', 'pm2.cmd')
+      ? path.join(process.env.USERPROFILE, 'AppData', 'Roaming', 'npm', 'node_modules', 'pm2', 'bin', 'pm2')
       : '',
-    path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'pm2.cmd')
+    path.join(os.homedir(), 'AppData', 'Roaming', 'npm', 'node_modules', 'pm2', 'bin', 'pm2')
   ].filter(Boolean);
 
-  return candidates.find(file => fs.existsSync(file)) || 'pm2.cmd';
+  return candidates.find(file => fs.existsSync(file)) || null;
 }
 
-const PM2_COMMAND = findPm2Command();
+const PM2_CLI_SCRIPT = findPm2CliScript();
 
 const SCRIPT_DEFINITIONS = [
   {
@@ -612,33 +612,53 @@ const SCRIPT_DEFINITIONS = [
 
 function runPm2(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    execFile(
-      PM2_COMMAND,
-      args,
-      {
-        cwd: __dirname,
-        windowsHide: true,
-
-        /*
-         * Windows 的 pm2 是 pm2.cmd。
-         * .cmd 必须通过 shell 执行；直接 execFile / 手工拼 cmd.exe
-         * 在 Windows 的引号规则下很容易出现 spawn EINVAL / 路径重复。
-         */
-        shell:
-          process.platform === 'win32',
-
-        env: {
-          ...process.env,
-          ...extraEnv
-        },
-
-        maxBuffer:
-          8 * 1024 * 1024,
-
-        encoding:
-          'utf8'
+    const options = {
+      cwd: __dirname,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...extraEnv
       },
+      maxBuffer: 8 * 1024 * 1024,
+      encoding: 'utf8'
+    };
 
+    /*
+     * Windows 下不要经过 pm2.cmd / cmd.exe。
+     * 直接用当前 node.exe 执行 PM2 的 JS CLI，
+     * 这样网页点击启动/停止不会弹黑色命令行窗口。
+     */
+    const command =
+      process.platform === 'win32'
+        ? process.execPath
+        : 'pm2';
+
+    const commandArgs =
+      process.platform === 'win32'
+        ? (
+            PM2_CLI_SCRIPT
+              ? [PM2_CLI_SCRIPT, ...args]
+              : []
+          )
+        : args;
+
+    if (
+      process.platform === 'win32'
+      &&
+      !PM2_CLI_SCRIPT
+    ) {
+      reject(
+        new Error(
+          '找不到 PM2 CLI，请确认已执行 npm.cmd install pm2@latest -g'
+        )
+      );
+      return;
+    }
+
+    execFile(
+      command,
+      commandArgs,
+      options,
       (error, stdout, stderr) => {
         if (error) {
           error.stdout = stdout;
@@ -648,11 +668,8 @@ function runPm2(args, extraEnv = {}) {
         }
 
         resolve({
-          stdout:
-            String(stdout || ''),
-
-          stderr:
-            String(stderr || '')
+          stdout: String(stdout || ''),
+          stderr: String(stderr || '')
         });
       }
     );
