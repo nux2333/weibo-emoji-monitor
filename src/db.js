@@ -70,10 +70,12 @@ function migrateSuperlikePostsIfNeeded() {
       post_link TEXT,
       post_text TEXT,
       comments_count INTEGER NOT NULL DEFAULT 0,
+      initial_comments_count INTEGER,
       current_has_superlike INTEGER NOT NULL DEFAULT 0,
       moved_flag INTEGER NOT NULL DEFAULT 0,
       icon_summary TEXT,
       experience_7d INTEGER,
+      initial_experience_7d INTEGER,
       post_created_at TEXT,
       /* 入库时间：固定保存中国时间（UTC+8），精确到秒；后续 UPDATE 不修改 */
       inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
@@ -560,6 +562,26 @@ function initDatabase() {
   ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
   ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
   ensureColumn('superlike_posts', 'experience_7d', 'INTEGER');
+  ensureColumn('superlike_posts', 'initial_comments_count', 'INTEGER');
+  ensureColumn('superlike_posts', 'initial_experience_7d', 'INTEGER');
+
+  /*
+   * 历史数据没有“初始值”时，只能以当前值回填一次。
+   * 新数据以后由 INSERT 写入，Mode2/Mode3 永不更新这两个字段。
+   */
+  db.exec(`
+    UPDATE superlike_posts
+    SET
+      initial_comments_count =
+        COALESCE(initial_comments_count, comments_count),
+      initial_experience_7d =
+        COALESCE(initial_experience_7d, experience_7d)
+    WHERE initial_comments_count IS NULL
+       OR (
+         initial_experience_7d IS NULL
+         AND experience_7d IS NOT NULL
+       )
+  `);
 
   /*
    * superlike_users 精简：
@@ -986,13 +1008,51 @@ function saveSuperLikeTargetPost(data = {}) {
       id,
       post_id,
       comments_count,
-      post_created_at
+      post_created_at,
+      initial_comments_count,
+      initial_experience_7d
     FROM superlike_posts
     WHERE monitor_id = ?
       AND uid = ?
     ORDER BY id DESC
     LIMIT 1
   `).get(monitorId, uid);
+
+  const initialCommentsCount =
+    existing
+    &&
+    Number.isFinite(
+      Number(
+        existing.initial_comments_count
+      )
+    )
+      ? Number(
+          existing.initial_comments_count
+        )
+      : (
+          Number.isFinite(
+            commentsCount
+          )
+            ? commentsCount
+            : null
+        );
+
+  const initialExperience7d =
+    existing
+    &&
+    existing.initial_experience_7d !== null
+    &&
+    existing.initial_experience_7d !== undefined
+    &&
+    Number.isFinite(
+      Number(
+        existing.initial_experience_7d
+      )
+    )
+      ? Number(
+          existing.initial_experience_7d
+        )
+      : experience7d;
 
   if (existing) {
     const existingComments = Number(existing.comments_count);
@@ -1073,9 +1133,11 @@ function saveSuperLikeTargetPost(data = {}) {
       post_link,
       post_text,
       comments_count,
+      initial_comments_count,
       current_has_superlike,
       icon_summary,
       experience_7d,
+      initial_experience_7d,
       post_created_at,
       first_seen_at,
       last_seen_at,
@@ -1084,8 +1146,9 @@ function saveSuperLikeTargetPost(data = {}) {
       raw_json
     )
     VALUES(
-      ?,?,?,?,?,?,?,
+      ?,?,?,?,?,?,?,?,
       0,
+      ?,
       ?,
       ?,
       ?,
@@ -1103,8 +1166,10 @@ function saveSuperLikeTargetPost(data = {}) {
     postLink,
     postText,
     commentsCount,
+    initialCommentsCount,
     iconSummary,
     experience7d,
+    initialExperience7d,
     postCreatedAt,
     profileStatus,
     profileStatus,
