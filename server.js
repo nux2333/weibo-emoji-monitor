@@ -612,39 +612,33 @@ const SCRIPT_DEFINITIONS = [
 
 function runPm2(args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const options = {
-      cwd: __dirname,
-      windowsHide: true,
-      env: {
-        ...process.env,
-        ...extraEnv
-      },
-      maxBuffer: 8 * 1024 * 1024
-    };
-
-    // Windows 的 .cmd 不能稳定地直接交给 execFile。
-    // 通过 cmd.exe /d /s /c 调用，同时保持 windowsHide，避免弹黑窗口。
-    const command =
-      process.platform === 'win32'
-        ? (process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe')
-        : PM2_COMMAND;
-
-    const commandArgs =
-      process.platform === 'win32'
-        ? [
-            '/d',
-            '/s',
-            '/c',
-            '"' + PM2_COMMAND + '" ' + args.map(arg =>
-              '"' + String(arg).replace(/"/g, '""') + '"'
-            ).join(' ')
-          ]
-        : args;
-
     execFile(
-      command,
-      commandArgs,
-      options,
+      PM2_COMMAND,
+      args,
+      {
+        cwd: __dirname,
+        windowsHide: true,
+
+        /*
+         * Windows 的 pm2 是 pm2.cmd。
+         * .cmd 必须通过 shell 执行；直接 execFile / 手工拼 cmd.exe
+         * 在 Windows 的引号规则下很容易出现 spawn EINVAL / 路径重复。
+         */
+        shell:
+          process.platform === 'win32',
+
+        env: {
+          ...process.env,
+          ...extraEnv
+        },
+
+        maxBuffer:
+          8 * 1024 * 1024,
+
+        encoding:
+          'utf8'
+      },
+
       (error, stdout, stderr) => {
         if (error) {
           error.stdout = stdout;
@@ -654,8 +648,11 @@ function runPm2(args, extraEnv = {}) {
         }
 
         resolve({
-          stdout: String(stdout || ''),
-          stderr: String(stderr || '')
+          stdout:
+            String(stdout || ''),
+
+          stderr:
+            String(stderr || '')
         });
       }
     );
