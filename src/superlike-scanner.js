@@ -3377,6 +3377,9 @@ async function checkUserSuperLikeByProfileInner(
       const startedAt =
         Date.now();
 
+      let navigationError =
+        null;
+
       try {
         const targetResponsePromise =
           profilePage.waitForResponse(
@@ -3454,6 +3457,9 @@ async function checkUserSuperLikeByProfileInner(
           )
           .catch(
             error => {
+              navigationError =
+                error;
+
               console.log(
                 `[SuperLike][Profile页面导航提示] UID=${uid} ${error.message}`
               );
@@ -3570,6 +3576,27 @@ async function checkUserSuperLikeByProfileInner(
         }
 
       } catch (error) {
+        const effectiveError =
+          navigationError
+          &&
+          isProxyConnectionError(
+            navigationError
+          )
+            ? navigationError
+            : error;
+
+        if (
+          isProxyConnectionError(
+            effectiveError
+          )
+        ) {
+          console.log(
+            `[SuperLike][Profile代理失败] UID=${uid} | ${effectiveError?.message || effectiveError} | 当前代理立即淘汰并切换`
+          );
+
+          throw effectiveError;
+        }
+
         result = {
           ok: false,
           status: null,
@@ -3620,6 +3647,16 @@ async function checkUserSuperLikeByProfileInner(
     if (
       result.error
     ) {
+      if (
+        isProxyConnectionError(
+          result.error
+        )
+      ) {
+        throw new Error(
+          result.error
+        );
+      }
+
       return {
         ok: false,
         hasSuperLike: null,
@@ -3805,6 +3842,14 @@ async function checkUserSuperLikeByProfileInner(
     };
 
   } catch (error) {
+    if (
+      isProxyConnectionError(
+        error
+      )
+    ) {
+      throw error;
+    }
+
     return {
       ok: false,
       blocked: false,
