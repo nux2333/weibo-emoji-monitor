@@ -985,44 +985,91 @@ async function queryJyz(
         uid,
         username,
         post_id,
-        post_created_at
+        post_created_at,
+        first_seen_at
       FROM superlike_posts
       WHERE experience_7d IS NULL
       ORDER BY id DESC
     `)
       .all();
 
+  /*
+   * “今天”的口径与页面“只看今天”保持一致：
+   * 按 first_seen_at（帖子首次入库时间）判断，
+   * 而不是按微博 post_created_at 判断。
+   *
+   * SQLite CURRENT_TIMESTAMP / first_seen_at 默认按 UTC 保存，
+   * 所以这里把无时区的 YYYY-MM-DD HH:mm:ss 按 UTC 解析，
+   * 再转换成中国日期。
+   */
   const todayRows =
     rows
       .map(
-        row => ({
-          ...row,
-          post_created_at_ms:
-            parsePostTimeMs(
-              row.post_created_at
+        row => {
+          const firstSeenText =
+            String(
+              row.first_seen_at
+              || ''
+            ).trim();
+
+          let firstSeenMs =
+            null;
+
+          if (
+            /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+              firstSeenText
             )
-        })
+          ) {
+            const date =
+              new Date(
+                firstSeenText
+                  .replace(
+                    ' ',
+                    'T'
+                  )
+                + 'Z'
+              );
+
+            firstSeenMs =
+              Number.isNaN(
+                date.getTime()
+              )
+                ? null
+                : date.getTime();
+          } else {
+            firstSeenMs =
+              parsePostTimeMs(
+                row.first_seen_at
+              );
+          }
+
+          return {
+            ...row,
+            first_seen_at_ms:
+              firstSeenMs
+          };
+        }
       )
       .filter(
         row =>
           Number.isFinite(
             Number(
-              row.post_created_at_ms
+              row.first_seen_at_ms
             )
           )
           &&
           chinaDateFromMs(
-            row.post_created_at_ms
+            row.first_seen_at_ms
           ) === today
       )
       .sort(
         (a, b) =>
           Number(
-            b.post_created_at_ms
+            b.first_seen_at_ms
           )
           -
           Number(
-            a.post_created_at_ms
+            a.first_seen_at_ms
           )
       );
 
@@ -1042,7 +1089,7 @@ async function queryJyz(
     + todayRows.length
   );
   console.log(
-    '# 顺序：发帖时间 新 → 旧'
+    '# 筛选/顺序：first_seen_at 今天，首次入库时间 新 → 旧'
   );
   console.log(
     '# 每成功更新 '
@@ -1100,6 +1147,8 @@ async function queryJyz(
       + row.uid
       + ' | Post='
       + row.post_id
+      + ' | first_seen_at='
+      + row.first_seen_at
       + ' | 发帖='
       + row.post_created_at
     );
