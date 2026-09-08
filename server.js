@@ -359,7 +359,78 @@ app.get('/api/superlike-posts', (req, res) => {
       FROM superlike_posts sp
       LEFT JOIN monitors m ON m.id=sp.monitor_id
       ${whereSql}
-      ORDER BY datetime(sp.post_created_at) DESC, sp.id DESC
+      ORDER BY
+        /*
+         * “最容易成为超LIKE”优先：
+         * experience_7d 是当前实时经验值，因此只计算从当前评论数开始，
+         * 还需要新增多少评论才能跨过后续 5/10/15/20 评论门槛，
+         * 使经验值达到 80。
+         *
+         * 普通每日原创评论经验：
+         * 5人 +1、10人再+2、15人再+3、20人再+4，累计最多10分。
+         */
+        CASE
+          WHEN sp.experience_7d IS NULL THEN 999999
+          WHEN sp.experience_7d >= 80 THEN 0
+
+          /* 当前 <5：未来依次可在5/10/15/20获得 +1/+2/+3/+4 */
+          WHEN COALESCE(sp.comments_count, 0) < 5 THEN
+            CASE
+              WHEN sp.experience_7d + 1 >= 80
+                THEN 5 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 3 >= 80
+                THEN 10 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 6 >= 80
+                THEN 15 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 10 >= 80
+                THEN 20 - COALESCE(sp.comments_count, 0)
+              ELSE 999998
+            END
+
+          /* 当前5-9：5人档已体现在实时jyz，只算未来 +2/+3/+4 */
+          WHEN COALESCE(sp.comments_count, 0) < 10 THEN
+            CASE
+              WHEN sp.experience_7d + 2 >= 80
+                THEN 10 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 5 >= 80
+                THEN 15 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 9 >= 80
+                THEN 20 - COALESCE(sp.comments_count, 0)
+              ELSE 999998
+            END
+
+          /* 当前10-14：10人档也已体现在实时jyz，只算未来 +3/+4 */
+          WHEN COALESCE(sp.comments_count, 0) < 15 THEN
+            CASE
+              WHEN sp.experience_7d + 3 >= 80
+                THEN 15 - COALESCE(sp.comments_count, 0)
+              WHEN sp.experience_7d + 7 >= 80
+                THEN 20 - COALESCE(sp.comments_count, 0)
+              ELSE 999998
+            END
+
+          /* 当前15-19：只剩20人档 +4 */
+          WHEN COALESCE(sp.comments_count, 0) < 20 THEN
+            CASE
+              WHEN sp.experience_7d + 4 >= 80
+                THEN 20 - COALESCE(sp.comments_count, 0)
+              ELSE 999998
+            END
+
+          ELSE 999998
+        END ASC,
+
+        /* 同样需要相同新增评论数时，当前jyz更高的优先 */
+        CASE
+          WHEN sp.experience_7d IS NULL THEN 1
+          ELSE 0
+        END ASC,
+        sp.experience_7d DESC,
+
+        /* 再相同时，评论更接近下一档的优先 */
+        COALESCE(sp.comments_count, 0) DESC,
+        datetime(sp.post_created_at) DESC,
+        sp.id DESC
       LIMIT 2000
     `).all(...params);
 
