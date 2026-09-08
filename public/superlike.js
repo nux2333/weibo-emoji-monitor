@@ -163,7 +163,8 @@ function restoreSearchState() {
         'comments_count',
         'uid',
         'username',
-        'experience_7d'
+        'experience_7d',
+        'comments_needed_for_80'
       ].includes(
         state.sortKey
       )
@@ -807,7 +808,7 @@ function renderTable() {
     tbody.innerHTML = `
       <tr>
         <td
-          colspan="8"
+          colspan="9"
           style="text-align:center;color:#999;padding:30px"
         >
           没有符合条件的数据
@@ -962,6 +963,20 @@ function renderTable() {
       <td class="experience-7d">
         ${escapeHtml(
           row.experience_7d ?? '-'
+        )}
+      </td>
+
+      <td class="desktop-comments-needed">
+        ${escapeHtml(
+          row.comments_needed_for_80 === null
+          || row.comments_needed_for_80 === undefined
+          || Number(row.comments_needed_for_80) < 0
+            ? '-'
+            : (
+                Number(row.comments_needed_for_80) === 0
+                  ? '已达80'
+                  : `差${row.comments_needed_for_80}个评论`
+              )
         )}
       </td>
 
