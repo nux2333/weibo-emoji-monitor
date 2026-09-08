@@ -19,7 +19,8 @@
     "scan-superlike:legacy": "node src/superlike-scanner.js",
     "export-weibo-login": "node scripts/export-weibo-login-state.js",
     "jyz-login": "node scripts/jyz-login.js",
-    "jyz-service": "node scripts/jyz-service.js"
+    "jyz-service": "node scripts/jyz-service.js",
+    "backfill-today-jyz": "node scripts/backfill-today-jyz.js"
   },
   "dependencies": {
     "express": "^5.1.0",
