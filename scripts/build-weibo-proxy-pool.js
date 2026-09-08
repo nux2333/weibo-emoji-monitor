@@ -47,6 +47,15 @@ const GOOD_POOL_FILE =
     'weibo-good-proxies.txt'
   );
 
+const SCORE_FILE =
+  process.env.WEIBO_PROXY_SCORE_FILE
+  || path.join(
+    __dirname,
+    '..',
+    'data',
+    'weibo-proxy-scores.json'
+  );
+
 const TARGET_GOOD_COUNT =
   Number(
     process.env.WEIBO_GOOD_PROXY_TARGET
@@ -669,14 +678,193 @@ async function fetchDatabayCandidates() {
 }
 
 
+
+function extractIpPorts(text, defaultScheme = 'http') {
+  const results = [];
+  const regex = /\b((?:\d{1,3}\.){3}\d{1,3})\s*[:\s]\s*(\d{2,5})\b/g;
+  let match;
+  while ((match = regex.exec(String(text || '')))) {
+    results.push(normalizeProxy(match[1] + ':' + match[2], defaultScheme));
+    if (results.length >= MAX_CANDIDATES_PER_SOURCE) break;
+  }
+  return Array.from(new Set(results)).filter(Boolean);
+}
+
+async function fetchDocIpCandidates() {
+  // 稻壳代理公开列表；页面结构变化时失败不会影响其它源。
+  const urls = [
+    'https://www.docip.net/data/free.json',
+    'https://www.docip.net/'
+  ];
+  for (const url of urls) {
+    try {
+      const text = await fetchText(url);
+      const list = extractIpPorts(text, 'http');
+      if (list.length) return list;
+    } catch (error) {
+      console.log(`[DocIP] ${url} 获取失败：${error.message}`);
+    }
+  }
+  return [];
+}
+
+async function fetchGoodIpsCandidates() {
+  // 谷德代理公开页。只提取 IPv4:Port，最终仍由微博实测决定是否入池。
+  const urls = [
+    'https://www.goodips.com/',
+    'https://www.goodips.com/free-proxy'
+  ];
+  for (const url of urls) {
+    try {
+      const text = await fetchText(url);
+      const list = extractIpPorts(text, 'http');
+      if (list.length) return list;
+    } catch (error) {
+      console.log(`[GoodIPs] ${url} 获取失败：${error.message}`);
+    }
+  }
+  return [];
+}
+
+async function fetchGeoNodeCandidates() {
+  const url =
+    'https://proxylist.geonode.com/api/proxy-list?limit='
+    + Math.min(500, MAX_CANDIDATES_PER_SOURCE)
+    + '&page=1&sort_by=lastChecked&sort_type=desc';
+
+  const json = JSON.parse(await fetchText(url));
+  const rows = Array.isArray(json?.data) ? json.data : [];
+  const results = [];
+
+  for (const item of rows) {
+    const host = String(item?.ip || '').trim();
+    const port = Number(item?.port);
+    const protocols = Array.isArray(item?.protocols)
+      ? item.protocols.map(v => String(v).toLowerCase())
+      : [];
+
+    if (!host || !port) continue;
+
+    let scheme = null;
+    if (protocols.includes('socks5')) scheme = 'socks5';
+    else if (protocols.includes('https') || protocols.includes('http')) scheme = 'http';
+    if (!scheme) continue;
+
+    results.push(`${scheme}://${host}:${port}`);
+  }
+
+  return Array.from(new Set(results)).slice(0, MAX_CANDIDATES_PER_SOURCE);
+}
+
+async function fetchRoundProxiesCandidates() {
+  const urls = [
+    'https://roundproxies.com/api/proxies?limit=500&sortBy=lastChecked&sortType=desc',
+    'https://roundproxies.com/api/proxy-list?limit=500&sort_by=lastChecked&sort_type=desc'
+  ];
+
+  for (const url of urls) {
+    try {
+      const text = await fetchText(url);
+      let list = [];
+      try {
+        const json = JSON.parse(text);
+        const rows =
+          Array.isArray(json?.data) ? json.data :
+          Array.isArray(json?.proxies) ? json.proxies :
+          Array.isArray(json) ? json : [];
+
+        list = rows.map(item => {
+          if (typeof item === 'string') return normalizeProxy(item, 'http');
+          const host = String(item?.ip || item?.host || '').trim();
+          const port = Number(item?.port);
+          const protocol = String(
+            item?.protocol || item?.type || 'http'
+          ).toLowerCase();
+          if (!host || !port) return null;
+          return normalizeProxy(
+            host + ':' + port,
+            protocol === 'socks5' ? 'socks5' : 'http'
+          );
+        }).filter(Boolean);
+      } catch {
+        list = extractIpPorts(text, 'http');
+      }
+
+      if (list.length) {
+        return Array.from(new Set(list)).slice(0, MAX_CANDIDATES_PER_SOURCE);
+      }
+    } catch (error) {
+      console.log(`[RoundProxies] ${url} 获取失败：${error.message}`);
+    }
+  }
+
+  return [];
+}
+
+function readScores() {
+  try {
+    if (!fs.existsSync(SCORE_FILE)) return {};
+    return JSON.parse(fs.readFileSync(SCORE_FILE, 'utf8')) || {};
+  } catch {
+    return {};
+  }
+}
+
+function writeScores(scores) {
+  fs.mkdirSync(path.dirname(SCORE_FILE), { recursive: true });
+  fs.writeFileSync(SCORE_FILE, JSON.stringify(scores, null, 2) + '\n', 'utf8');
+}
+
+function classifyFailure(message) {
+  const s = String(message || '').toLowerCase();
+  if (s.includes('418')) return 'http418';
+  if (s.includes('timeout') || s.includes('timed out')) return 'timeout';
+  if (s.includes('socks_connection_failed')) return 'socksFailed';
+  return 'failed';
+}
+
+function updateScore(scores, proxy, result, source) {
+  const old = scores[proxy] || {};
+  const item = {
+    source: source || old.source || 'unknown',
+    success: Number(old.success || 0),
+    failed: Number(old.failed || 0),
+    http418: Number(old.http418 || 0),
+    timeout: Number(old.timeout || 0),
+    socksFailed: Number(old.socksFailed || 0),
+    lastMs: Number(result.ms || 0),
+    lastTestAt: new Date().toISOString()
+  };
+
+  if (result.ok) item.success++;
+  else {
+    item.failed++;
+    const type = classifyFailure(result.error);
+    if (type !== 'failed') item[type]++;
+  }
+
+  const total = item.success + item.failed;
+  const successRate = total ? item.success / total : 0;
+  const penalty = item.http418 * 8 + item.timeout * 3 + item.socksFailed * 4;
+  const speedBonus = result.ok ? Math.max(0, 15 - Math.floor(result.ms / 500)) : 0;
+  item.score = Math.max(
+    0,
+    Math.min(100, Math.round(successRate * 85 + speedBonus - penalty))
+  );
+
+  scores[proxy] = item;
+}
+
 async function collectSources() {
   const sourceFetchers = [
-    ['SCDN', fetchScdnCandidates],
-    ['ProxyClean', fetchProxyCleanCandidates],
-    ['Proxmint', fetchProxmintCandidates],
+    ['DocIP', fetchDocIpCandidates],
+    ['GoodIPs', fetchGoodIpsCandidates],
+    ['Proxifly', fetchProxiflyCandidates],
+    ['Geonode', fetchGeoNodeCandidates],
+    ['89ip', fetch89IpCandidates],
+    ['RoundProxies', fetchRoundProxiesCandidates],
     ['Relayglass', fetchRelayglassCandidates],
     ['ProxyScrape', fetchProxyScrapeCandidates],
-    ['Proxifly', fetchProxiflyCandidates],
     ['IPLocate', fetchIPLocateCandidates],
     ['Databay', fetchDatabayCandidates]
   ];
@@ -854,6 +1042,7 @@ async function testMany(
     );
 
   const passed = [];
+  const scores = readScores();
   let cursor = 0;
   let done = 0;
 
@@ -890,6 +1079,13 @@ async function testMany(
 
       done++;
 
+      updateScore(
+        scores,
+        item.proxy,
+        result,
+        item.source || 'unknown'
+      );
+
       if (result.ok) {
         passed.push({
           ...result,
@@ -925,6 +1121,14 @@ async function testMany(
       () => worker()
     )
   );
+
+  writeScores(scores);
+
+  passed.sort((a, b) => {
+    const scoreA = Number(scores[a.proxy]?.score || 0);
+    const scoreB = Number(scores[b.proxy]?.score || 0);
+    return scoreB - scoreA || a.ms - b.ms;
+  });
 
   return passed;
 }
@@ -1040,8 +1244,12 @@ async function main() {
           === index
       )
       .sort(
-        (a, b) =>
-          a.ms - b.ms
+        (a, b) => {
+          const scores = readScores();
+          const scoreA = Number(scores[a.proxy]?.score || 0);
+          const scoreB = Number(scores[b.proxy]?.score || 0);
+          return scoreB - scoreA || a.ms - b.ms;
+        }
       )
       .slice(
         0,
@@ -1089,7 +1297,7 @@ async function main() {
   ) {
     console.log('');
     console.log(
-      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从8个源补新代理。`
+      `[提示] 免费源本轮只凑到 ${healthy.length}/${TARGET_GOOD_COUNT}；下次再次运行会先复测现有池，再继续从多源补新代理。`
     );
   }
 }
