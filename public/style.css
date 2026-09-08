@@ -98,3 +98,12 @@
 .log-tree-item span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .log-tree-empty{padding:12px 6px;opacity:.65;font-size:12px}
 @media(max-width:800px){.log-layout{grid-template-columns:1fr}.log-browser{height:40vh}}
+
+/* ===== PM2 脚本管理 ===== */
+.process-row{display:flex;justify-content:space-between;align-items:center;gap:18px;padding:15px 0;border-bottom:1px solid #e5e7eb}
+.process-row:last-child{border-bottom:0}
+.process-main{min-width:0;flex:1}
+.process-name{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:7px}
+.process-meta{display:flex;gap:14px;flex-wrap:wrap;color:#6b7280;font-size:12px}
+.button:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:800px){.process-row{align-items:flex-start;flex-direction:column}.process-row .actions{width:100%}}
