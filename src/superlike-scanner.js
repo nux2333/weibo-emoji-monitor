@@ -119,6 +119,18 @@ const SCAN_WORKER_SOURCE =
     || ''
   ).trim();
 
+const WEIBO_LOGIN_STATE_FILE =
+  process.env.WEIBO_LOGIN_STATE_FILE
+    ? path.resolve(
+        process.env.WEIBO_LOGIN_STATE_FILE
+      )
+    : path.join(
+        __dirname,
+        '..',
+        'data',
+        'weibo-login-state.json'
+      );
+
 const MAX_PAGES =
   Number(process.env.SUPERLIKE_MAX_PAGES)
   || 30;
@@ -282,6 +294,83 @@ const SCAN_PROXY_POOL =
     name:
       'scan'
   });
+
+
+async function importSharedWeiboLoginState(
+  context
+) {
+  if (
+    !context
+    ||
+    !fs.existsSync(
+      WEIBO_LOGIN_STATE_FILE
+    )
+  ) {
+    console.log(
+      `[SuperLike][登录态] 未找到共享登录态：${WEIBO_LOGIN_STATE_FILE}；jyz请求继续使用当前worker自身Cookie。`
+    );
+
+    return false;
+  }
+
+  try {
+    const raw =
+      await fs.promises.readFile(
+        WEIBO_LOGIN_STATE_FILE,
+        'utf8'
+      );
+
+    const state =
+      JSON.parse(
+        raw
+      );
+
+    const cookies =
+      Array.isArray(
+        state?.cookies
+      )
+        ? state.cookies
+        : [];
+
+    if (
+      cookies.length === 0
+    ) {
+      console.log(
+        `[SuperLike][登录态] 共享文件没有Cookie：${WEIBO_LOGIN_STATE_FILE}`
+      );
+
+      return false;
+    }
+
+    await context.addCookies(
+      cookies
+    );
+
+    const weiboCookies =
+      cookies.filter(
+        cookie =>
+          String(
+            cookie?.domain
+            || ''
+          ).includes(
+            'weibo'
+          )
+      );
+
+    console.log(
+      `[SuperLike][登录态] 已导入共享Cookie：总数=${cookies.length} | weibo相关=${weiboCookies.length} | jyz将使用主登录态`
+    );
+
+    return true;
+
+  } catch (error) {
+    console.log(
+      `[SuperLike][登录态] 导入失败：${error?.message || error}`
+    );
+
+    return false;
+  }
+}
 
 
 async function acquireScanProxyWaiting() {
@@ -4355,6 +4444,14 @@ async function scanOneSuperLikeMonitor(
             }
           }
         );
+
+    /*
+     * 先把主浏览器导出的微博登录 Cookie 灌进当前 worker 的 persistent context。
+     * Profile 仍使用下面独立的游客 Context；只有 jyz 的 context.request 会继承这里的登录态。
+     */
+    await importSharedWeiboLoginState(
+      browser
+    );
 
     /*
      * Scan 本 Monitor 全程共享一个匿名游客 Context：
