@@ -1647,6 +1647,12 @@ function extractTagNextPageParams(
 
     return {
       page:
+        params.page !== null
+        &&
+        params.page !== undefined
+        &&
+        params.page !== ''
+        &&
         Number.isFinite(
           Number(params.page)
         )
@@ -1706,6 +1712,12 @@ function buildTagSectionUrl(
   }
 
   if (
+    pageParams.page !== null
+    &&
+    pageParams.page !== undefined
+    &&
+    pageParams.page !== ''
+    &&
     Number.isFinite(
       Number(pageParams.page)
     )
