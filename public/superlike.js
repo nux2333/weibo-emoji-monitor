@@ -522,10 +522,11 @@ async function loadData(
 
   document
     .getElementById(
-      'userCount'
+      'todayBecameSuperLikeCount'
     )
     .textContent =
-      stats.user_count ?? 0;
+      stats.today_became_superlike
+      ?? 0;
 
 
   const rawRows =
