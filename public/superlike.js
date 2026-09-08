@@ -1227,30 +1227,11 @@ async function copyPostLink(cell) {
     return;
   }
 
-  const rawNeeded =
-    cell?.dataset?.commentsNeeded;
-
-  const needed =
-    rawNeeded === ''
-    || rawNeeded === undefined
-      ? null
-      : Number(rawNeeded);
-
-  let copyText = link;
-
-  if (needed !== null && Number.isFinite(needed)) {
-    if (needed > 0) {
-      copyText += ` 还差${needed}个评论`;
-    } else if (needed === 0) {
-      copyText += ' 已达80';
-    }
-  }
-
   try {
-    await navigator.clipboard.writeText(copyText);
+    await navigator.clipboard.writeText(link);
   } catch {
     const textarea = document.createElement('textarea');
-    textarea.value = copyText;
+    textarea.value = link;
     textarea.style.position = 'fixed';
     textarea.style.opacity = '0';
     document.body.appendChild(textarea);
