@@ -710,6 +710,32 @@ async function fetchDatabayCandidates() {
   ]);
 }
 
+async function fetchMonosansCandidates() {
+  return fetchPlainProxySources([
+    ['https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt', 'socks5']
+  ]);
+}
+
+async function fetchHProxyCandidates() {
+  return fetchPlainProxySources([
+    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/proxies/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/proxies/socks5.txt', 'socks5']
+  ]);
+}
+
+async function fetchProxioCandidates() {
+  const sources = [
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/https.txt', 'http'],
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/socks5.txt', 'socks5'],
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/socks5.txt', 'socks5']
+  ];
+
+  return fetchPlainProxySources(sources);
+}
+
 
 
 function extractIpPorts(text, defaultScheme = 'http') {
@@ -911,6 +937,11 @@ async function collectSources() {
     ['Databay', fetchDatabayCandidates],
     ['Proxifly', fetchProxiflyCandidates],
     ['ProxyScrape', fetchProxyScrapeCandidates],
+
+    // 新增 GitHub 高频更新代理源，先进入微博实测观察。
+    ['Monosans', fetchMonosansCandidates],
+    ['HProxy', fetchHProxyCandidates],
+    ['Proxio', fetchProxioCandidates],
 
     // 暂无足够微博实测样本，先保留观察。
     ['DocIP', fetchDocIpCandidates],
