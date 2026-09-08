@@ -1,0 +1,813 @@
+const path = require('path');
+const { chromium } = require('playwright');
+const {
+  db,
+  initDatabase
+} = require('../src/db');
+
+const ROOT =
+  path.join(
+    __dirname,
+    '..'
+  );
+
+const TOPIC_HASH =
+  process.env.WEIBO_TOPIC_HASH
+  || 'f1d33f71dff693a2708cb3e8ef584a44';
+
+const JYZ_SERVICE_URL =
+  process.env.WEIBO_JYZ_SERVICE_URL
+  || 'http://127.0.0.1:3011/jyz';
+
+const JYZ_PROFILE_DIR =
+  process.env.WEIBO_JYZ_PROFILE
+    ? path.resolve(
+        process.env.WEIBO_JYZ_PROFILE
+      )
+    : path.join(
+        ROOT,
+        'data',
+        'weibo-jyz-browser-profile'
+      );
+
+const BATCH_SIZE =
+  Number(
+    process.env.JYZ_BACKFILL_BATCH_SIZE
+  )
+  || 100;
+
+const REST_MS =
+  Number(
+    process.env.JYZ_BACKFILL_REST_MS
+  )
+  || 5 * 60 * 1000;
+
+const REQUEST_DELAY_MS =
+  Number(
+    process.env.JYZ_BACKFILL_REQUEST_DELAY_MS
+  )
+  || 300;
+
+let localContext = null;
+
+function sleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(
+        resolve,
+        ms
+      )
+  );
+}
+
+function getChinaDateString(
+  date = new Date()
+) {
+  const parts =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone:
+          'Asia/Shanghai',
+        year:
+          'numeric',
+        month:
+          '2-digit',
+        day:
+          '2-digit'
+      }
+    )
+      .formatToParts(
+        date
+      );
+
+  const map = {};
+
+  for (
+    const part
+    of parts
+  ) {
+    if (
+      part.type !==
+      'literal'
+    ) {
+      map[part.type] =
+        part.value;
+    }
+  }
+
+  return (
+    map.year
+    + '-'
+    + map.month
+    + '-'
+    + map.day
+  );
+}
+
+function parsePostTimeMs(
+  value
+) {
+  if (!value) {
+    return null;
+  }
+
+  let date =
+    new Date(
+      value
+    );
+
+  if (
+    Number.isNaN(
+      date.getTime()
+    )
+    &&
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+      String(value)
+    )
+  ) {
+    date =
+      new Date(
+        String(value)
+          .replace(
+            ' ',
+            'T'
+          )
+        + '+08:00'
+      );
+  }
+
+  return Number.isNaN(
+    date.getTime()
+  )
+    ? null
+    : date.getTime();
+}
+
+function chinaDateFromMs(ms) {
+  return getChinaDateString(
+    new Date(ms)
+  );
+}
+
+function extractExperience7d(
+  currentInfo
+) {
+  const text =
+    String(
+      currentInfo
+      || ''
+    ).trim();
+
+  if (!text) {
+    return null;
+  }
+
+  const match =
+    text.match(
+      /经验值\s*[：:]\s*(\d+)/
+    )
+    ||
+    text.match(
+      /(\d+)\s*$/
+    );
+
+  if (!match) {
+    return null;
+  }
+
+  const value =
+    Number(
+      match[1]
+    );
+
+  return Number.isFinite(
+    value
+  )
+    ? value
+    : null;
+}
+
+async function queryJyzService(
+  uid
+) {
+  try {
+    const url =
+      new URL(
+        JYZ_SERVICE_URL
+      );
+
+    url.searchParams.set(
+      'topicHash',
+      TOPIC_HASH
+    );
+
+    url.searchParams.set(
+      'uid',
+      String(uid)
+    );
+
+    const response =
+      await fetch(
+        url.toString(),
+        {
+          signal:
+            AbortSignal.timeout(
+              15000
+            )
+        }
+      );
+
+    const json =
+      await response
+        .json()
+        .catch(
+          () => null
+        );
+
+    if (
+      json?.ok
+      &&
+      Number.isFinite(
+        Number(
+          json.experience7d
+        )
+      )
+    ) {
+      return {
+        ok: true,
+        experience7d:
+          Number(
+            json.experience7d
+          ),
+        currentInfo:
+          json.currentInfo
+          || '',
+        source:
+          'service'
+      };
+    }
+
+    return {
+      ok: false,
+      message:
+        json?.message
+        || ('HTTP ' + response.status)
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      unavailable: true,
+      message:
+        error?.message
+        || String(error)
+    };
+  }
+}
+
+async function ensureLocalContext() {
+  if (localContext) {
+    return localContext;
+  }
+
+  console.log(
+    '[JYZ补数] 本机JYZ Service不可用，尝试直接启动已登录JYZ persistent profile。'
+  );
+
+  localContext =
+    await chromium
+      .launchPersistentContext(
+        JYZ_PROFILE_DIR,
+        {
+          headless:
+            process.env.JYZ_BACKFILL_HEADLESS
+            !== '0',
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        }
+      );
+
+  console.log(
+    '[JYZ补数] 已启动JYZ profile：'
+    + JYZ_PROFILE_DIR
+  );
+
+  return localContext;
+}
+
+async function queryJyzLocal(
+  uid
+) {
+  const context =
+    await ensureLocalContext();
+
+  let page = null;
+
+  try {
+    const pageId =
+      '100808'
+      + TOPIC_HASH;
+
+    const referer =
+      new URL(
+        'https://huati.weibo.cn/super/setting/icon'
+      );
+
+    referer.searchParams.set(
+      'page_id',
+      pageId
+    );
+
+    referer.searchParams.set(
+      'icon_type',
+      '1'
+    );
+
+    referer.searchParams.set(
+      'union_id',
+      'chao_like'
+    );
+
+    referer.searchParams.set(
+      'param_uid',
+      String(uid)
+    );
+
+    const apiUrl =
+      new URL(
+        'https://huati.weibo.cn/aj/setting/icon/getconfig'
+      );
+
+    apiUrl.searchParams.set(
+      'type',
+      '1'
+    );
+
+    apiUrl.searchParams.set(
+      'union_id',
+      'chao_like'
+    );
+
+    apiUrl.searchParams.set(
+      'page_id',
+      pageId
+    );
+
+    apiUrl.searchParams.set(
+      'param_uid',
+      String(uid)
+    );
+
+    page =
+      await context.newPage();
+
+    await page.goto(
+      referer.toString(),
+      {
+        waitUntil:
+          'domcontentloaded',
+        timeout:
+          15000
+      }
+    )
+      .catch(
+        () => null
+      );
+
+    await page.waitForTimeout(
+      300
+    );
+
+    const finalUrl =
+      page.url();
+
+    if (
+      /passport\.weibo\.(cn|com)/i
+        .test(
+          finalUrl
+        )
+      ||
+      /login/i.test(
+        finalUrl
+      )
+    ) {
+      return {
+        ok: false,
+        message:
+          'JYZ profile未登录huati：'
+          + finalUrl
+      };
+    }
+
+    const result =
+      await page.evaluate(
+        async url => {
+          try {
+            const response =
+              await fetch(
+                url,
+                {
+                  credentials:
+                    'include',
+                  cache:
+                    'no-store',
+                  headers: {
+                    Accept:
+                      'application/json, text/plain, */*',
+                    'X-Requested-With':
+                      'XMLHttpRequest'
+                  }
+                }
+              );
+
+            return {
+              status:
+                response.status,
+              text:
+                await response.text()
+            };
+          } catch (error) {
+            return {
+              status: null,
+              text: '',
+              error:
+                error?.message
+                || String(error)
+            };
+          }
+        },
+        apiUrl.toString()
+      );
+
+    if (
+      !result
+      ||
+      result.error
+    ) {
+      return {
+        ok: false,
+        message:
+          result?.error
+          || '页面内fetch失败'
+      };
+    }
+
+    let json;
+
+    try {
+      json =
+        JSON.parse(
+          result.text
+        );
+    } catch (error) {
+      return {
+        ok: false,
+        message:
+          'JSON解析失败：'
+          + error.message
+      };
+    }
+
+    if (
+      Number(
+        json?.code
+      ) !== 100000
+    ) {
+      return {
+        ok: false,
+        message:
+          'API code='
+          + (json?.code ?? '-')
+          + ' msg='
+          + (json?.msg || '-')
+      };
+    }
+
+    const currentInfo =
+      json?.data?.current_info
+      || '';
+
+    const experience7d =
+      extractExperience7d(
+        currentInfo
+      );
+
+    if (
+      experience7d === null
+    ) {
+      return {
+        ok: false,
+        message:
+          'current_info没有可解析经验值'
+      };
+    }
+
+    return {
+      ok: true,
+      experience7d,
+      currentInfo,
+      source:
+        'profile'
+    };
+
+  } finally {
+    if (
+      page
+      &&
+      !page.isClosed()
+    ) {
+      await page.close()
+        .catch(
+          () => {}
+        );
+    }
+  }
+}
+
+async function queryJyz(
+  uid
+) {
+  const serviceResult =
+    await queryJyzService(
+      uid
+    );
+
+  if (
+    serviceResult.ok
+  ) {
+    return serviceResult;
+  }
+
+  if (
+    !serviceResult.unavailable
+  ) {
+    return serviceResult;
+  }
+
+  return await queryJyzLocal(
+    uid
+  );
+}
+
+(async () => {
+  initDatabase();
+
+  const today =
+    getChinaDateString();
+
+  const rows =
+    db.prepare(`
+      SELECT
+        id,
+        uid,
+        username,
+        post_id,
+        post_created_at
+      FROM superlike_posts
+      WHERE experience_7d IS NULL
+      ORDER BY id DESC
+    `)
+      .all();
+
+  const todayRows =
+    rows
+      .map(
+        row => ({
+          ...row,
+          post_created_at_ms:
+            parsePostTimeMs(
+              row.post_created_at
+            )
+        })
+      )
+      .filter(
+        row =>
+          Number.isFinite(
+            Number(
+              row.post_created_at_ms
+            )
+          )
+          &&
+          chinaDateFromMs(
+            row.post_created_at_ms
+          ) === today
+      )
+      .sort(
+        (a, b) =>
+          Number(
+            b.post_created_at_ms
+          )
+          -
+          Number(
+            a.post_created_at_ms
+          )
+      );
+
+  console.log('');
+  console.log(
+    '=============================================='
+  );
+  console.log(
+    '# JYZ 今日空值补数'
+  );
+  console.log(
+    '# 中国日期：'
+    + today
+  );
+  console.log(
+    '# 待处理：'
+    + todayRows.length
+  );
+  console.log(
+    '# 顺序：发帖时间 新 → 旧'
+  );
+  console.log(
+    '# 每成功更新 '
+    + BATCH_SIZE
+    + ' 个休息 '
+    + Math.round(
+        REST_MS / 60000
+      )
+    + ' 分钟'
+  );
+  console.log(
+    '# 仅更新：experience_7d'
+  );
+  console.log(
+    '=============================================='
+  );
+  console.log('');
+
+  const updateStmt =
+    db.prepare(`
+      UPDATE superlike_posts
+      SET experience_7d = ?
+      WHERE id = ?
+        AND experience_7d IS NULL
+    `);
+
+  let processed = 0;
+  let updated = 0;
+  let failed = 0;
+
+  for (
+    let i = 0;
+    i < todayRows.length;
+    i++
+  ) {
+    const row =
+      todayRows[i];
+
+    processed++;
+
+    console.log(
+      '[JYZ补数] '
+      + processed
+      + '/'
+      + todayRows.length
+      + ' | UID='
+      + row.uid
+      + ' | Post='
+      + row.post_id
+      + ' | 发帖='
+      + row.post_created_at
+    );
+
+    const result =
+      await queryJyz(
+        row.uid
+      );
+
+    if (
+      result.ok
+      &&
+      Number.isFinite(
+        Number(
+          result.experience7d
+        )
+      )
+    ) {
+      const changes =
+        updateStmt.run(
+          Number(
+            result.experience7d
+          ),
+          Number(
+            row.id
+          )
+        ).changes
+        || 0;
+
+      if (
+        changes > 0
+      ) {
+        updated++;
+
+        console.log(
+          '[JYZ补数][更新] UID='
+          + row.uid
+          + ' | jyz='
+          + result.experience7d
+          + ' | 来源='
+          + (result.source || '-')
+          + ' | 已更新='
+          + updated
+        );
+      } else {
+        console.log(
+          '[JYZ补数][跳过] UID='
+          + row.uid
+          + ' | 记录可能已被其他进程更新'
+        );
+      }
+    } else {
+      failed++;
+
+      console.log(
+        '[JYZ补数][失败] UID='
+        + row.uid
+        + ' | '
+        + (result.message || 'unknown')
+      );
+    }
+
+    if (
+      updated > 0
+      &&
+      updated % BATCH_SIZE === 0
+      &&
+      i < todayRows.length - 1
+    ) {
+      console.log('');
+      console.log(
+        '[JYZ补数] 已成功更新 '
+        + updated
+        + ' 个，休息 '
+        + Math.round(
+            REST_MS / 60000
+          )
+        + ' 分钟...'
+      );
+      console.log('');
+
+      await sleep(
+        REST_MS
+      );
+    } else if (
+      REQUEST_DELAY_MS > 0
+      &&
+      i < todayRows.length - 1
+    ) {
+      await sleep(
+        REQUEST_DELAY_MS
+      );
+    }
+  }
+
+  console.log('');
+  console.log(
+    '========== JYZ补数完成 =========='
+  );
+  console.log(
+    '待处理：'
+    + todayRows.length
+  );
+  console.log(
+    '实际处理：'
+    + processed
+  );
+  console.log(
+    '成功更新：'
+    + updated
+  );
+  console.log(
+    '失败：'
+    + failed
+  );
+
+  if (localContext) {
+    await localContext.close()
+      .catch(
+        () => {}
+      );
+  }
+})()
+  .catch(
+    async error => {
+      console.error(
+        '[JYZ补数] 异常：',
+        error
+      );
+
+      if (localContext) {
+        await localContext.close()
+          .catch(
+            () => {}
+          );
+      }
+
+      process.exitCode = 1;
+    }
+  );
