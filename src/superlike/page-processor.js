@@ -41,7 +41,8 @@ async function processPagePosts(
   config,
   profileCache,
   reusableProfileContext = null,
-  preExtractedPosts = null
+  preExtractedPosts = null,
+  minCreatedAtMs = null
 ) {
   const stats = {
     found: 0,
@@ -59,6 +60,7 @@ async function processPagePosts(
     profileCached: 0,
     profileSuperLike: 0,
     profileFailed: 0,
+    olderThanMinCreatedAt: 0,
     checkpointReached: false,
     pageFullyAtOrBeforeCheckpoint: false,
     pageHasNoPosts: false,
@@ -143,6 +145,31 @@ async function processPagePosts(
 
     if (!postId) {
       continue;
+    }
+
+
+    /*
+     * History 可传入最早允许时间。
+     * 明确早于该时间的帖子直接跳过，不做评论/Profile/入库；
+     * 时间缺失时 fail-open，仍按原逻辑处理，避免误漏。
+     */
+    const minCreatedAt =
+      Number(minCreatedAtMs);
+
+    if (
+      Number.isFinite(minCreatedAt)
+    ) {
+      const createdAtMs =
+        parsePostCreatedAtMs(post);
+
+      if (
+        Number.isFinite(Number(createdAtMs))
+        &&
+        Number(createdAtMs) < minCreatedAt
+      ) {
+        stats.olderThanMinCreatedAt++;
+        continue;
+      }
     }
 
 
