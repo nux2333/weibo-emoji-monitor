@@ -33,28 +33,34 @@ const workers = [
     startDelayMs: 0
   },
   {
+    label: 'fresh-hot',
+    mode: 'fresh',
+    source: 'section-hot',
+    startDelayMs: WORKER_STAGGER_MS
+  },
+  {
     label: 'fresh-superlike',
     mode: 'fresh',
     source: 'section-superlike',
-    startDelayMs: WORKER_STAGGER_MS
+    startDelayMs: WORKER_STAGGER_MS * 2
   },
   {
     label: 'fresh-yishanshui',
     mode: 'fresh',
     source: 'section-yishanshui',
-    startDelayMs: WORKER_STAGGER_MS * 2
+    startDelayMs: WORKER_STAGGER_MS * 3
   },
   {
     label: 'fresh-qa',
     mode: 'fresh',
     source: 'section-qa',
-    startDelayMs: WORKER_STAGGER_MS * 3
+    startDelayMs: WORKER_STAGGER_MS * 4
   },
   {
     label: 'history',
     mode: 'history',
     source: '',
-    startDelayMs: WORKER_STAGGER_MS * 4
+    startDelayMs: WORKER_STAGGER_MS * 5
   }
 ];
 
@@ -226,7 +232,7 @@ console.log(
   '# SuperLike Worker Launcher'
 );
 console.log(
-  '# Fresh: latest / superlike / yishanshui / qa'
+  '# Fresh: latest / hot / superlike / yishanshui / qa'
 );
 console.log(
   `# Fresh错峰：每个来源间隔 ${WORKER_STAGGER_MS / 1000} 秒；History最后启动`
