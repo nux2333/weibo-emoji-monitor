@@ -86,6 +86,42 @@ module.exports = {
 
     {
       ...common,
+      name: 'superlike-mode1',
+      script: path.join(
+        __dirname,
+        'scripts',
+        'recheck-superlike.js'
+      ),
+      env: {
+        SUPERLIKE_RECHECK_MODE: '1'
+      }
+    },
+    {
+      ...common,
+      name: 'superlike-mode2',
+      script: path.join(
+        __dirname,
+        'scripts',
+        'recheck-superlike.js'
+      ),
+      env: {
+        SUPERLIKE_RECHECK_MODE: '2'
+      }
+    },
+    {
+      ...common,
+      name: 'superlike-mode3',
+      script: path.join(
+        __dirname,
+        'scripts',
+        'recheck-superlike.js'
+      ),
+      env: {
+        SUPERLIKE_RECHECK_MODE: '3'
+      }
+    },
+    {
+      ...common,
       name: 'superlike-mode4',
       script: path.join(
         __dirname,
