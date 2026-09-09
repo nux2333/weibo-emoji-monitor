@@ -76,9 +76,9 @@ const {
  *      since_id
  *      max_id
  * 7. Fresh 从第一页开始追到上一轮 checkpoint；最多100页兜底
- * 8. Fresh按“最新发帖10页 + 三个专区各10页”分批即时处理，Profile/经验值默认2并发
+ * 8. Fresh按“最新发帖10页 + 三个专区各10页”分批即时处理，Profile默认2并发
  * 9. 历史 Resume 不阻塞 fresh；单轮历史预算默认5分钟
- * 10. UID不在 superlike_users + feed/Profile无chao_like + jyz<=80 + 评论<21 才入库
+ * 10. UID不在 superlike_users + feed/Profile无chao_like + 评论<21 才入库
  * 11. 白天按10分钟、晚高峰按3分钟的“启动间隔”循环；上一轮未结束时不重叠
  * ============================================================
  */
@@ -1077,8 +1077,7 @@ function extractIcons(post) {
 function saveTargetPost(
   monitorId,
   post,
-  profileStatus = 'UNKNOWN',
-  experience7d = null
+  profileStatus = 'UNKNOWN'
 ) {
   const postId =
     getPostId(post);
@@ -1211,7 +1210,6 @@ function saveTargetPost(
     postCreatedAt,
     postCreatedAtMs,
     profileStatus,
-    experience7d,
     rawJson
   });
 }
@@ -2635,130 +2633,6 @@ function pickProfileReplacementPost(profilePosts) {
  * ============================================================
  */
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
-const SCAN_EXPERIENCE_TIMEOUT_MS = 7000;
-
-function extractExperience7d(currentInfo) {
-  const text =
-    String(currentInfo || '').trim();
-
-  if (!text) {
-    return null;
-  }
-
-  const match =
-    text.match(
-      /经验值\s*[：:]\s*(\d+)/
-    )
-    ||
-    text.match(
-      /(\d+)\s*$/
-    );
-
-  if (!match) {
-    return null;
-  }
-
-  const value =
-    Number(match[1]);
-
-  return Number.isFinite(value)
-    ? value
-    : null;
-}
-
-async function fetchSuperLikeExperience7d(
-  context,
-  config,
-  uid
-) {
-  try {
-    const serviceUrl =
-      new URL(
-        process.env.WEIBO_JYZ_SERVICE_URL
-        || 'http://127.0.0.1:3011/jyz'
-      );
-
-    serviceUrl.searchParams.set(
-      'topicHash',
-      config.topicHash
-    );
-
-    serviceUrl.searchParams.set(
-      'uid',
-      String(uid)
-    );
-
-    const response =
-      await fetch(
-        serviceUrl.toString(),
-        {
-          signal:
-            AbortSignal.timeout(
-              SCAN_EXPERIENCE_TIMEOUT_MS
-              + 3000
-            )
-        }
-      );
-
-    const json =
-      await response
-        .json()
-        .catch(
-          () => null
-        );
-
-    if (
-      json?.ok
-      &&
-      Number.isFinite(
-        Number(
-          json.experience7d
-        )
-      )
-    ) {
-      return {
-        ok: true,
-        experience7d:
-          Number(
-            json.experience7d
-          ),
-        currentInfo:
-          json.currentInfo
-          || '',
-        status:
-          json.status
-          ?? response.status,
-        source:
-          'main-scanner-profile-service'
-      };
-    }
-
-    return {
-      ok: false,
-      experience7d: null,
-      status:
-        json?.status
-        ?? response.status,
-      message:
-        json?.message
-        || ('JYZ Service HTTP ' + response.status)
-    };
-
-  } catch (error) {
-    return {
-      ok: false,
-      experience7d: null,
-      status: null,
-      message:
-        'JYZ Service不可用：'
-        + (
-          error?.message
-          || String(error)
-        )
-    };
-  }
-}
-
 
 async function checkUserSuperLikeByProfileInner(
   context,
@@ -3331,24 +3205,6 @@ async function checkUserSuperLikeByProfileInner(
       `[SuperLike][Profile结果] UID=${uid} SuperLike=${hasSuperLike}`
     );
 
-    const experienceResult =
-      await fetchSuperLikeExperience7d(
-        context,
-        config,
-        uid
-      );
-
-    const experience7d =
-      experienceResult?.ok
-        ? experienceResult.experience7d
-        : null;
-
-    console.log(
-      experienceResult?.ok
-        ? `[SuperLike][经验值] UID=${uid} 近7天=${experience7d} | ${experienceResult.currentInfo || ''}`
-        : `[SuperLike][经验值失败] UID=${uid} | ${experienceResult?.message || 'unknown'}`
-    );
-
     const profilePosts =
       getProfilePosts(
         json,
@@ -3387,7 +3243,6 @@ async function checkUserSuperLikeByProfileInner(
       ok: true,
       blocked: false,
       hasSuperLike,
-      experience7d,
       profilePosts,
       status:
         result.status,
@@ -3912,47 +3767,6 @@ async function processPagePosts(
       continue;
     }
 
-    if (
-      profileResult?.ok
-      &&
-      profileResult.hasSuperLike === false
-      &&
-      Number.isFinite(
-        Number(
-          profileResult.experience7d
-        )
-      )
-      &&
-      Number(
-        profileResult.experience7d
-      ) > 80
-    ) {
-      stats.hasSuperLike++;
-
-      const userInserted =
-        saveSuperLikeUser(
-          monitorId,
-          uid
-        );
-
-      const deletedNow =
-        deletePostsByUidWithLog(
-          uid,
-          'SUPERLIKE_EXPERIENCE_GT_80'
-        );
-
-      if (!deleteUidSet.has(uid)) {
-        stats.deleteQueued++;
-      }
-
-      deleteUidSet.add(uid);
-
-      console.log(
-        `[SuperLike][经验值判定SuperLike] UID=${uid} | jyz=${profileResult.experience7d} > 80 | Profile虽未显示超LIKE，仍按SuperLike处理 | ${userInserted ? '写入' : '已存在'} superlike_users | 清理旧候选=${deletedNow}`
-      );
-
-      continue;
-    }
 
 
     if (
@@ -4054,9 +3868,7 @@ async function processPagePosts(
                 && profileResult.hasSuperLike === false
                   ? 'NO_SUPERLIKE'
                   : 'UNKNOWN'
-              ),
-          profileResult?.experience7d
-          ?? null
+              )
         );
 
 
@@ -4072,7 +3884,6 @@ async function processPagePosts(
             `UID=${saved.uid || '-'}`,
             `用户=${saved.username || '-'}`,
             `评论=${saved.commentsCount}`,
-            `经验7D=${saved.experience7d ?? '-'}`,
             `Icon=${saved.iconSummary || '无'}`,
             saved.postLink || '-'
           ].join(' | ')
@@ -4090,7 +3901,6 @@ async function processPagePosts(
             `UID=${saved.uid || '-'}`,
             `用户=${saved.username || '-'}`,
             `评论=${saved.commentsCount}`,
-            `经验7D=${saved.experience7d ?? '-'}`,
             saved.postLink || '-'
           ].join(' | ')
         );
