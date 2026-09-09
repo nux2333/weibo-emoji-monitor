@@ -1,6 +1,14 @@
 const path = require('path');
 const { chromium } = require('playwright');
 const {
+  createBatchLogger
+} = require('../src/batch-logger');
+
+const batchLogger =
+  createBatchLogger(
+    'backfill-today-jyz'
+  );
+const {
   ProxyPool
 } = require('../src/proxy-pool');
 const {
@@ -83,6 +91,18 @@ const IDLE_WAIT_MS =
     process.env.JYZ_BACKFILL_IDLE_WAIT_MS
   )
   || 60 * 1000;
+
+const HIGH_SCORE_REFRESH_MIN =
+  Number(
+    process.env.JYZ_HIGH_SCORE_REFRESH_MIN
+  )
+  || 70;
+
+const HIGH_SCORE_REFRESH_BATCH_SIZE =
+  Number(
+    process.env.JYZ_HIGH_SCORE_REFRESH_BATCH_SIZE
+  )
+  || 100;
 
 const REQUEST_DELAY_MS =
   Number(
@@ -898,6 +918,60 @@ async function queryJyz(
         AND experience_7d IS NULL
     `);
 
+  /*
+   * 高分刷新时，同一个 UID 的 experience_7d 应保持一致。
+   * 这里只更新当前经验值，不碰 initial_experience_7d。
+   */
+  const updateUidExperienceStmt =
+    db.prepare(`
+      UPDATE superlike_posts
+      SET experience_7d = ?
+      WHERE uid = ?
+    `);
+
+  /*
+   * 当天发帖 + 当前经验值 70~79：
+   * 每轮先按经验值低 -> 高刷新最新经验值。
+   *
+   * 按 UID 去重，避免同一个用户有多条帖子时重复请求。
+   */
+  const selectHighScoreRefreshStmt =
+    db.prepare(`
+      SELECT
+        monitor_id,
+        uid,
+        MAX(username) AS username,
+        MIN(experience_7d) AS experience_7d,
+        MAX(post_created_at) AS latest_post_created_at,
+        COUNT(*) AS post_count
+      FROM superlike_posts
+      WHERE uid IS NOT NULL
+        AND TRIM(uid) <> ''
+        AND experience_7d >= ?
+        AND experience_7d < 80
+        AND date(
+          datetime(post_created_at)
+        ) = date(
+          'now',
+          '+8 hours'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM superlike_users su
+          WHERE su.uid = superlike_posts.uid
+        )
+      GROUP BY
+        monitor_id,
+        uid
+      ORDER BY
+        MIN(experience_7d) ASC,
+        datetime(
+          MAX(post_created_at)
+        ) DESC,
+        uid ASC
+      LIMIT ?
+    `);
+
   const selectBatchStmt =
     db.prepare(`
       SELECT
@@ -928,6 +1002,8 @@ async function queryJyz(
   let totalFailed = 0;
   let totalPromoted = 0;
   let totalDeletedPosts = 0;
+  let totalHighScoreRefreshed = 0;
+  let totalHighScoreChanged = 0;
 
   const promotedUids =
     new Set();
@@ -940,7 +1016,12 @@ async function queryJyz(
     '# JYZ 全库空值补数（24小时常驻）'
   );
   console.log(
-    '# 筛选：全库 experience_7d IS NULL'
+    '# 任务1：全库 experience_7d IS NULL 补数'
+  );
+  console.log(
+    '# 任务2：当天发帖且 experience_7d >= '
+    + HIGH_SCORE_REFRESH_MIN
+    + ' 且 <80，按经验值低→高刷新最新经验值'
   );
   console.log(
     '# 顺序：post_created_at 新 → 旧，时间为空时按 id DESC 兜底'
@@ -984,6 +1065,198 @@ async function queryJyz(
   console.log('');
 
   while (true) {
+    /*
+     * ========================================================
+     * 优先任务：刷新当天高分 UID
+     * ========================================================
+     */
+    const highScoreRows =
+      selectHighScoreRefreshStmt.all(
+        HIGH_SCORE_REFRESH_MIN,
+        HIGH_SCORE_REFRESH_BATCH_SIZE
+      );
+
+    if (
+      highScoreRows.length > 0
+    ) {
+      console.log('');
+      console.log(
+        '========== JYZ 当天高分刷新 =========='
+      );
+      console.log(
+        '[JYZ高分刷新] 本轮 UID='
+        + highScoreRows.length
+        + ' | 范围='
+        + HIGH_SCORE_REFRESH_MIN
+        + '~79 | 顺序=经验值低→高'
+      );
+
+      for (
+        let highIndex = 0;
+        highIndex < highScoreRows.length;
+        highIndex++
+      ) {
+        const row =
+          highScoreRows[highIndex];
+
+        const normalizedUid =
+          String(
+            row.uid
+            || ''
+          ).trim();
+
+        if (
+          !normalizedUid
+          ||
+          promotedUids.has(
+            normalizedUid
+          )
+        ) {
+          continue;
+        }
+
+        const oldExperience =
+          Number(
+            row.experience_7d
+          );
+
+        console.log(
+          '[JYZ高分刷新] '
+          + (highIndex + 1)
+          + '/'
+          + highScoreRows.length
+          + ' | UID='
+          + normalizedUid
+          + ' | 当前='
+          + oldExperience
+          + ' | 当天最新发帖='
+          + (row.latest_post_created_at || '-')
+          + ' | 候选帖='
+          + Number(row.post_count || 0)
+        );
+
+        const result =
+          await queryJyz(
+            normalizedUid
+          );
+
+        if (
+          result.ok
+          &&
+          Number.isFinite(
+            Number(
+              result.experience7d
+            )
+          )
+        ) {
+          const latestExperience =
+            Number(
+              result.experience7d
+            );
+
+          totalHighScoreRefreshed++;
+
+          if (
+            latestExperience >= 80
+          ) {
+            const userInserted =
+              saveSuperLikeUser(
+                Number(
+                  row.monitor_id
+                ),
+                normalizedUid,
+                null,
+                latestExperience
+              );
+
+            const deletedPosts =
+              deletePostsByUidWithLog(
+                normalizedUid,
+                'EXPERIENCE_7D_GTE_80'
+              );
+
+            promotedUids.add(
+              normalizedUid
+            );
+
+            totalPromoted++;
+            totalDeletedPosts +=
+              deletedPosts;
+
+            console.log(
+              '[JYZ高分刷新][>=80→超LIKE] UID='
+              + normalizedUid
+              + ' | '
+              + oldExperience
+              + '→'
+              + latestExperience
+              + ' | superlike_users='
+              + (
+                userInserted
+                  ? '新增'
+                  : '已存在/更新'
+              )
+              + ' | 删除帖子='
+              + deletedPosts
+              + ' | 来源='
+              + (result.source || '-')
+            );
+
+            continue;
+          }
+
+          const changes =
+            updateUidExperienceStmt.run(
+              latestExperience,
+              normalizedUid
+            ).changes
+            || 0;
+
+          if (
+            latestExperience
+            !== oldExperience
+          ) {
+            totalHighScoreChanged++;
+          }
+
+          console.log(
+            '[JYZ高分刷新][更新] UID='
+            + normalizedUid
+            + ' | '
+            + oldExperience
+            + '→'
+            + latestExperience
+            + ' | 同UID更新帖子='
+            + changes
+            + ' | 来源='
+            + (result.source || '-')
+          );
+
+        } else {
+          totalFailed++;
+
+          console.log(
+            '[JYZ高分刷新][失败] UID='
+            + normalizedUid
+            + ' | 当前='
+            + oldExperience
+            + ' | '
+            + (result.message || 'unknown')
+          );
+        }
+
+        if (
+          REQUEST_DELAY_MS > 0
+          &&
+          highIndex < highScoreRows.length - 1
+        ) {
+          await sleep(
+            REQUEST_DELAY_MS
+          );
+        }
+      }
+    }
+
     const rows =
       selectBatchStmt.all(
         BATCH_SIZE
@@ -997,7 +1270,7 @@ async function queryJyz(
         '========== JYZ 当前无待补数据 =========='
       );
       console.log(
-        '全库当前没有 experience_7d 为空的数据；常驻进程不会退出。'
+        '全库当前没有 experience_7d 为空的数据；高分刷新已在本轮优先执行，常驻进程不会退出。'
       );
       console.log(
         '累计处理：'
@@ -1008,6 +1281,10 @@ async function queryJyz(
         + totalPromoted
         + ' | 删除帖子：'
         + totalDeletedPosts
+        + ' | 高分刷新：'
+        + totalHighScoreRefreshed
+        + ' | 高分变更：'
+        + totalHighScoreChanged
         + ' | 失败：'
         + totalFailed
       );
@@ -1240,7 +1517,7 @@ async function queryJyz(
       + Math.round(
           REST_MS / 1000
         )
-      + ' 秒；之后重新查询全库，并再次从最新发帖开始。'
+      + ' 秒；之后先刷新当天高分UID，再补全库空值。'
     );
 
     await sleep(
@@ -1258,6 +1535,11 @@ async function queryJyz(
       );
 
       await closeLocalContext();
+
+      await batchLogger.close()
+        .catch(
+          () => {}
+        );
 
       process.exitCode = 1;
     }
