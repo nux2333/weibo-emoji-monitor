@@ -13,7 +13,7 @@ if (require.main === module) {
 
 const fs = require('fs');
 const path = require('path');
-const { request, chromium } = require('playwright');
+const { request } = require('playwright');
 
 const GOOD_POOL_FILE =
   process.env.WEIBO_GOOD_PROXY_FILE
@@ -78,28 +78,7 @@ const SOCKS5_MAX_LATENCY_MS =
   Number(
     process.env.WEIBO_GOOD_PROXY_SOCKS5_MAX_LATENCY_MS
   )
-  || 2500;
-
-const MIN_SCORE =
-  Number(
-    process.env.WEIBO_GOOD_PROXY_MIN_SCORE
-  )
-  || 60;
-
-const A_GRADE_SCORE =
-  Number(
-    process.env.WEIBO_GOOD_PROXY_A_SCORE
-  )
-  || 80;
-
-const CHROMIUM_TIMEOUT_MS =
-  Number(
-    process.env.WEIBO_GOOD_PROXY_CHROMIUM_TIMEOUT_MS
-  )
-  || 10000;
-
-const HOT_AJAX_URL =
-  'https://weibo.com/ajax_proxy/chaohua/page?flowId=100808f1d33f71dff693a2708cb3e8ef584a44';
+  || 3500;
 
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
@@ -610,237 +589,6 @@ async function collectSources() {
   );
 }
 
-let sharedChromiumBrowser =
-  null;
-
-async function getSharedChromiumBrowser() {
-  if (
-    sharedChromiumBrowser
-    &&
-    sharedChromiumBrowser.isConnected()
-  ) {
-    return sharedChromiumBrowser;
-  }
-
-  sharedChromiumBrowser =
-    await chromium.launch({
-      headless: true
-    });
-
-  console.log(
-    '[健康池][Chromium] 已启动单个共享Headless Chromium；后续代理复用浏览器，不再反复启动进程。'
-  );
-
-  return sharedChromiumBrowser;
-}
-
-
-async function closeSharedChromiumBrowser() {
-  if (!sharedChromiumBrowser) {
-    return;
-  }
-
-  try {
-    await sharedChromiumBrowser.close();
-  } catch {
-    // ignore
-  }
-
-  sharedChromiumBrowser =
-    null;
-}
-
-
-async function chromiumVerify(proxy) {
-  const startedAt =
-    Date.now();
-
-  let context = null;
-
-  try {
-    const proxyConfig =
-      getPlaywrightProxyConfig(
-        proxy
-      );
-
-    const browser =
-      await getSharedChromiumBrowser();
-
-    context =
-      await browser.newContext({
-        proxy:
-          proxyConfig,
-        userAgent:
-          USER_AGENT,
-        ignoreHTTPSErrors:
-          true
-      });
-
-    const page =
-      await context.newPage();
-
-    await page.route(
-      '**/*',
-      async route => {
-        const type =
-          route.request()
-            .resourceType();
-
-        if (
-          type === 'image'
-          ||
-          type === 'media'
-          ||
-          type === 'font'
-        ) {
-          await route.abort();
-          return;
-        }
-
-        await route.continue();
-      }
-    );
-
-    const response =
-      await page.goto(
-        WEIBO_URL,
-        {
-          waitUntil:
-            'domcontentloaded',
-          timeout:
-            CHROMIUM_TIMEOUT_MS
-        }
-      );
-
-    const status =
-      response?.status?.()
-      ?? null;
-
-    if (
-      status !== null
-      &&
-      status >= 400
-    ) {
-      throw new Error(
-        `Chromium weibo HTTP ${status}`
-      );
-    }
-
-    const ajaxResult =
-      await page.evaluate(
-        async url => {
-          const controller =
-            new AbortController();
-
-          const timer =
-            setTimeout(
-              () => controller.abort(),
-              7000
-            );
-
-          try {
-            const r =
-              await fetch(
-                url,
-                {
-                  credentials:
-                    'include',
-                  signal:
-                    controller.signal,
-                  headers: {
-                    'X-Requested-With':
-                      'XMLHttpRequest'
-                  }
-                }
-              );
-
-            return {
-              status:
-                r.status,
-              text:
-                (await r.text())
-                  .slice(0, 200)
-            };
-          } finally {
-            clearTimeout(timer);
-          }
-        },
-        HOT_AJAX_URL
-      );
-
-    if (
-      !ajaxResult
-      ||
-      ajaxResult.status >= 400
-    ) {
-      throw new Error(
-        `Chromium AJAX HTTP ${ajaxResult?.status ?? '-'} ${ajaxResult?.text || ''}`
-      );
-    }
-
-    const mobilePage =
-      await context.newPage();
-
-    const mobileResponse =
-      await mobilePage.goto(
-        MOBILE_WEIBO_URL,
-        {
-          waitUntil:
-            'domcontentloaded',
-          timeout:
-            CHROMIUM_TIMEOUT_MS
-        }
-      );
-
-    const mobileStatus =
-      mobileResponse?.status?.()
-      ?? null;
-
-    if (
-      mobileStatus !== null
-      &&
-      mobileStatus >= 400
-    ) {
-      throw new Error(
-        `Chromium m.weibo HTTP ${mobileStatus}`
-      );
-    }
-
-    return {
-      ok: true,
-      ms:
-        Date.now()
-        - startedAt,
-      chromiumStatus:
-        status,
-      ajaxStatus:
-        ajaxResult.status,
-      mobileStatus
-    };
-
-  } catch (error) {
-    return {
-      ok: false,
-      error:
-        error?.message
-        || String(error),
-      ms:
-        Date.now()
-        - startedAt
-    };
-
-  } finally {
-    if (context) {
-      try {
-        await context.close();
-      } catch {
-        // ignore
-      }
-    }
-  }
-}
-
-
 async function testOne(proxy) {
   const startedAt =
     Date.now();
@@ -1024,80 +772,10 @@ async function testMany(
             }
           : list[index];
 
-      let result =
+      const result =
         await testOne(
           item.proxy
         );
-
-      /*
-       * SOCKS5 必须连续两次快速预检通过，避免“偶尔能通”的慢节点进入正式池。
-       */
-      if (
-        result.ok
-        &&
-        /^socks5:\/\//i.test(
-          item.proxy
-        )
-      ) {
-        const second =
-          await testOne(
-            item.proxy
-          );
-
-        if (!second.ok) {
-          result = {
-            ...second,
-            error:
-              `SOCKS5二次预检失败: ${second.error || '-'}`
-          };
-        } else {
-          result = {
-            ...result,
-            ms:
-              Math.max(
-                result.ms,
-                second.ms
-              ),
-            socksDoublePass:
-              true
-          };
-        }
-      }
-
-      /*
-       * 快速预检通过后，再用真实 Chromium + 超话 AJAX + m.weibo 验证。
-       */
-      if (result.ok) {
-        const browserResult =
-          await chromiumVerify(
-            item.proxy
-          );
-
-        if (!browserResult.ok) {
-          result = {
-            ok: false,
-            proxy:
-              item.proxy,
-            error:
-              `Chromium二次验证失败: ${browserResult.error || '-'}`,
-            ms:
-              browserResult.ms
-          };
-        } else {
-          result = {
-            ...result,
-            chromiumMs:
-              browserResult.ms,
-            chromiumVerified:
-              true,
-            ms:
-              Math.max(
-                result.ms,
-                browserResult.ms
-              )
-          };
-        }
-      }
 
       done++;
 
@@ -1108,36 +786,32 @@ async function testMany(
         item.source || 'unknown'
       );
 
-      const score =
-        Number(
-          scores[item.proxy]?.score
-          || 0
-        );
-
-      if (
-        result.ok
-        &&
-        score >= MIN_SCORE
-      ) {
+      if (result.ok) {
         passed.push({
           ...result,
-          score,
-          grade:
-            score >= A_GRADE_SCORE
-              ? 'A'
-              : 'B',
           source:
             item.source
             || 'unknown'
         });
 
+        const writtenNow =
+          appendGoodProxy(
+            item.proxy
+          );
+
+        if (writtenNow) {
+          console.log(
+            `[健康池实时写入] ${item.proxy} | 当前文件代理=${readGoodPool().length}`
+          );
+        }
+
         console.log(
-          `[${label} ${done}/${list.length}] PASS-${score >= A_GRADE_SCORE ? 'A' : 'B'} | score=${score} | ${item.proxy} | source=${item.source || '-'} | ${result.ms}ms`
+          `[${label} ${done}/${list.length}] PASS | ${item.proxy} | source=${item.source || '-'} | exit=${result.exitIp || '-'} | ${result.ms}ms`
         );
 
       } else {
         console.log(
-          `[${label} ${done}/${list.length}] FAIL | score=${score} | ${item.proxy} | source=${item.source || '-'} | ${result.error || 'score too low'} | ${result.ms}ms`
+          `[${label} ${done}/${list.length}] FAIL | ${item.proxy} | source=${item.source || '-'} | ${result.error} | ${result.ms}ms`
         );
       }
     }
@@ -1181,9 +855,7 @@ async function main() {
   console.log(`测试微博PC: ${WEIBO_URL}`);
   console.log(`测试微博Mobile: ${MOBILE_WEIBO_URL}`);
   console.log(`HTTP延迟上限: ${MAX_LATENCY_MS}ms`);
-  console.log(`SOCKS5延迟上限: ${SOCKS5_MAX_LATENCY_MS}ms（必须连续通过2次）`);
-  console.log(`Chromium二次验证超时: ${CHROMIUM_TIMEOUT_MS}ms`);
-  console.log(`正式池最低分: ${MIN_SCORE} | A级>=${A_GRADE_SCORE} | B级=${MIN_SCORE}-${A_GRADE_SCORE - 1}`);
+  console.log(`SOCKS5延迟上限: ${SOCKS5_MAX_LATENCY_MS}ms`);
   console.log('==============================================');
   console.log('');
 
@@ -1353,28 +1025,6 @@ async function main() {
     `来源分布: ${JSON.stringify(sourceCount)}`
   );
 
-  const gradeCount = {
-    A:
-      healthy.filter(
-        item =>
-          Number(item.score || 0)
-          >= A_GRADE_SCORE
-      ).length,
-    B:
-      healthy.filter(
-        item =>
-          Number(item.score || 0)
-          >= MIN_SCORE
-          &&
-          Number(item.score || 0)
-          < A_GRADE_SCORE
-      ).length
-  };
-
-  console.log(
-    `等级分布: A=${gradeCount.A} B=${gradeCount.B}`
-  );
-
   if (
     healthy.length
     < TARGET_GOOD_COUNT
@@ -1432,8 +1082,6 @@ if (
     .catch(async error => {
       console.error(error);
 
-      await closeSharedChromiumBrowser();
-
       if (batchLogger) {
         try {
           await batchLogger.close();
@@ -1448,6 +1096,5 @@ if (
 
 module.exports = {
   main,
-  runForever,
-  closeSharedChromiumBrowser
+  runForever
 };
