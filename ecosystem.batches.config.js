@@ -45,13 +45,17 @@ module.exports = {
     },
 
     /*
-     * 四个 Fresh 来源完全独立：
+     * 五个 Fresh 来源完全独立：
      * 可单独启动，也可同时启动。
-     * launcher 内仍保留 0/3/6/9 秒错峰。
+     * launcher 内仍保留错峰启动。
      */
     scanWorker(
       'scan-fresh-latest',
       'fresh-latest'
+    ),
+    scanWorker(
+      'scan-fresh-hot',
+      'fresh-hot'
     ),
     {
       ...scanWorker(
@@ -77,7 +81,7 @@ module.exports = {
     ),
 
     /*
-     * History 独立，不属于四个 Fresh。
+     * History 独立，不属于五个 Fresh。
      */
     scanWorker(
       'scan-history',
