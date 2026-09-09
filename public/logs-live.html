@@ -12,6 +12,7 @@
     <div>
       <h1>实时日志</h1>
       <p><span id="dot" class="live-dot"></span><span id="status">未连接</span> · <span id="file">-</span></p>
+      <p class="muted">默认自动跟随最新日志；也可以从右侧选择固定日志文件。</p>
     </div>
     <div class="actions">
       <a class="button" href="/admin">返回后台</a>
@@ -45,7 +46,7 @@
   <section class="card">
     <div class="row">
       <input id="token" type="password" placeholder="ADMIN_TOKEN">
-      <button class="button primary" onclick="loadDirectory('')">加载日志目录</button>
+      <button class="button primary" onclick="startLogs()">连接最新日志</button>
     </div>
   </section>
 </main>
@@ -165,6 +166,19 @@ function escapeHtml(v){
     .replaceAll("'","&#39;");
 }
 
+function startLogs(){
+  const token=$('token').value.trim();
+  if(!token){
+    setStatus('请输入 ADMIN_TOKEN');
+    return;
+  }
+
+  localStorage.setItem('admin_token',token);
+  selectedFile='';
+  connect();
+  loadDirectory('');
+}
+
 function connect(){
   const token=$('token').value.trim();
   if(!token){alert('请输入 ADMIN_TOKEN');return;}
@@ -207,6 +221,7 @@ function connect(){
 }
 
 if($('token').value){
+  connect();
   loadDirectory('');
 }
 </script>
