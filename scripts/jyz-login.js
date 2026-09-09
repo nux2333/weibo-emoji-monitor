@@ -5,7 +5,7 @@ const ROOT = path.join(__dirname, '..');
 const PROFILE_DIR =
   process.env.WEIBO_JYZ_PROFILE
     ? path.resolve(process.env.WEIBO_JYZ_PROFILE)
-    : path.join(ROOT, 'data', 'weibo-jyz-browser-profile');
+    : path.join(ROOT, 'data', 'superlike-browser-profile-jyz');
 
 const HUATI_URL =
   'https://huati.weibo.cn/super/setting/icon'
