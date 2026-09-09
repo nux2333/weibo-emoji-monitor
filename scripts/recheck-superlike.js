@@ -3204,6 +3204,7 @@ async function runLightSuperLikeRecheck(signal = null) {
              */
             channel: 'chromium',
             headless: true,
+            ignoreHTTPSErrors: true,
             ...(nextProxy ? { proxy: nextProxy } : {}),
             viewport: {
               width: 1280,
@@ -3228,6 +3229,7 @@ async function runLightSuperLikeRecheck(signal = null) {
 
       mode3VisitorContext =
         await parentBrowser.newContext({
+          ignoreHTTPSErrors: true,
           viewport: {
             width: 1280,
             height: 900
