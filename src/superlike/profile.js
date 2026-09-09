@@ -5,7 +5,10 @@ const {
   parsePostCreatedAtMs,
   getPostCreatedAt
 } = require('./post-utils');
-const { isProxyConnectionError } = require('./proxy');
+const {
+  SCAN_PROXY_POOL,
+  isProxyConnectionError
+} = require('./proxy');
 
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
 
@@ -845,49 +848,204 @@ async function checkUserSuperLikeByProfile(
   uid,
   reusableProfileContext = null
 ) {
-  let timer = null;
+  const apiUrl =
+    buildProfileInPageApiUrl(
+      config,
+      uid
+    );
 
-  const hardTimeout =
-    new Promise(resolve => {
-      timer =
-        setTimeout(
-          () => {
-            console.log(
-              `[SuperLike][Profile硬超时] UID=${uid} 超过${SCAN_PROFILE_HARD_TIMEOUT_MS / 1000}秒，立即fail-open，继续Scan。`
-            );
+  /*
+   * Profile 失败不能再中断 Fresh 列表扫描。
+   *
+   * 第一次：优先使用当前 Monitor 共享游客 Context。
+   * 如果确认是代理/网络错误：
+   *   - 不向上抛；
+   *   - 从健康代理池取新的代理；
+   *   - 创建仅供当前 Profile 使用的独立 BrowserContext；
+   *   - 最多切换 2 个 Profile 代理重试。
+   *
+   * 最终仍失败则 fail-open，调用方继续处理帖子和翻页。
+   */
+  const PROFILE_PROXY_SWITCH_ATTEMPTS =
+    Math.max(
+      1,
+      Number(
+        process.env.SUPERLIKE_PROFILE_PROXY_SWITCH_ATTEMPTS
+      )
+      || 2
+    );
 
-            resolve({
-              ok: false,
-              hasSuperLike: null,
-              status: null,
-              url:
-                buildProfileInPageApiUrl(
-                  config,
-                  uid
-                ),
-              message:
-                `Profile hard timeout ${SCAN_PROFILE_HARD_TIMEOUT_MS}ms`
-            });
-          },
-          SCAN_PROFILE_HARD_TIMEOUT_MS
-        );
-    });
+  let firstAttemptError = null;
 
   try {
-    return await Promise.race([
-      checkUserSuperLikeByProfileInner(
+    const firstResult =
+      await checkUserSuperLikeByProfileInner(
         context,
         config,
         uid,
         reusableProfileContext
-      ),
-      hardTimeout
-    ]);
-  } finally {
-    if (timer) {
-      clearTimeout(timer);
+      );
+
+    return firstResult;
+
+  } catch (error) {
+    if (
+      !isProxyConnectionError(
+        error
+      )
+    ) {
+      return {
+        ok: false,
+        blocked: false,
+        hasSuperLike: null,
+        status: null,
+        url:
+          apiUrl,
+        message:
+          error?.message
+          || String(error)
+      };
+    }
+
+    firstAttemptError =
+      error;
+
+    console.log(
+      `[SuperLike][Profile代理切换] UID=${uid} 当前Profile代理失败；Fresh列表继续，不中断分区。开始尝试独立Profile代理。`
+    );
+  }
+
+  const parentBrowser =
+    context?.browser?.();
+
+  if (
+    !parentBrowser
+    ||
+    typeof parentBrowser.newContext
+      !== 'function'
+  ) {
+    return {
+      ok: false,
+      blocked: false,
+      hasSuperLike: null,
+      status: null,
+      url:
+        apiUrl,
+      proxyFailed: true,
+      message:
+        firstAttemptError?.message
+        || 'Profile代理失败，且无法创建独立Profile Context'
+    };
+  }
+
+  let lastError =
+    firstAttemptError;
+
+  for (
+    let switchAttempt = 1;
+    switchAttempt <= PROFILE_PROXY_SWITCH_ATTEMPTS;
+    switchAttempt++
+  ) {
+    let assignment = null;
+    let profileContext = null;
+
+    try {
+      assignment =
+        await SCAN_PROXY_POOL.acquire();
+
+      if (
+        !assignment?.proxy
+        ||
+        assignment.allCoolingDown
+      ) {
+        console.log(
+          `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次没有可用健康代理，fail-open继续Fresh。`
+        );
+
+        break;
+      }
+
+      console.log(
+        `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次使用 ${assignment.masked || '新代理'}`
+      );
+
+      profileContext =
+        await parentBrowser.newContext({
+          proxy:
+            assignment.proxy,
+          viewport: {
+            width: 1280,
+            height: 900
+          }
+        });
+
+      const result =
+        await checkUserSuperLikeByProfileInner(
+          context,
+          config,
+          uid,
+          profileContext
+        );
+
+      console.log(
+        `[SuperLike][Profile代理切换成功] UID=${uid} | ${assignment.masked || '新代理'}`
+      );
+
+      return result;
+
+    } catch (error) {
+      lastError =
+        error;
+
+      if (
+        assignment?.raw
+        &&
+        isProxyConnectionError(
+          error
+        )
+      ) {
+        try {
+          SCAN_PROXY_POOL.markFailed(
+            assignment.raw
+          );
+        } catch {
+          try {
+            SCAN_PROXY_POOL.markBlocked(
+              assignment.raw
+            );
+          } catch {
+            // ignore
+          }
+        }
+      }
+
+      console.log(
+        `[SuperLike][Profile代理切换失败] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次失败 | ${error?.message || error} | Fresh列表继续`
+      );
+
+    } finally {
+      if (profileContext) {
+        try {
+          await profileContext.close();
+        } catch {
+          // ignore
+        }
+      }
     }
   }
+
+  return {
+    ok: false,
+    blocked: false,
+    hasSuperLike: null,
+    status: null,
+    url:
+      apiUrl,
+    proxyFailed: true,
+    message:
+      lastError?.message
+      || 'Profile代理切换后仍失败'
+  };
 }
 
 module.exports = {
