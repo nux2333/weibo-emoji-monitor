@@ -1829,10 +1829,29 @@ async function scanOneSuperLikeMonitor(
             }
 
             if (!result.ok) {
+              if (
+                isChaohuaBusy303403(
+                  result
+                )
+              ) {
+                console.log(
+                  `[SuperLike][分区历史暂时繁忙] ${source.name} | 303403 | 保留cursor，本轮跳过该分区。`
+                );
+                break;
+              }
+
+              const fetchError =
+                result.error
+                || result.text
+                || `HTTP ${result.httpStatus ?? '-'}`;
+
               console.log(
-                `[SuperLike][分区历史Resume失败] ${source.name} | HTTP=${result.httpStatus ?? '-'} | 保留cursor，下轮继续。`
+                `[SuperLike][分区历史Resume失败] ${source.name} | page=${params.page ?? '-'} | HTTP=${result.httpStatus ?? '-'} | ${fetchError} | 保留cursor | 切换代理继续`
               );
-              break;
+
+              throw new Error(
+                `ERR_PROXY_CONNECTION_FAILED 历史分区=${source.name} page=${params.page ?? '-'} ${fetchError}`
+              );
             }
 
             pagesScanned++;
@@ -2752,19 +2771,15 @@ async function scanOneSuperLikeMonitor(
             }
 
             /*
-             * 已进入 Resume 后，每处理成功一页就立刻保存“下一页”。
-             * 进程中断或网络失败时，下轮可从未处理页继续。
+             * 每成功处理一页，都先保存“下一页” cursor。
+             * 这样下一页网络失败/超时后，换代理可以准确从未处理页继续。
              */
-            if (
-              phase === 'resume'
-            ) {
-              saveScanSourceResume(
-                monitor.id,
-                source.key,
-                source.flowId,
-                nextParams
-              );
-            }
+            saveScanSourceResume(
+              monitor.id,
+              source.key,
+              source.flowId,
+              nextParams
+            );
 
             /*
              * 首次运行没有旧 checkpoint，无法判断“新增区间”边界。
@@ -2859,11 +2874,22 @@ async function scanOneSuperLikeMonitor(
                 break;
               }
 
+              const fetchError =
+                currentResult.error
+                || currentResult.text
+                || `HTTP ${currentResult.httpStatus ?? '-'}`;
+
               console.log(
-                `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${currentResult.error || currentResult.text || '-'} | Resume已保留`
+                `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${fetchError} | Resume已保存到第${sectionPageIndex + 1}页 | 切换代理继续`
               );
 
-              break;
+              /*
+               * 统一包装成代理连接类错误，让外层淘汰当前代理并重启当前
+               * source worker。因为上一页已经保存 next cursor，不会丢进度。
+               */
+              throw new Error(
+                `ERR_PROXY_CONNECTION_FAILED 分区=${source.name} page=${sectionPageIndex + 1} ${fetchError}`
+              );
             }
 
             if (
@@ -2887,6 +2913,10 @@ async function scanOneSuperLikeMonitor(
 
             if (
               isWeibo418Error(
+                error
+              )
+              ||
+              isProxyConnectionError(
                 error
               )
             ) {
@@ -3198,8 +3228,16 @@ async function scanOneSuperLikeMonitor(
       freshPoolFlushed =
         true;
 
-      stopReason =
-        `Fresh Worker ${SCAN_WORKER_SOURCE} 本轮完成`;
+      if (
+        !stopReason
+        ||
+        /^达到最大/.test(
+          String(stopReason)
+        )
+      ) {
+        stopReason =
+          `Fresh Worker ${SCAN_WORKER_SOURCE} 正常完成`;
+      }
 
       return;
     }
