@@ -2,6 +2,13 @@ const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
+const ROOT =
+  path.join(
+    __dirname,
+    '..',
+    '..'
+  );
+
 const {
   getPostId,
   getUid,
@@ -103,9 +110,7 @@ const WEIBO_LOGIN_STATE_FILE =
         process.env.WEIBO_LOGIN_STATE_FILE
       )
     : path.join(
-        __dirname,
-        '..',
-        '..',
+        ROOT,
         'data',
         'weibo-login-state.json'
       );
@@ -320,8 +325,7 @@ async function saveScanResponseJson(
 
     const dir =
       path.join(
-        __dirname,
-        '..',
+        ROOT,
         'logs',
         'scan-responses',
         dateDir,
@@ -606,8 +610,7 @@ async function scanOneSuperLikeMonitor(
 
   const profileDir =
     path.join(
-      __dirname,
-      '..',
+      ROOT,
       'data',
       `superlike-browser-profile-scan-${workerProfileSuffix}`
     );
