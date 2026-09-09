@@ -1,0 +1,757 @@
+const {
+  createBatchLogger
+} = require('../src/batch-logger');
+
+const batchLogger =
+  createBatchLogger(
+    'refresh-old-superlike-posts'
+  );
+
+const {
+  chromium
+} = require('playwright');
+
+const {
+  db,
+  initDatabase,
+  getSuperLikeMonitors,
+  saveSuperLikeUser
+} = require('../src/db');
+
+const {
+  parseTopicHomepage
+} = require('../src/superlike/monitor-scanner');
+
+const {
+  checkUserSuperLikeByProfile
+} = require('../src/superlike/profile');
+
+const {
+  getPostId,
+  getCommentsCount,
+  getPostCreatedAt,
+  parsePostCreatedAtMs
+} = require('../src/superlike/post-utils');
+
+const {
+  saveTargetPost,
+  deletePostsByUidWithLog
+} = require('../src/superlike/post-save');
+
+const {
+  acquireScanProxyWaiting,
+  SCAN_PROXY_POOL,
+  isProxyConnectionError
+} = require('../src/superlike/proxy');
+
+function getArgValue(
+  name,
+  fallback
+) {
+  const prefix =
+    `--${name}=`;
+
+  const item =
+    process.argv.find(
+      value =>
+        value.startsWith(
+          prefix
+        )
+    );
+
+  if (!item) {
+    return fallback;
+  }
+
+  return item.slice(
+    prefix.length
+  );
+}
+
+const LIMIT =
+  Math.max(
+    1,
+    Number(
+      getArgValue(
+        'limit',
+        process.env.SUPERLIKE_OLD_REFRESH_LIMIT
+        || 100
+      )
+    )
+    || 100
+  );
+
+const PROFILE_DELAY_MS =
+  Math.max(
+    0,
+    Number(
+      getArgValue(
+        'delay-ms',
+        process.env.SUPERLIKE_OLD_REFRESH_DELAY_MS
+        || 300
+      )
+    )
+    || 0
+  );
+
+function sleep(ms) {
+  return new Promise(
+    resolve =>
+      setTimeout(
+        resolve,
+        ms
+      )
+  );
+}
+
+function chinaDateKey(
+  ms
+) {
+  if (
+    !Number.isFinite(
+      Number(ms)
+    )
+  ) {
+    return null;
+  }
+
+  return new Intl.DateTimeFormat(
+    'en-CA',
+    {
+      timeZone:
+        'Asia/Shanghai',
+      year:
+        'numeric',
+      month:
+        '2-digit',
+      day:
+        '2-digit'
+    }
+  ).format(
+    new Date(
+      Number(ms)
+    )
+  );
+}
+
+/*
+ * 主页第一页候选规则：
+ * - 只要评论 <21
+ * - 先选“最新日期”
+ * - 同一天选评论数最多
+ * - 同日同评论数再选发帖时间更晚
+ */
+function pickRefreshCandidate(
+  profilePosts
+) {
+  if (
+    !Array.isArray(
+      profilePosts
+    )
+  ) {
+    return null;
+  }
+
+  const items =
+    profilePosts
+      .map(
+        post => {
+          const comments =
+            getCommentsCount(
+              post
+            );
+
+          const createdAtMs =
+            parsePostCreatedAtMs(
+              post
+            );
+
+          return {
+            post,
+            comments,
+            createdAtMs,
+            dateKey:
+              chinaDateKey(
+                createdAtMs
+              )
+          };
+        }
+      )
+      .filter(
+        item =>
+          item.comments !== null
+          &&
+          item.comments < 21
+          &&
+          Number.isFinite(
+            Number(
+              item.createdAtMs
+            )
+          )
+          &&
+          item.dateKey
+      )
+      .sort(
+        (a, b) => {
+          if (
+            a.dateKey
+            !== b.dateKey
+          ) {
+            return b.dateKey
+              .localeCompare(
+                a.dateKey
+              );
+          }
+
+          if (
+            a.comments
+            !== b.comments
+          ) {
+            return b.comments
+              - a.comments;
+          }
+
+          return Number(
+            b.createdAtMs
+          )
+          - Number(
+            a.createdAtMs
+          );
+        }
+      );
+
+  return items[0]?.post
+    || null;
+}
+
+function getOldUsers(
+  monitorId,
+  limit
+) {
+  /*
+   * first_seen_at 在库里是 UTC；
+   * 两边都 +8h 后，以中国时间“昨天00:00”为边界比较。
+   *
+   * 今天已经成功检查过的 UID 不再重复。
+   */
+  return db.prepare(`
+    SELECT
+      sp.uid,
+      MAX(sp.username) AS username,
+      MIN(sp.first_seen_at) AS oldest_first_seen_at,
+      COUNT(*) AS post_count
+    FROM superlike_posts sp
+    WHERE sp.monitor_id = ?
+      AND sp.uid IS NOT NULL
+      AND TRIM(sp.uid) <> ''
+      AND datetime(
+            sp.first_seen_at,
+            '+8 hours'
+          )
+          <
+          datetime(
+            'now',
+            '+8 hours',
+            'start of day',
+            '-1 day'
+          )
+      AND NOT EXISTS (
+        SELECT 1
+        FROM superlike_old_refresh_state s
+        WHERE s.monitor_id = sp.monitor_id
+          AND s.uid = sp.uid
+          AND s.checked_date =
+              date(
+                'now',
+                '+8 hours'
+              )
+      )
+    GROUP BY sp.uid
+    ORDER BY
+      datetime(
+        MIN(sp.first_seen_at)
+      ) ASC,
+      MIN(sp.id) ASC
+    LIMIT ?
+  `).all(
+    Number(monitorId),
+    Number(limit)
+  );
+}
+
+function markChecked(
+  monitorId,
+  uid,
+  result
+) {
+  db.prepare(`
+    INSERT INTO superlike_old_refresh_state(
+      monitor_id,
+      uid,
+      checked_date,
+      result,
+      checked_at
+    )
+    VALUES(
+      ?,
+      ?,
+      date('now', '+8 hours'),
+      ?,
+      datetime('now', '+8 hours')
+    )
+    ON CONFLICT(
+      monitor_id,
+      uid,
+      checked_date
+    )
+    DO UPDATE SET
+      result =
+        excluded.result,
+      checked_at =
+        excluded.checked_at
+  `).run(
+    Number(monitorId),
+    String(uid),
+    String(result || 'UNKNOWN')
+  );
+}
+
+async function openBrowser() {
+  const assignment =
+    await acquireScanProxyWaiting();
+
+  const proxy =
+    assignment?.proxy
+    || null;
+
+  console.log(
+    proxy
+      ? `[OldRefresh] 使用健康代理：${assignment.masked}`
+      : '[OldRefresh] 当前使用本地IP'
+  );
+
+  const browser =
+    await chromium.launch({
+      headless: true,
+      ...(proxy
+        ? {
+            proxy
+          }
+        : {})
+    });
+
+  const context =
+    await browser.newContext({
+      viewport: {
+        width: 1280,
+        height: 900
+      }
+    });
+
+  return {
+    browser,
+    context,
+    assignment
+  };
+}
+
+async function runMonitor(
+  monitor
+) {
+  const config =
+    parseTopicHomepage(
+      monitor.url
+    );
+
+  const users =
+    getOldUsers(
+      monitor.id,
+      LIMIT
+    );
+
+  console.log('');
+  console.log(
+    '=============================================='
+  );
+  console.log(
+    `[OldRefresh] Monitor=${monitor.name} | 本轮待检查=${users.length} | limit=${LIMIT}`
+  );
+  console.log(
+    '[OldRefresh] 筛选条件：first_seen_at < 中国时间昨天00:00'
+  );
+  console.log(
+    '=============================================='
+  );
+
+  if (
+    users.length === 0
+  ) {
+    return {
+      checked: 0,
+      superLike: 0,
+      replaced: 0,
+      kept: 0,
+      noCandidate: 0,
+      failed: 0
+    };
+  }
+
+  let state =
+    await openBrowser();
+
+  const summary = {
+    checked: 0,
+    superLike: 0,
+    replaced: 0,
+    inserted: 0,
+    kept: 0,
+    noCandidate: 0,
+    failed: 0
+  };
+
+  try {
+    for (
+      let index = 0;
+      index < users.length;
+      index++
+    ) {
+      const user =
+        users[index];
+
+      const uid =
+        String(
+          user.uid
+        );
+
+      console.log('');
+      console.log(
+        `[OldRefresh ${index + 1}/${users.length}] UID=${uid} | 用户=${user.username || '-'} | first_seen_at=${user.oldest_first_seen_at || '-'} | 旧帖=${user.post_count}`
+      );
+
+      let profileResult;
+
+      try {
+        profileResult =
+          await checkUserSuperLikeByProfile(
+            state.context,
+            config,
+            uid
+          );
+
+      } catch (error) {
+        if (
+          state.assignment?.raw
+          &&
+          isProxyConnectionError(
+            error
+          )
+        ) {
+          console.log(
+            `[OldRefresh][代理失败] UID=${uid} | ${error.message} | 淘汰当前代理并换代理`
+          );
+
+          try {
+            SCAN_PROXY_POOL.remove(
+              state.assignment.raw
+            );
+          } catch {
+            // ignore
+          }
+
+          try {
+            await state.context.close();
+          } catch {
+            // ignore
+          }
+
+          try {
+            await state.browser.close();
+          } catch {
+            // ignore
+          }
+
+          state =
+            await openBrowser();
+
+          index--;
+          continue;
+        }
+
+        throw error;
+      }
+
+      if (
+        !profileResult?.ok
+      ) {
+        summary.failed++;
+
+        console.log(
+          `[OldRefresh][Profile失败] UID=${uid} | ${profileResult?.message || '-'} | 今天不标记已检查，下次可重试`
+        );
+
+        if (
+          PROFILE_DELAY_MS > 0
+        ) {
+          await sleep(
+            PROFILE_DELAY_MS
+          );
+        }
+
+        continue;
+      }
+
+      summary.checked++;
+
+      if (
+        profileResult.hasSuperLike
+      ) {
+        saveSuperLikeUser(
+          monitor.id,
+          uid
+        );
+
+        const deleted =
+          deletePostsByUidWithLog(
+            uid,
+            'SUPERLIKE_OLD_REFRESH'
+          );
+
+        markChecked(
+          monitor.id,
+          uid,
+          'SUPERLIKE'
+        );
+
+        summary.superLike++;
+
+        console.log(
+          `[OldRefresh][已超LIKE] UID=${uid} | 删除旧候选=${deleted}`
+        );
+
+        if (
+          PROFILE_DELAY_MS > 0
+        ) {
+          await sleep(
+            PROFILE_DELAY_MS
+          );
+        }
+
+        continue;
+      }
+
+      const targetPost =
+        pickRefreshCandidate(
+          profileResult.profilePosts
+        );
+
+      if (!targetPost) {
+        markChecked(
+          monitor.id,
+          uid,
+          'NO_CANDIDATE'
+        );
+
+        summary.noCandidate++;
+
+        console.log(
+          `[OldRefresh][无新候选] UID=${uid} | 主页第一页没有评论<21的帖子 | 保留旧记录`
+        );
+
+        if (
+          PROFILE_DELAY_MS > 0
+        ) {
+          await sleep(
+            PROFILE_DELAY_MS
+          );
+        }
+
+        continue;
+      }
+
+      const targetPostId =
+        getPostId(
+          targetPost
+        );
+
+      const saved =
+        saveTargetPost(
+          monitor.id,
+          targetPost,
+          'NO_SUPERLIKE'
+        );
+
+      markChecked(
+        monitor.id,
+        uid,
+        saved.status
+      );
+
+      if (
+        saved.status ===
+        'replaced'
+      ) {
+        summary.replaced++;
+
+        console.log(
+          `[OldRefresh][换新帖] UID=${uid} | Post=${targetPostId} | 评论=${getCommentsCount(targetPost)} | 时间=${getPostCreatedAt(targetPost) || '-'} | first_seen_at已重新生成`
+        );
+
+      } else if (
+        saved.status ===
+        'inserted'
+      ) {
+        summary.inserted++;
+
+        console.log(
+          `[OldRefresh][新入库] UID=${uid} | Post=${targetPostId} | 评论=${getCommentsCount(targetPost)} | 时间=${getPostCreatedAt(targetPost) || '-'}`
+        );
+
+      } else {
+        summary.kept++;
+
+        console.log(
+          `[OldRefresh][保留旧帖] UID=${uid} | Profile候选Post=${targetPostId} | saveStatus=${saved.status}`
+        );
+      }
+
+      if (
+        PROFILE_DELAY_MS > 0
+      ) {
+        await sleep(
+          PROFILE_DELAY_MS
+        );
+      }
+    }
+
+  } finally {
+    try {
+      await state.context.close();
+    } catch {
+      // ignore
+    }
+
+    try {
+      await state.browser.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  return summary;
+}
+
+async function main() {
+  initDatabase();
+
+  const monitors =
+    getSuperLikeMonitors();
+
+  console.log('');
+  console.log(
+    '################################################'
+  );
+  console.log(
+    '# Old SuperLike Candidate Refresh'
+  );
+  console.log(
+    `# 每个Monitor本轮最多 ${LIMIT} UID`
+  );
+  console.log(
+    '# 老数据边界：first_seen_at < 中国时间昨天00:00'
+  );
+  console.log(
+    '# 主页：只看第一页'
+  );
+  console.log(
+    '# 候选：评论<21；最新日期优先，同日评论最多优先'
+  );
+  console.log(
+    '# 换帖：沿用 DELETE + INSERT，因此 first_seen_at 重置为今天'
+  );
+  console.log(
+    '################################################'
+  );
+
+  const total = {
+    checked: 0,
+    superLike: 0,
+    replaced: 0,
+    inserted: 0,
+    kept: 0,
+    noCandidate: 0,
+    failed: 0
+  };
+
+  for (
+    const monitor
+    of monitors
+  ) {
+    const result =
+      await runMonitor(
+        monitor
+      );
+
+    for (
+      const key
+      of Object.keys(
+        total
+      )
+    ) {
+      total[key] +=
+        Number(
+          result[key]
+          || 0
+        );
+    }
+  }
+
+  console.log('');
+  console.log(
+    '================ OldRefresh 结果 ================'
+  );
+  console.log(
+    `成功检查：${total.checked}`
+  );
+  console.log(
+    `已超LIKE删除：${total.superLike}`
+  );
+  console.log(
+    `换成新帖：${total.replaced}`
+  );
+  console.log(
+    `新入库：${total.inserted}`
+  );
+  console.log(
+    `保留旧帖：${total.kept}`
+  );
+  console.log(
+    `主页无候选：${total.noCandidate}`
+  );
+  console.log(
+    `Profile失败：${total.failed}`
+  );
+  console.log(
+    '==================================================='
+  );
+}
+
+main()
+  .catch(
+    error => {
+      console.error(
+        '[OldRefresh] 致命错误：',
+        error
+      );
+
+      process.exitCode = 1;
+    }
+  )
+  .finally(
+    async () => {
+      try {
+        await batchLogger.close();
+      } catch {
+        // ignore
+      }
+    }
+  );
