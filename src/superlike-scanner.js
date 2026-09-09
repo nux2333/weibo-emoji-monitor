@@ -296,6 +296,122 @@ const SCAN_PROFILE_CACHE_MINUTES =
 
 let running = false;
 
+/*
+ * 4个 Fresh / History worker 各自使用独立 persistent profile，
+ * 但 JYZ 需要继承原先已登录的主浏览器状态。
+ *
+ * 每个 worker 进程启动后第一次扫描前：
+ * - 以 data/superlike-browser-profile-scan 为模板
+ * - 完整复制到该 worker 自己的 profile
+ * - 排除 Chromium 的 Singleton* 运行锁文件
+ *
+ * 每个进程只同步一次，后续轮次继续复用自己的 persistent profile。
+ */
+const SEEDED_WORKER_PROFILES =
+  new Set();
+
+function seedWorkerProfileFromMain(
+  workerProfileDir
+) {
+  const resolvedWorker =
+    path.resolve(
+      workerProfileDir
+    );
+
+  if (
+    SEEDED_WORKER_PROFILES.has(
+      resolvedWorker
+    )
+  ) {
+    return;
+  }
+
+  const mainProfileDir =
+    path.join(
+      __dirname,
+      '..',
+      'data',
+      'superlike-browser-profile-scan'
+    );
+
+  if (
+    !fs.existsSync(
+      mainProfileDir
+    )
+  ) {
+    console.log(
+      '[SuperLike][登录Profile] 老主浏览器Profile不存在，跳过同步：'
+      + mainProfileDir
+    );
+
+    SEEDED_WORKER_PROFILES.add(
+      resolvedWorker
+    );
+
+    return;
+  }
+
+  try {
+    fs.rmSync(
+      workerProfileDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    fs.mkdirSync(
+      path.dirname(
+        workerProfileDir
+      ),
+      {
+        recursive: true
+      }
+    );
+
+    fs.cpSync(
+      mainProfileDir,
+      workerProfileDir,
+      {
+        recursive: true,
+        force: true,
+        filter:
+          source => {
+            const name =
+              path.basename(
+                source
+              );
+
+            return (
+              !name.startsWith(
+                'Singleton'
+              )
+              &&
+              name !== 'DevToolsActivePort'
+            );
+          }
+      }
+    );
+
+    SEEDED_WORKER_PROFILES.add(
+      resolvedWorker
+    );
+
+    console.log(
+      '[SuperLike][登录Profile] 已从老主Profile同步登录态到 worker：'
+      + path.basename(
+          workerProfileDir
+        )
+    );
+
+  } catch (error) {
+    console.log(
+      '[SuperLike][登录Profile] 同步失败：'
+      + error.message
+    );
+  }
+}
+
 const SCAN_PROXY_POOL =
   new ProxyPool({
     /*
@@ -4291,6 +4407,10 @@ async function scanOneSuperLikeMonitor(
       'data',
       `superlike-browser-profile-scan-${workerProfileSuffix}`
     );
+
+  seedWorkerProfileFromMain(
+    profileDir
+  );
 
   let browser = null;
   let scanVisitorContext = null;
