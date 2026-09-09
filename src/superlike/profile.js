@@ -12,6 +12,9 @@ const {
 
 const SCAN_PROFILE_HARD_TIMEOUT_MS = 15000;
 
+// 每个 Browser 维护一个可复用的 Profile 专用代理 Context。
+const PROFILE_PROXY_STATES = new WeakMap();
+
 function buildProfileInPageApiUrl(
   config,
   uid
@@ -854,76 +857,175 @@ async function checkUserSuperLikeByProfile(
       uid
     );
 
-  /*
-   * Profile 失败不能再中断 Fresh 列表扫描。
-   *
-   * 第一次：优先使用当前 Monitor 共享游客 Context。
-   * 如果确认是代理/网络错误：
-   *   - 不向上抛；
-   *   - 从健康代理池取新的代理；
-   *   - 创建仅供当前 Profile 使用的独立 BrowserContext；
-   *   - 最多切换 2 个 Profile 代理重试。
-   *
-   * 最终仍失败则 fail-open，调用方继续处理帖子和翻页。
-   */
   const PROFILE_PROXY_SWITCH_ATTEMPTS =
     Math.max(
       1,
       Number(
         process.env.SUPERLIKE_PROFILE_PROXY_SWITCH_ATTEMPTS
       )
-      || 2
+      || 3
     );
 
-  let firstAttemptError = null;
+  const parentBrowser =
+    context?.browser?.();
 
-  try {
-    const firstResult =
-      await checkUserSuperLikeByProfileInner(
+  let state = null;
+
+  if (
+    parentBrowser
+    &&
+    typeof parentBrowser.newContext
+      === 'function'
+  ) {
+    state =
+      PROFILE_PROXY_STATES.get(
+        parentBrowser
+      )
+      || {
+        forceDedicated: false,
+        context: null,
+        assignment: null
+      };
+
+    PROFILE_PROXY_STATES.set(
+      parentBrowser,
+      state
+    );
+  }
+
+  async function discardDedicatedProxy(
+    error = null
+  ) {
+    if (
+      state?.assignment?.raw
+      &&
+      (
+        !error
+        ||
+        isProxyConnectionError(
+          error
+        )
+      )
+    ) {
+      try {
+        SCAN_PROXY_POOL.markBlocked(
+          state.assignment.raw
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    if (state?.context) {
+      try {
+        await state.context.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    if (state) {
+      state.context = null;
+      state.assignment = null;
+    }
+  }
+
+  /*
+   * 已经切换过 Profile 专用代理时，后续 UID 直接复用。
+   * 不再先碰已知坏掉的原共享 Profile Context。
+   */
+  if (
+    state?.context
+    &&
+    !state.context._closed
+  ) {
+    try {
+      return await checkUserSuperLikeByProfileInner(
+        context,
+        config,
+        uid,
+        state.context
+      );
+
+    } catch (error) {
+      if (
+        !isProxyConnectionError(
+          error
+        )
+      ) {
+        return {
+          ok: false,
+          blocked: false,
+          hasSuperLike: null,
+          status: null,
+          url:
+            apiUrl,
+          message:
+            error?.message
+            || String(error)
+        };
+      }
+
+      console.log(
+        `[SuperLike][Profile代理失效] UID=${uid} 当前Profile专用代理 ${state.assignment?.masked || '-'} 已不可用，立即切换。`
+      );
+
+      await discardDedicatedProxy(
+        error
+      );
+
+      state.forceDedicated =
+        true;
+    }
+  }
+
+  /*
+   * 还没有确认原 Profile 代理失效时，先使用原共享游客 Context。
+   * 一旦出现明确代理/网络错误，本 Browser 后续 UID 永久跳过它，
+   * 直接走 Profile 专用代理。
+   */
+  if (
+    !state?.forceDedicated
+  ) {
+    try {
+      return await checkUserSuperLikeByProfileInner(
         context,
         config,
         uid,
         reusableProfileContext
       );
 
-    return firstResult;
+    } catch (error) {
+      if (
+        !isProxyConnectionError(
+          error
+        )
+      ) {
+        return {
+          ok: false,
+          blocked: false,
+          hasSuperLike: null,
+          status: null,
+          url:
+            apiUrl,
+          message:
+            error?.message
+            || String(error)
+        };
+      }
 
-  } catch (error) {
-    if (
-      !isProxyConnectionError(
-        error
-      )
-    ) {
-      return {
-        ok: false,
-        blocked: false,
-        hasSuperLike: null,
-        status: null,
-        url:
-          apiUrl,
-        message:
-          error?.message
-          || String(error)
-      };
+      if (state) {
+        state.forceDedicated =
+          true;
+      }
+
+      console.log(
+        `[SuperLike][Profile代理失效] UID=${uid} 原Profile代理已确认不可用；立即切新代理，后续UID不再使用该代理。`
+      );
     }
-
-    firstAttemptError =
-      error;
-
-    console.log(
-      `[SuperLike][Profile代理切换] UID=${uid} 当前Profile代理失败；Fresh列表继续，不中断分区。开始尝试独立Profile代理。`
-    );
   }
 
-  const parentBrowser =
-    context?.browser?.();
-
-  if (
-    !parentBrowser
-    ||
-    typeof parentBrowser.newContext
-      !== 'function'
-  ) {
+  if (!state) {
     return {
       ok: false,
       blocked: false,
@@ -933,13 +1035,11 @@ async function checkUserSuperLikeByProfile(
         apiUrl,
       proxyFailed: true,
       message:
-        firstAttemptError?.message
-        || 'Profile代理失败，且无法创建独立Profile Context'
+        'Profile代理失败，且无法创建独立Profile Context'
     };
   }
 
-  let lastError =
-    firstAttemptError;
+  let lastError = null;
 
   for (
     let switchAttempt = 1;
@@ -947,7 +1047,7 @@ async function checkUserSuperLikeByProfile(
     switchAttempt++
   ) {
     let assignment = null;
-    let profileContext = null;
+    let newContext = null;
 
     try {
       assignment =
@@ -959,17 +1059,17 @@ async function checkUserSuperLikeByProfile(
         assignment.allCoolingDown
       ) {
         console.log(
-          `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次没有可用健康代理，fail-open继续Fresh。`
+          `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次暂无可用健康代理。`
         );
 
-        break;
+        continue;
       }
 
       console.log(
-        `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次使用 ${assignment.masked || '新代理'}`
+        `[SuperLike][Profile代理切换] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次切换到 ${assignment.masked || '新代理'}`
       );
 
-      profileContext =
+      newContext =
         await parentBrowser.newContext({
           proxy:
             assignment.proxy,
@@ -984,11 +1084,27 @@ async function checkUserSuperLikeByProfile(
           context,
           config,
           uid,
-          profileContext
+          newContext
         );
 
+      /*
+       * 新代理能完成 Profile 请求（即使业务结果是403/HTML等非网络错误），
+       * 都说明网络链路可用。保存 Context 给后续 UID 复用。
+       */
+      state.context =
+        newContext;
+
+      state.assignment =
+        assignment;
+
+      state.forceDedicated =
+        true;
+
+      newContext =
+        null;
+
       console.log(
-        `[SuperLike][Profile代理切换成功] UID=${uid} | ${assignment.masked || '新代理'}`
+        `[SuperLike][Profile代理切换成功] UID=${uid} | 当前Profile专用代理=${assignment.masked || '新代理'} | 后续UID复用`
       );
 
       return result;
@@ -1005,28 +1121,22 @@ async function checkUserSuperLikeByProfile(
         )
       ) {
         try {
-          SCAN_PROXY_POOL.markFailed(
+          SCAN_PROXY_POOL.markBlocked(
             assignment.raw
           );
         } catch {
-          try {
-            SCAN_PROXY_POOL.markBlocked(
-              assignment.raw
-            );
-          } catch {
-            // ignore
-          }
+          // ignore
         }
       }
 
       console.log(
-        `[SuperLike][Profile代理切换失败] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次失败 | ${error?.message || error} | Fresh列表继续`
+        `[SuperLike][Profile代理切换失败] UID=${uid} 第${switchAttempt}/${PROFILE_PROXY_SWITCH_ATTEMPTS}次失败 | ${error?.message || error} | 继续换下一个代理`
       );
 
     } finally {
-      if (profileContext) {
+      if (newContext) {
         try {
-          await profileContext.close();
+          await newContext.close();
         } catch {
           // ignore
         }
@@ -1034,6 +1144,11 @@ async function checkUserSuperLikeByProfile(
     }
   }
 
+  /*
+   * 只有连续尝试多个 Profile 专用代理都失败/暂无代理时，
+   * 当前 UID 才 fail-open。state.forceDedicated 会继续保留，
+   * 所以下一个 UID 会直接重新尝试新代理，不会回到已知坏代理。
+   */
   return {
     ok: false,
     blocked: false,
@@ -1044,7 +1159,7 @@ async function checkUserSuperLikeByProfile(
     proxyFailed: true,
     message:
       lastError?.message
-      || 'Profile代理切换后仍失败'
+      || '当前没有可用Profile代理；本UID fail-open，下一UID继续切换代理'
   };
 }
 
