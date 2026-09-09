@@ -34,6 +34,20 @@
   </section>
 
   <section class="card">
+    <div class="section-title">
+      <div>
+        <h2>脚本状态</h2>
+        <div class="muted">远程管理 Fresh / History / Mode4 / JYZ / 代理池</div>
+      </div>
+      <div class="actions">
+        <button class="button" onclick="loadScripts()">刷新</button>
+        <a class="button" href="/scripts">完整脚本管理</a>
+      </div>
+    </div>
+    <div id="scriptList">加载中...</div>
+  </section>
+
+  <section class="card">
     <div class="section-title"><h2>Monitor 列表</h2><button class="button" onclick="loadMonitors()">刷新</button></div>
     <div id="list">加载中...</div>
   </section>
@@ -77,7 +91,56 @@ async function toggle(id,current){
   try{const j=await api('/api/admin/monitors');const m=j.data.find(x=>x.id===id);await api(`/api/admin/monitors/${id}`,{method:'PUT',body:JSON.stringify({...m,enabled:!current})});loadMonitors();}catch(e){alert(e.message);}
 }
 async function removeMonitor(id){if(!confirm('确定删除？历史 comments、stats、responses 也会删除。'))return;try{await api(`/api/admin/monitors/${id}`,{method:'DELETE'});loadMonitors();}catch(e){alert(e.message);}}
+
+function scriptStatus(status){
+  if(status==='online')return ['运行中','ok'];
+  if(status==='stopped')return ['已停止','muted'];
+  if(status==='errored')return ['异常','bad'];
+  if(status==='launching')return ['启动中','warn'];
+  if(status==='not_created')return ['未创建','muted'];
+  return [status||'未知','warn'];
+}
+
+async function loadScripts(){
+  try{
+    const j=await api('/api/admin/scripts');
+    $('scriptList').innerHTML=(j.data||[]).map(item=>{
+      const st=scriptStatus(item.status);
+      const running=item.status==='online'||item.status==='launching';
+      return `<div class="process-row">
+        <div class="process-main">
+          <div class="process-name">
+            <strong>${esc(item.name)}</strong>
+            <span class="status ${st[1]}">${esc(st[0])}</span>
+          </div>
+          <div class="process-meta">
+            <span>${esc(item.description||'')}</span>
+            <span>PID: ${item.pid??'-'}</span>
+            <span>重启: ${Number(item.restartCount||0)}</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="button primary" ${running?'disabled':''} onclick="scriptAct('${esc(item.key)}','start')">启动</button>
+          <button class="button" ${!running?'disabled':''} onclick="scriptAct('${esc(item.key)}','stop')">停止</button>
+          <button class="button" onclick="scriptAct('${esc(item.key)}','restart')">重启</button>
+        </div>
+      </div>`;
+    }).join('')||'<div class="empty">暂无脚本配置</div>';
+  }catch(e){
+    $('scriptList').innerHTML=`<div class="error">${esc(e.message)}</div>`;
+  }
+}
+
+async function scriptAct(key,action){
+  try{
+    await api('/api/admin/scripts/'+encodeURIComponent(key)+'/'+action,{method:'POST'});
+    setTimeout(loadScripts,700);
+  }catch(e){alert(e.message);}
+}
+
+loadScripts();
 loadMonitors();
+setInterval(loadScripts,10000);
 </script>
 </body>
 </html>
