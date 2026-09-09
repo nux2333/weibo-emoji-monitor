@@ -86,6 +86,8 @@ const {
   clearScanResume,
   getScanSourceCheckpoint,
   saveScanSourceCheckpoint,
+  getScanSuccessState,
+  saveScanSuccessState,
   getScanSourceResume,
   saveScanSourceResume,
   clearScanSourceResume,
@@ -324,6 +326,82 @@ function formatChinaCutoff(ms) {
     new Date(ms)
   );
 }
+
+const CATCHUP_INITIAL_OVERLAP_MS =
+  30 * 60 * 1000;
+
+function buildCatchupCheckpoint(
+  monitorId,
+  sourceKey,
+  checkpoint
+) {
+  if (!checkpoint) {
+    return null;
+  }
+
+  const successState =
+    getScanSuccessState(
+      monitorId,
+      sourceKey
+    );
+
+  const checkpointMs =
+    Number(
+      checkpoint.latest_created_at_ms
+    );
+
+  let boundaryMs =
+    Number(
+      successState?.last_successful_scan_at_ms
+    );
+
+  let source =
+    'last_successful_scan_at';
+
+  if (
+    !Number.isFinite(
+      boundaryMs
+    )
+  ) {
+    boundaryMs =
+      Number.isFinite(
+        checkpointMs
+      )
+        ? checkpointMs
+          - CATCHUP_INITIAL_OVERLAP_MS
+        : NaN;
+
+    source =
+      'checkpoint-30min';
+  }
+
+  if (
+    !Number.isFinite(
+      boundaryMs
+    )
+  ) {
+    return checkpoint;
+  }
+
+  console.log(
+    `[SuperLike][Catch-up] source=${sourceKey} | 边界=${formatChinaCutoff(boundaryMs)} | 来源=${source} | 每10页入库一次`
+  );
+
+  return {
+    ...checkpoint,
+    /*
+     * Catch-up 以时间为主，不依赖旧 post_id 必须再次出现。
+     */
+    latest_post_id: null,
+    latest_created_at_ms:
+      boundaryMs,
+    latest_created_at:
+      formatChinaCutoff(
+        boundaryMs
+      )
+  };
+}
+
 
 const SCAN_PROFILE_CONCURRENCY =
   Math.max(
@@ -870,6 +948,19 @@ async function scanOneSuperLikeMonitor(
       monitor.id
     );
 
+  const freshCheckpoint =
+    SCAN_WORKER_MODE === 'fresh'
+      && (
+        !SCAN_WORKER_SOURCE
+        || SCAN_WORKER_SOURCE === 'latest-posts'
+      )
+      ? buildCatchupCheckpoint(
+          monitor.id,
+          'latest-posts',
+          checkpoint
+        )
+      : checkpoint;
+
   const storedResume =
     getScanResume(
       monitor.id
@@ -966,7 +1057,7 @@ async function scanOneSuperLikeMonitor(
 
     console.log(
       checkpoint
-        ? `[SuperLike] 上次Checkpoint：${checkpoint.latest_created_at || '-'} / ${checkpoint.latest_post_id || '-'}`
+        ? `[SuperLike] 上次Checkpoint：${freshCheckpoint.latest_created_at || '-'} / ${checkpoint.latest_post_id || '-'}`
         : '[SuperLike] 上次Checkpoint：无（首次运行）'
     );
 
@@ -2406,6 +2497,15 @@ async function scanOneSuperLikeMonitor(
               source.key
             );
 
+          const freshSourceCheckpoint =
+            SCAN_WORKER_MODE === 'fresh'
+              ? buildCatchupCheckpoint(
+                  monitor.id,
+                  source.key,
+                  sourceCheckpoint
+                )
+              : sourceCheckpoint;
+
           let newestSourceThisRound =
             null;
 
@@ -2433,7 +2533,7 @@ async function scanOneSuperLikeMonitor(
 
           console.log(
             sourceCheckpoint
-              ? `[SuperLike][分区Fresh] ${source.name} 上轮时间checkpoint=${sourceCheckpoint.latest_created_at || '-'}；PostID=${sourceCheckpoint.latest_post_id}仅作辅助，连续4个完整旧页即停止。`
+              ? `[SuperLike][分区Fresh] ${source.name} 上轮时间checkpoint=${freshSourceCheckpoint.latest_created_at || '-'}；PostID=${freshSourceCheckpoint.latest_post_id}仅作辅助，连续4个完整旧页即停止。`
               : `[SuperLike][分区Fresh] ${source.name} 首次运行；先扫描 ${freshFirstPages} 页建立checkpoint，历史由Resume继续补。`
           );
 
@@ -2508,7 +2608,7 @@ async function scanOneSuperLikeMonitor(
               collectFreshPage(
                 currentResult.json,
                 source.key,
-                sourceCheckpoint
+                freshSourceCheckpoint
               );
 
             freshSourcePages[source.key] =
@@ -2535,7 +2635,7 @@ async function scanOneSuperLikeMonitor(
                 sectionStats.newestSeen;
             }
 
-            if (sourceCheckpoint) {
+            if (freshSourceCheckpoint) {
               if (sectionStats.checkpointReached) {
                 if (newestSourceThisRound) {
                   saveScanSourceCheckpoint(
@@ -2545,10 +2645,16 @@ async function scanOneSuperLikeMonitor(
                     newestSourceThisRound.createdAt,
                     newestSourceThisRound.createdAtMs
                   );
+
+                  saveScanSuccessState(
+                    monitor.id,
+                    source.key,
+                    Date.now()
+                  );
                 }
 
                 console.log(
-                  `[SuperLike][分区Checkpoint] ${source.name} 辅助PostID命中 ${sourceCheckpoint.latest_post_id}；Fresh停止，新checkpoint=${newestSourceThisRound?.postId || '-'}。`
+                  `[SuperLike][分区Checkpoint] ${source.name} 辅助PostID命中 ${freshSourceCheckpoint.latest_post_id}；Fresh停止，新checkpoint=${newestSourceThisRound?.postId || '-'}。`
                 );
 
                 break;
@@ -2562,7 +2668,7 @@ async function scanOneSuperLikeMonitor(
                 sourceOldTimePageStreak++;
 
                 console.log(
-                  `[SuperLike][分区时间Checkpoint] ${source.name} 第${sectionPageIndex}页${sectionStats.pageHasNoPosts ? '为空页' : `全部 <= ${sourceCheckpoint.latest_created_at || '-'}`}；连续旧页=${sourceOldTimePageStreak}/4`
+                  `[SuperLike][分区时间Checkpoint] ${source.name} 第${sectionPageIndex}页${sectionStats.pageHasNoPosts ? '为空页' : `全部 <= ${freshSourceCheckpoint.latest_created_at || '-'}`}；连续旧页=${sourceOldTimePageStreak}/4`
                 );
               } else {
                 if (sourceOldTimePageStreak > 0) {
@@ -2583,10 +2689,16 @@ async function scanOneSuperLikeMonitor(
                     newestSourceThisRound.createdAt,
                     newestSourceThisRound.createdAtMs
                   );
+
+                  saveScanSuccessState(
+                    monitor.id,
+                    source.key,
+                    Date.now()
+                  );
                 }
 
                 console.log(
-                  `[SuperLike][分区时间Checkpoint] ${source.name} 连续4页已跨过上一轮时间边界 ${sourceCheckpoint.latest_created_at || '-'}；Fresh停止，新checkpoint=${newestSourceThisRound?.createdAt || '-'} / ${newestSourceThisRound?.postId || '-'}。`
+                  `[SuperLike][分区时间Checkpoint] ${source.name} 连续4页已跨过上一轮时间边界 ${freshSourceCheckpoint.latest_created_at || '-'}；Fresh停止，新checkpoint=${newestSourceThisRound?.createdAt || '-'} / ${newestSourceThisRound?.postId || '-'}。`
                 );
 
                 break;
@@ -3118,7 +3230,7 @@ async function scanOneSuperLikeMonitor(
           ? collectFreshPage(
               current.json,
               'latest-posts',
-              checkpoint
+              freshCheckpoint
             )
           : await processPagePosts(
               monitor.id,
@@ -3225,7 +3337,7 @@ async function scanOneSuperLikeMonitor(
       }
 
 
-      if (checkpoint) {
+      if (freshCheckpoint) {
         const safeOldBoundaryPage =
           pageStats.pageFullyAtOrBeforeCheckpoint
           || pageStats.pageHasNoPosts;
@@ -3236,12 +3348,12 @@ async function scanOneSuperLikeMonitor(
           console.log(
             pageStats.pageHasNoPosts
               ? `[SuperLike][时间Checkpoint] 第${pageNumber}页为空页，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
-              : `[SuperLike][时间Checkpoint] 第${pageNumber}页全部 <= ${checkpoint.latest_created_at || '-'}，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
+              : `[SuperLike][时间Checkpoint] 第${pageNumber}页全部 <= ${freshCheckpoint.latest_created_at || '-'}，连续旧页=${consecutiveOldCheckpointPages}/${CHECKPOINT_OLD_PAGE_THRESHOLD}`
           );
         } else {
           if (consecutiveOldCheckpointPages > 0) {
             console.log(
-              `[SuperLike][时间Checkpoint] 第${pageNumber}页仍有 > ${checkpoint.latest_created_at || '-'} 的帖子，连续旧页 ${consecutiveOldCheckpointPages} -> 0`
+              `[SuperLike][时间Checkpoint] 第${pageNumber}页仍有 > ${freshCheckpoint.latest_created_at || '-'} 的帖子，连续旧页 ${consecutiveOldCheckpointPages} -> 0`
             );
           }
 
@@ -3256,7 +3368,7 @@ async function scanOneSuperLikeMonitor(
             `连续 ${CHECKPOINT_OLD_PAGE_THRESHOLD} 页均为空页或整页 <= checkpoint 时间`;
 
           console.log(
-            `[SuperLike][时间Checkpoint] 已安全跨过上一轮时间边界：${checkpoint.latest_created_at || '-'}；${stopReason}，停止Fresh。`
+            `[SuperLike][时间Checkpoint] 已安全跨过上一轮时间边界：${freshCheckpoint.latest_created_at || '-'}；${stopReason}，停止Fresh。`
           );
 
           checkpointSafeToAdvance =
@@ -3857,6 +3969,12 @@ async function scanOneSuperLikeMonitor(
           newestThisRound.postId,
           newestThisRound.createdAt,
           newestThisRound.createdAtMs
+        );
+
+        saveScanSuccessState(
+          monitor.id,
+          'latest-posts',
+          Date.now()
         );
 
         console.log(
