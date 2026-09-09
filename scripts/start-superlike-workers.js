@@ -16,31 +16,45 @@ const SCANNER =
     'superlike-scanner.js'
   );
 
+const WORKER_STAGGER_MS =
+  Math.max(
+    0,
+    Number(
+      process.env.SUPERLIKE_WORKER_STAGGER_MS
+    )
+    || 3000
+  );
+
 const workers = [
   {
     label: 'fresh-latest',
     mode: 'fresh',
-    source: 'latest-posts'
+    source: 'latest-posts',
+    startDelayMs: 0
   },
   {
     label: 'fresh-superlike',
     mode: 'fresh',
-    source: 'section-superlike'
+    source: 'section-superlike',
+    startDelayMs: WORKER_STAGGER_MS
   },
   {
     label: 'fresh-yishanshui',
     mode: 'fresh',
-    source: 'section-yishanshui'
+    source: 'section-yishanshui',
+    startDelayMs: WORKER_STAGGER_MS * 2
   },
   {
     label: 'fresh-qa',
     mode: 'fresh',
-    source: 'section-qa'
+    source: 'section-qa',
+    startDelayMs: WORKER_STAGGER_MS * 3
   },
   {
     label: 'history',
     mode: 'history',
-    source: ''
+    source: '',
+    startDelayMs: WORKER_STAGGER_MS * 4
   }
 ];
 
@@ -201,6 +215,9 @@ console.log(
   '# Fresh: latest / superlike / yishanshui / qa'
 );
 console.log(
+  `# Fresh错峰：每个来源间隔 ${WORKER_STAGGER_MS / 1000} 秒；History最后启动`
+);
+console.log(
   '# History: 1 worker'
 );
 console.log(
@@ -224,7 +241,28 @@ for (
   const spec
   of workers
 ) {
-  startWorker(
-    spec
+  const delayMs =
+    Number(
+      spec.startDelayMs
+      || 0
+    );
+
+  if (delayMs <= 0) {
+    startWorker(
+      spec
+    );
+    continue;
+  }
+
+  console.log(
+    `[SuperLikeWorkers] ${spec.label} 错峰等待 ${Math.round(delayMs / 1000)} 秒后启动`
+  );
+
+  setTimeout(
+    () =>
+      startWorker(
+        spec
+      ),
+    delayMs
   );
 }
