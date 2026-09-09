@@ -3111,12 +3111,17 @@ async function runLightSuperLikeRecheck(signal = null) {
   let proxyAssignment = null;
   let proxyFailureCount = 0;
 
+  /*
+   * Mode3 必须使用独立 Persistent Profile。
+   * Mode4 会长期占用 superlike-browser-profile-scan 作为登录窗口；
+   * 两个 Chromium 同时占用同一 user-data-dir 会让后启动者立即退出。
+   */
   const profileDir =
     path.join(
       __dirname,
       '..',
       'data',
-      'superlike-browser-profile-scan'
+      'superlike-browser-profile-mode3'
     );
 
   const onAbort = () => {
@@ -3131,10 +3136,6 @@ async function runLightSuperLikeRecheck(signal = null) {
       onAbort,
       { once: true }
     );
-  }
-
-  async function launchVisibleContext() {
-    await launchVisibleContext();
   }
 
   async function closeCurrentContext() {
@@ -3167,8 +3168,9 @@ async function runLightSuperLikeRecheck(signal = null) {
       require('playwright');
 
     /*
-     * 使用和 SuperLike 扫描一致的持久化 Profile。
-     * 这样可以复用已经建立好的微博 visitor/session。
+     * Mode3 使用自己独立的 Persistent Profile。
+     * Profile 检查本身仍通过共享 Visitor Context 复用本轮会话，
+     * 不再和 Mode4 / Scan 抢同一个 user-data-dir。
      */
     proxyAssignment =
       await acquireMode3ProxyWaiting(signal);
