@@ -345,6 +345,50 @@ function isChaohuaBusy303403(result) {
 }
 
 
+function logTagSectionDiagnostic(
+  source,
+  result,
+  proxyAssignment,
+  stage
+) {
+  const body =
+    String(
+      result?.text
+      || result?.error
+      || (
+        result?.json
+          ? JSON.stringify(
+              result.json
+            )
+          : ''
+      )
+      || '-'
+    )
+      .replace(
+        /\s+/g,
+        ' '
+      )
+      .slice(
+        0,
+        300
+      );
+
+  console.log(
+    [
+      '[SuperLike][分区诊断]',
+      `分区=${source?.name || '-'}`,
+      `阶段=${stage || '-'}`,
+      `flowId=${source?.flowId || '-'}`,
+      `代理=${proxyAssignment?.masked || 'LOCAL'}`,
+      `HTTP=${result?.httpStatus ?? '-'}`,
+      `Body=${body}`
+    ].join(
+      ' | '
+    )
+  );
+}
+
+
 function getHistoryPageAgeState(
   posts,
   cutoffMs
@@ -2289,6 +2333,13 @@ async function scanOneSuperLikeMonitor(
           }
 
           if (!currentResult.ok) {
+            logTagSectionDiagnostic(
+              source,
+              currentResult,
+              proxyAssignment,
+              '第一页'
+            );
+
             if (
               isChaohuaBusy303403(
                 currentResult
@@ -2541,6 +2592,13 @@ async function scanOneSuperLikeMonitor(
             }
 
             if (!currentResult.ok) {
+              logTagSectionDiagnostic(
+                source,
+                currentResult,
+                proxyAssignment,
+                `第${sectionPageIndex + 1}页`
+              );
+
               if (
                 isChaohuaBusy303403(
                   currentResult
