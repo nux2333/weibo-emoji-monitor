@@ -2736,6 +2736,12 @@ async function scanOneSuperLikeMonitor(
                   newestSourceThisRound.createdAt,
                   newestSourceThisRound.createdAtMs
                 );
+
+                saveScanSuccessState(
+                  monitor.id,
+                  source.key,
+                  Date.now()
+                );
               }
 
               console.log(
