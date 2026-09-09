@@ -2890,48 +2890,85 @@ async function checkSuperLikeByBrowser(
       uid
     );
 
+  let page = null;
+
   try {
     /*
-     * 使用 BrowserContext 关联的 APIRequestContext。
-     *
-     * 好处：
-     * 1. 与当前 BrowserContext 共用 Cookie storage。
-     * 2. 不受页面 window.fetch() 的 CORS 限制。
-     * 3. 不需要为每个 UID 打开新页面。
+     * Mode3：通过 Persistent Browser + Visitor Context 建立真实页面会话，
+     * 再在 m.weibo.cn 页面上下文中 fetch profile_allbadge。
+     * 不再直接使用 APIRequestContext.get()。
      */
-    const response =
-      await context.request.get(
-        apiUrl,
-        {
-          headers: {
-            'Accept':
-              'application/json, text/plain, */*',
+    page =
+      await context.newPage();
 
-            'Referer':
-              'https://m.weibo.cn/'
-          },
+    await page.goto(
+      'https://m.weibo.cn/',
+      {
+        waitUntil: 'domcontentloaded',
+        timeout: LIGHT_REQUEST_TIMEOUT_MS
+      }
+    );
 
-          timeout:
-            LIGHT_REQUEST_TIMEOUT_MS
-        }
+    throwIfAborted(signal);
+
+    const result =
+      await page.evaluate(
+        async (url) => {
+          const response =
+            await fetch(
+              url,
+              {
+                method: 'GET',
+                credentials: 'include',
+                headers: {
+                  'Accept': 'application/json, text/plain, */*'
+                },
+                redirect: 'follow'
+              }
+            );
+
+          const text =
+            await response.text();
+
+          return {
+            ok: response.ok,
+            status: response.status,
+            finalUrl: response.url,
+            text
+          };
+        },
+        apiUrl
       );
 
     throwIfAborted(signal);
 
-    const status =
-      response.status();
-
-    const body =
-      await response.text();
+    const finalUrl =
+      String(result.finalUrl || '');
 
     if (
-      status === 418
+      finalUrl.includes(
+        'visitor.passport.weibo.cn'
+      )
+    ) {
+      return {
+        ok: false,
+        blocked: false,
+        hasSuperLike: null,
+        status: result.status,
+        url: apiUrl,
+        message:
+          `profile_allbadge 跳转 visitor.passport | ${finalUrl}`
+      };
+    }
+
+    if (
+      Number(result.status) === 418
     ) {
       return {
         ok: false,
         blocked: true,
         hasSuperLike: null,
-        status,
+        status: 418,
         url: apiUrl,
         message:
           'profile_allbadge HTTP 418'
@@ -2939,56 +2976,49 @@ async function checkSuperLikeByBrowser(
     }
 
     if (
-      status < 200
-      ||
-      status >= 300
+      !result.ok
     ) {
       return {
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status,
+        status: result.status,
         url: apiUrl,
         message:
-          `profile_allbadge HTTP ${status} | ${body.slice(0, 500)}`
+          `profile_allbadge HTTP ${result.status} | ${String(result.text || '').slice(0, 500)}`
       };
     }
 
-    let json =
-      null;
+    let json = null;
 
     try {
       json =
         JSON.parse(
-          body
+          result.text
         );
     } catch {
       return {
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status,
+        status: result.status,
         url: apiUrl,
         message:
-          `profile_allbadge 返回的不是 JSON | ${body.slice(0, 500)}`
+          `profile_allbadge 返回的不是 JSON | ${String(result.text || '').slice(0, 500)}`
       };
     }
 
     if (
-      Number(
-        json?.ok
-        ??
-        0
-      ) !== 1
+      Number(json?.ok ?? 0) !== 1
     ) {
       return {
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status,
+        status: result.status,
         url: apiUrl,
         message:
-          `profile_allbadge API ok=${json?.ok} | ${body.slice(0, 500)}`
+          `profile_allbadge API ok=${json?.ok} | ${String(result.text || '').slice(0, 500)}`
       };
     }
 
@@ -2997,9 +3027,9 @@ async function checkSuperLikeByBrowser(
       blocked: false,
       hasSuperLike:
         profileTextHasSuperLike(
-          body
+          result.text
         ),
-      status,
+      status: result.status,
       url: apiUrl
     };
 
@@ -3029,6 +3059,14 @@ async function checkSuperLikeByBrowser(
       message:
         error.message
     };
+  } finally {
+    if (page) {
+      try {
+        await page.close();
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 
@@ -3048,7 +3086,7 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('');
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式3 profile_allbadge 模式');
-  console.log('# Mode3 使用 profile_allbadge 接口检查徽章；本轮30个UID共享一个游客Context');
+  console.log('# Mode3 使用 Persistent/Visitor Context 页面会话请求 profile_allbadge；本轮30个UID共享游客Context');
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
   console.log('# 只检查 experience_7d >= 70；按数据库经验值从高到低，不读取/更新经验值');
