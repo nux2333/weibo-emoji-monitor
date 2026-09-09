@@ -62,15 +62,47 @@ const HUATI_URL =
       )
   );
 
+  const finalUrl =
+    page.url();
+
   console.log(
     '[JYZ Login] 当前页面：'
-    + page.url()
+    + finalUrl
   );
+
+  if (
+    /passport\.weibo\.(cn|com)/i.test(
+      finalUrl
+    )
+    ||
+    /login/i.test(
+      finalUrl
+    )
+  ) {
+    console.error(
+      '[JYZ Login] 当前仍在登录页，未确认登录成功；请重新执行 npm.cmd run jyz-login。'
+    );
+
+    await context.close();
+
+    process.exitCode = 2;
+    return;
+  }
+
+  if (
+    !/huati\.weibo\.cn/i.test(
+      finalUrl
+    )
+  ) {
+    console.warn(
+      '[JYZ Login] 当前页面不是 huati.weibo.cn；登录态可能未验证，请确认后再启动JYZ。'
+    );
+  }
 
   await context.close();
 
   console.log(
-    '[JYZ Login] JYZ专用persistent profile已保存：'
+    '[JYZ Login] 登录态已保存到JYZ专用persistent profile：'
     + PROFILE_DIR
   );
 })()
