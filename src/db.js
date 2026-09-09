@@ -537,6 +537,16 @@ function initDatabase() {
      * 某个用户任意候选帖评论达到 21 后，当天不再抓取该 UID 的其他帖子。
      * 日期固定按中国时间（UTC+8）。
      */
+    CREATE TABLE IF NOT EXISTS superlike_old_refresh_state (
+      monitor_id INTEGER NOT NULL,
+      uid TEXT NOT NULL,
+      checked_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
+      result TEXT,
+      checked_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      PRIMARY KEY(monitor_id, uid, checked_date),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS superlike_daily_excluded_users (
       monitor_id INTEGER NOT NULL,
       uid TEXT NOT NULL,
