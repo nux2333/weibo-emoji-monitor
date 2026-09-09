@@ -58,6 +58,20 @@ const workers = [
   }
 ];
 
+const WORKER_ONLY =
+  String(
+    process.env.SUPERLIKE_WORKER_ONLY
+    || ''
+  ).trim();
+
+const selectedWorkers =
+  WORKER_ONLY
+    ? workers.filter(
+        spec =>
+          spec.label === WORKER_ONLY
+      )
+    : workers;
+
 const children =
   new Map();
 
@@ -237,9 +251,24 @@ console.log(
 );
 console.log('');
 
+if (
+  WORKER_ONLY
+  &&
+  selectedWorkers.length === 0
+) {
+  console.error(
+    `[SuperLikeWorkers] 未找到指定Worker：${WORKER_ONLY}`
+  );
+  process.exitCode = 1;
+} else if (WORKER_ONLY) {
+  console.log(
+    `[SuperLikeWorkers] 单独启动：${WORKER_ONLY}`
+  );
+}
+
 for (
   const spec
-  of workers
+  of selectedWorkers
 ) {
   const delayMs =
     Number(
