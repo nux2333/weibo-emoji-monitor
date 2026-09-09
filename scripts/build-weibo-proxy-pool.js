@@ -276,33 +276,6 @@ async function fetchText(url, timeoutMs = 20000) {
   }
 }
 
-async function fetchScdnCandidates() {
-  const url =
-    `https://proxy.scdn.io/api/get_proxy.php?protocol=https&count=${Math.min(20, MAX_CANDIDATES_PER_SOURCE)}`;
-
-  const text =
-    await fetchText(url);
-
-  const json =
-    JSON.parse(text);
-
-  const list =
-    Array.isArray(
-      json?.data?.proxies
-    )
-      ? json.data.proxies
-      : [];
-
-  return list
-    .map(value =>
-      normalizeProxy(
-        value,
-        'http'
-      )
-    )
-    .filter(Boolean);
-}
-
 async function fetchProxyCleanCandidates() {
   const text =
     await fetchText(
@@ -325,251 +298,6 @@ async function fetchProxyCleanCandidates() {
       MAX_CANDIDATES_PER_SOURCE
     );
 }
-
-async function fetch89IpCandidates() {
-  const results = [];
-
-  /*
-   * 89ip 没有稳定公开JSON接口，这里抓公开分页表格。
-   * 多抓几页，后续仍以微博实测为准。
-   */
-  const pages =
-    Math.max(
-      1,
-      Math.min(
-        20,
-        Number(
-          process.env.WEIBO_89IP_PAGES
-        )
-        || 10
-      )
-    );
-
-  for (
-    let page = 1;
-    page <= pages;
-    page++
-  ) {
-    try {
-      const url =
-        page === 1
-          ? 'https://www.89ip.cn/'
-          : `https://www.89ip.cn/index_${page}.html`;
-
-      const html =
-        await fetchText(url);
-
-      const regex =
-        /<td>\s*((?:\d{1,3}\.){3}\d{1,3})\s*<\/td>\s*<td>\s*(\d{2,5})\s*<\/td>/gi;
-
-      let match;
-
-      while (
-        (
-          match =
-            regex.exec(html)
-        )
-      ) {
-        results.push(
-          `http://${match[1]}:${match[2]}`
-        );
-
-        if (
-          results.length
-          >= MAX_CANDIDATES_PER_SOURCE
-        ) {
-          break;
-        }
-      }
-
-      if (
-        results.length
-        >= MAX_CANDIDATES_PER_SOURCE
-      ) {
-        break;
-      }
-
-    } catch (error) {
-      console.log(
-        `[89ip] 第${page}页获取失败：${error.message}`
-      );
-    }
-  }
-
-  return Array.from(
-    new Set(results)
-  );
-}
-
-async function fetchProxyHubCandidates() {
-  const html =
-    await fetchText(
-      'https://proxyhub.me/zh/cn-http-proxy-list.html'
-    );
-
-  const results = [];
-
-  /*
-   * ProxyHub 表格直接展示 IP / Port / 协议。
-   * 当前页面是中国 HTTP 代理列表；只把 IPv4:Port
-   * 当作候选，最终仍必须通过 ipify + 微博实测。
-   */
-  const regex =
-    /\b((?:\d{1,3}\.){3}\d{1,3})\s*(?:<[^>]+>|\s|&nbsp;)*\s*(\d{2,5})\b/g;
-
-  let match;
-
-  while (
-    (
-      match =
-        regex.exec(html)
-    )
-  ) {
-    results.push(
-      `http://${match[1]}:${match[2]}`
-    );
-
-    if (
-      results.length
-      >= MAX_CANDIDATES_PER_SOURCE
-    ) {
-      break;
-    }
-  }
-
-  return shuffle(
-    Array.from(
-      new Set(results)
-    )
-  );
-}
-
-async function fetchFate0Candidates() {
-  const text =
-    await fetchText(
-      'https://raw.githubusercontent.com/fate0/proxylist/master/proxy.list'
-    );
-
-  const results = [];
-
-  for (
-    const line
-    of text.split(/\r?\n/)
-  ) {
-    const raw =
-      String(line || '').trim();
-
-    if (!raw) {
-      continue;
-    }
-
-    try {
-      const item =
-        JSON.parse(raw);
-
-      const type =
-        String(
-          item?.type || ''
-        ).toLowerCase();
-
-      if (
-        ![
-          'http',
-          'https',
-          'socks5'
-        ].includes(type)
-      ) {
-        continue;
-      }
-
-      const host =
-        String(
-          item?.host || ''
-        ).trim();
-
-      const port =
-        Number(
-          item?.port
-        );
-
-      if (!host || !port) {
-        continue;
-      }
-
-      const scheme =
-        type === 'socks5'
-          ? 'socks5'
-          : 'http';
-
-      results.push(
-        `${scheme}://${host}:${port}`
-      );
-
-    } catch {
-      // ignore malformed rows
-    }
-  }
-
-  return shuffle(
-    Array.from(
-      new Set(results)
-    )
-  )
-    .slice(
-      0,
-      MAX_CANDIDATES_PER_SOURCE
-    );
-}
-
-
-async function fetchProxioCandidates() {
-  const results = [];
-
-  const sources = [
-    [
-      'https://raw.githubusercontent.com/proxio-io/proxy-list/main/socks5.txt',
-      'socks5'
-    ],
-    [
-      'https://raw.githubusercontent.com/proxio-io/proxy-list/main/https.txt',
-      'http'
-    ]
-  ];
-
-  for (const [url, scheme] of sources) {
-    try {
-      const text =
-        await fetchText(url);
-
-      results.push(
-        ...text
-          .split(/\r?\n/)
-          .map(line =>
-            normalizeProxy(
-              line,
-              scheme
-            )
-          )
-          .filter(Boolean)
-      );
-    } catch (error) {
-      console.log(
-        `[proxio] ${scheme} 获取失败：${error.message}`
-      );
-    }
-  }
-
-  return shuffle(
-    Array.from(
-      new Set(results)
-    )
-  )
-    .slice(
-      0,
-      MAX_CANDIDATES_PER_SOURCE
-    );
-}
-
 
 async function fetchProxmintCandidates() {
   const results = [];
@@ -623,7 +351,6 @@ async function fetchProxmintCandidates() {
     );
 }
 
-
 async function fetchRelayglassCandidates() {
   const results = [];
 
@@ -661,10 +388,6 @@ async function fetchRelayglassCandidates() {
     }
   }
 
-  /*
-   * Relayglass 本身按速度排序。
-   * 这里不 shuffle，优先把较快的候选送去微博实测。
-   */
   return Array.from(
     new Set(results)
   )
@@ -673,7 +396,6 @@ async function fetchRelayglassCandidates() {
       MAX_CANDIDATES_PER_SOURCE
     );
 }
-
 
 async function fetchPlainProxySources(sources) {
   const results = [];
@@ -707,20 +429,6 @@ async function fetchProxyScrapeCandidates() {
   ]);
 }
 
-async function fetchProxiflyCandidates() {
-  return fetchPlainProxySources([
-    ['https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt', 'http'],
-    ['https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/socks5/data.txt', 'socks5']
-  ]);
-}
-
-async function fetchIPLocateCandidates() {
-  return fetchPlainProxySources([
-    ['https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/http.txt', 'http'],
-    ['https://raw.githubusercontent.com/iplocate/free-proxy-list/main/protocols/socks5.txt', 'socks5']
-  ]);
-}
-
 async function fetchDatabayCandidates() {
   return fetchPlainProxySources([
     ['https://cdn.jsdelivr.net/gh/databay-labs/free-proxy-list/http.txt', 'http'],
@@ -733,160 +441,6 @@ async function fetchMonosansCandidates() {
     ['https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt', 'http'],
     ['https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt', 'socks5']
   ]);
-}
-
-async function fetchHProxyCandidates() {
-  return fetchPlainProxySources([
-    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/http.txt', 'http'],
-    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/socks5.txt', 'socks5']
-  ]);
-}
-
-async function fetchProxioCandidates() {
-  // proxio-io/proxy-list 的稳定 raw 文件就在仓库根目录。
-  return fetchPlainProxySources([
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/http.txt', 'http'],
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/https.txt', 'http'],
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/socks5.txt', 'socks5']
-  ]);
-}
-
-
-
-function extractIpPorts(text, defaultScheme = 'http') {
-  const results = [];
-  const regex = /\b((?:\d{1,3}\.){3}\d{1,3})\s*[:\s]\s*(\d{2,5})\b/g;
-  let match;
-  while ((match = regex.exec(String(text || '')))) {
-    results.push(normalizeProxy(match[1] + ':' + match[2], defaultScheme));
-    if (results.length >= MAX_CANDIDATES_PER_SOURCE) break;
-  }
-  return Array.from(new Set(results)).filter(Boolean);
-}
-
-async function fetchDocIpCandidates() {
-  // 稻壳代理公开列表；页面结构变化时失败不会影响其它源。
-  const urls = [
-    'https://www.docip.net/data/free.json',
-    'https://www.docip.net/'
-  ];
-  for (const url of urls) {
-    try {
-      const text = await fetchText(url);
-      const list = extractIpPorts(text, 'http');
-      if (list.length) return list;
-    } catch (error) {
-      console.log(`[DocIP] ${url} 获取失败：${error.message}`);
-    }
-  }
-  return [];
-}
-
-async function fetchGoodIpsCandidates() {
-  // 官方 ProxyPool 当前实现只抓首页；/free-proxy 已不存在。
-  try {
-    const text =
-      await fetchText(
-        'https://www.goodips.com/'
-      );
-
-    return extractIpPorts(
-      text,
-      'http'
-    );
-  } catch (error) {
-    console.log(
-      `[GoodIPs] 获取失败：${error.message}`
-    );
-    return [];
-  }
-}
-
-async function fetchGeoNodeCandidates() {
-  const url =
-    'https://proxylist.geonode.com/api/proxy-list?limit='
-    + Math.min(500, MAX_CANDIDATES_PER_SOURCE)
-    + '&page=1&sort_by=lastChecked&sort_type=desc';
-
-  const json = JSON.parse(await fetchText(url));
-  const rows = Array.isArray(json?.data) ? json.data : [];
-  const results = [];
-
-  for (const item of rows) {
-    const host = String(item?.ip || '').trim();
-    const port = Number(item?.port);
-    const protocols = Array.isArray(item?.protocols)
-      ? item.protocols.map(v => String(v).toLowerCase())
-      : [];
-
-    if (!host || !port) continue;
-
-    let scheme = null;
-    if (protocols.includes('socks5')) scheme = 'socks5';
-    else if (protocols.includes('https') || protocols.includes('http')) scheme = 'http';
-    if (!scheme) continue;
-
-    results.push(`${scheme}://${host}:${port}`);
-  }
-
-  return Array.from(new Set(results)).slice(0, MAX_CANDIDATES_PER_SOURCE);
-}
-
-async function fetchRoundProxiesCandidates() {
-  // 与 jhao104/proxy_pool 2026-06-09 当前实现保持一致。
-  const pageSize =
-    Math.min(
-      50,
-      MAX_CANDIDATES_PER_SOURCE
-    );
-
-  const url =
-    'https://roundproxies.com/api/get-free-proxies/'
-    + '?limit=' + pageSize
-    + '&page=1'
-    + '&sort_by=lastChecked'
-    + '&sort_type=desc';
-
-  try {
-    const json =
-      JSON.parse(
-        await fetchText(url)
-      );
-
-    const rows =
-      Array.isArray(json?.data)
-        ? json.data
-        : [];
-
-    return rows
-      .map(item => {
-        const host =
-          String(item?.ip || '').trim();
-
-        const port =
-          Number(item?.port);
-
-        if (!host || !port) {
-          return null;
-        }
-
-        return normalizeProxy(
-          host + ':' + port,
-          'http'
-        );
-      })
-      .filter(Boolean)
-      .slice(
-        0,
-        MAX_CANDIDATES_PER_SOURCE
-      );
-
-  } catch (error) {
-    console.log(
-      `[RoundProxies] 获取失败：${error.message}`
-    );
-    return [];
-  }
 }
 
 function readScores() {
@@ -945,23 +499,12 @@ function updateScore(scores, proxy, result, source) {
 
 async function collectSources() {
   const sourceFetchers = [
-    // 微博实测成功率较高的源优先保留。
     ['ProxyClean', fetchProxyCleanCandidates],
     ['Proxmint', fetchProxmintCandidates],
     ['Relayglass', fetchRelayglassCandidates],
-    ['Databay', fetchDatabayCandidates],
-    ['Proxifly', fetchProxiflyCandidates],
-    ['ProxyScrape', fetchProxyScrapeCandidates],
-
-    // 新增 GitHub 高频更新代理源，先进入微博实测观察。
     ['Monosans', fetchMonosansCandidates],
-    ['HProxy', fetchHProxyCandidates],
-    ['Proxio', fetchProxioCandidates],
-
-    // 暂无足够微博实测样本，先保留观察。
-    ['DocIP', fetchDocIpCandidates],
-    ['GoodIPs', fetchGoodIpsCandidates],
-    ['RoundProxies', fetchRoundProxiesCandidates]
+    ['Databay', fetchDatabayCandidates],
+    ['ProxyScrape', fetchProxyScrapeCandidates]
   ];
 
   const all = [];
@@ -1221,23 +764,21 @@ async function main() {
   console.log(`并发: ${CONCURRENCY}`);
   console.log(`测试微博: ${WEIBO_URL}`);
   console.log('==============================================');
-
-  const oldPool =
-    readGoodPool();
+  console.log('');
 
   let healthy = [];
 
-  if (
-    oldPool.length > 0
-  ) {
-    console.log('');
+  const existing =
+    readGoodPool();
+
+  if (existing.length) {
     console.log(
-      `[健康池] 先复测已有代理 ${oldPool.length} 个...`
+      `[健康池] 先复测已有代理 ${existing.length} 个...`
     );
 
     healthy =
       await testMany(
-        oldPool,
+        existing,
         {
           stopAt:
             TARGET_GOOD_COUNT,
@@ -1248,29 +789,27 @@ async function main() {
       );
   }
 
-  const healthySet =
-    new Set(
-      healthy.map(
-        item => item.proxy
-      )
-    );
-
   if (
-    healthySet.size
+    healthy.length
     < TARGET_GOOD_COUNT
   ) {
     console.log('');
     console.log(
-      `[补池] 当前健康代理=${healthySet.size}，开始从多源免费代理池补充...`
+      `[补池] 当前健康代理=${healthy.length}，开始从多源免费代理池补充...`
     );
 
     const candidates =
       await collectSources();
 
+    const existingSet =
+      new Set(
+        existing
+      );
+
     const freshCandidates =
       candidates.filter(
         item =>
-          !healthySet.has(
+          !existingSet.has(
             item.proxy
           )
       );
@@ -1279,48 +818,55 @@ async function main() {
       `[补池] 去重后新候选=${freshCandidates.length}`
     );
 
-    const need =
-      TARGET_GOOD_COUNT
-      - healthySet.size;
+    const needed =
+      Math.max(
+        0,
+        TARGET_GOOD_COUNT
+        - healthy.length
+      );
 
-    const newPassed =
+    const newlyPassed =
       await testMany(
         freshCandidates,
         {
           stopAt:
-            need,
+            needed,
 
           label:
             '补测'
         }
       );
 
-    for (
-      const item
-      of newPassed
-    ) {
-      healthy.push(item);
-      healthySet.add(
+    healthy.push(
+      ...newlyPassed
+    );
+  }
+
+  const dedup =
+    new Map();
+
+  for (
+    const item
+    of healthy
+  ) {
+    if (
+      item?.proxy
+      &&
+      !dedup.has(
         item.proxy
+      )
+    ) {
+      dedup.set(
+        item.proxy,
+        item
       );
     }
   }
 
   healthy =
-    healthy
-      .filter(
-        (
-          item,
-          index,
-          array
-        ) =>
-          array.findIndex(
-            other =>
-              other.proxy
-              === item.proxy
-          )
-          === index
-      )
+    Array.from(
+      dedup.values()
+    )
       .sort(
         (a, b) => {
           const scores = readScores();
@@ -1334,11 +880,6 @@ async function main() {
         TARGET_GOOD_COUNT
       );
 
-  /*
-   * PASS 时已经实时写入文件。
-   * 本轮结束再整理一次，但要和磁盘当前内容合并，
-   * 避免并发 worker 已写入的代理被最终覆盖掉。
-   */
   const diskPool =
     readGoodPool();
 
@@ -1360,18 +901,21 @@ async function main() {
     finalPool
   );
 
-  const sourceStats = {};
+  const sourceCount = {};
 
   for (
     const item
     of healthy
   ) {
-    const key =
+    const source =
       item.source
-      || 'existing';
+      || 'unknown';
 
-    sourceStats[key] =
-      (sourceStats[key] || 0)
+    sourceCount[source] =
+      Number(
+        sourceCount[source]
+        || 0
+      )
       + 1;
   }
 
@@ -1380,13 +924,11 @@ async function main() {
   console.log(
     `健康代理: ${healthy.length}/${TARGET_GOOD_COUNT}`
   );
-
   console.log(
     `已保存: ${GOOD_POOL_FILE}`
   );
-
   console.log(
-    `来源分布: ${JSON.stringify(sourceStats)}`
+    `来源分布: ${JSON.stringify(sourceCount)}`
   );
 
   if (
@@ -1400,17 +942,11 @@ async function main() {
   }
 }
 
-const MAINTAIN_INTERVAL_MS =
-  Number(
-    process.env.WEIBO_PROXY_MAINTAIN_INTERVAL_MS
-  )
-  || 15 * 60 * 1000;
-
 async function runForever() {
   let round = 0;
 
   console.log(
-    `[健康池] 常驻维护已启动：每 ${Math.round(MAINTAIN_INTERVAL_MS / 60000)} 分钟拉取/复测一次。`
+    '[健康池] 常驻维护已启动：每 15 分钟拉取/复测一次。'
   );
 
   while (true) {
@@ -1425,34 +961,37 @@ async function runForever() {
       await main();
     } catch (error) {
       console.error(
-        '[微博健康代理池维护失败]',
+        `[健康池] 第 ${round} 轮异常：`,
         error
-      );
-
-      console.log(
-        '[健康池] 本轮失败不退出，15分钟后继续下一轮。'
       );
     }
 
     console.log(
-      `[健康池] 第 ${round} 轮结束；${Math.round(MAINTAIN_INTERVAL_MS / 60000)} 分钟后开始下一轮。`
+      `[健康池] 第 ${round} 轮结束；15 分钟后开始下一轮。`
     );
 
     await new Promise(
       resolve =>
         setTimeout(
           resolve,
-          MAINTAIN_INTERVAL_MS
+          15 * 60 * 1000
         )
     );
   }
 }
 
-runForever().catch(error => {
-  console.error(
-    '[微博健康代理池常驻任务异常退出]',
-    error
-  );
+if (
+  require.main
+  === module
+) {
+  runForever()
+    .catch(error => {
+      console.error(error);
+      process.exitCode = 1;
+    });
+}
 
-  process.exitCode = 1;
-});
+module.exports = {
+  main,
+  runForever
+};
