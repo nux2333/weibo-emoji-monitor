@@ -5570,7 +5570,13 @@ async function runMode4Forever() {
       await chromium.launchPersistentContext(
         profileDir,
         {
-          headless: false,
+          /*
+           * Mode4 作为24小时常驻任务默认后台运行。
+           * Persistent Profile 仍保留，因此不会影响现有 visitor/session。
+           * 如需临时观察窗口，可设置 SUPERLIKE_RECHECK_HEADLESS=0。
+           */
+          headless:
+            process.env.SUPERLIKE_RECHECK_HEADLESS !== '0',
           ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
@@ -5585,7 +5591,7 @@ async function runMode4Forever() {
 
     console.log('');
     console.log(
-      '[模式4] 浏览器已启动并将常驻；后续轮次不会再关闭。'
+      '[模式4] 浏览器已后台启动并将常驻；后续轮次不会再关闭。'
     );
     console.log(
       `[模式4] Persistent Profile=${profileDir}`
