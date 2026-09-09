@@ -301,6 +301,50 @@ const SCAN_PROFILE_CACHE_MINUTES =
 
 let running = false;
 
+function isChaohuaBusy303403(result) {
+  if (!result) {
+    return false;
+  }
+
+  if (
+    Number(
+      result.httpStatus
+    ) !== 403
+  ) {
+    return false;
+  }
+
+  const text =
+    String(
+      result.text
+      || result.error
+      || ''
+    );
+
+  if (
+    /"code"\s*:\s*303403/.test(
+      text
+    )
+    ||
+    /系统繁忙/.test(
+      text
+    )
+  ) {
+    return true;
+  }
+
+  try {
+    return (
+      Number(
+        result.json?.code
+      ) === 303403
+    );
+  } catch {
+    return false;
+  }
+}
+
+
 function getHistoryPageAgeState(
   posts,
   cutoffMs
@@ -2245,6 +2289,18 @@ async function scanOneSuperLikeMonitor(
           }
 
           if (!currentResult.ok) {
+            if (
+              isChaohuaBusy303403(
+                currentResult
+              )
+            ) {
+              console.log(
+                `[SuperLike][分区暂时繁忙] ${source.name} 第一页返回 303403；本轮跳过该分区，不淘汰代理，下一轮自动重试。`
+              );
+
+              return;
+            }
+
             throw new Error(
               `${source.name} 第一页请求失败：HTTP ${currentResult.httpStatus ?? '-'} ${currentResult.error || currentResult.text || ''}`
             );
@@ -2485,6 +2541,18 @@ async function scanOneSuperLikeMonitor(
             }
 
             if (!currentResult.ok) {
+              if (
+                isChaohuaBusy303403(
+                  currentResult
+                )
+              ) {
+                console.log(
+                  `[SuperLike][分区暂时繁忙] ${source.name} | 303403 | Resume已保留 | 本轮停止该分区，下一轮自动重试`
+                );
+
+                break;
+              }
+
               console.log(
                 `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${currentResult.error || currentResult.text || '-'} | Resume已保留`
               );
