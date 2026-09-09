@@ -1,60 +1,19 @@
+const {
+  createBatchLogger
+} = require('../src/batch-logger');
+
+let batchLogger = null;
+
+if (require.main === module) {
+  batchLogger =
+    createBatchLogger(
+      'proxy-pool'
+    );
+}
+
 const fs = require('fs');
 const path = require('path');
 const { request } = require('playwright');
-
-const LOG_DIR = path.join(__dirname, '..', 'logs', 'proxy-pool');
-
-function getLogFile() {
-  const now = new Date();
-  const date = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
-  }).format(now);
-  return path.join(LOG_DIR, date + '.log');
-}
-
-function formatChinaTime() {
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
-  }).format(new Date());
-}
-
-function appendLog(level, args) {
-  try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    const text = args.map(value => {
-      if (value instanceof Error) return value.stack || value.message;
-      if (typeof value === 'string') return value;
-      try { return JSON.stringify(value); } catch { return String(value); }
-    }).join(' ');
-    fs.appendFileSync(getLogFile(), '[' + formatChinaTime() + '] [' + level + '] ' + text + '\n', 'utf8');
-  } catch (error) {
-    process.stderr.write('[代理池日志写入失败] ' + error.message + '\n');
-  }
-}
-
-const originalConsoleLog = console.log.bind(console);
-const originalConsoleError = console.error.bind(console);
-
-function consolePrefix(level) {
-  return '[' + formatChinaTime() + '] [' + level + ']';
-}
-
-console.log = (...args) => {
-  originalConsoleLog(
-    consolePrefix('INFO'),
-    ...args
-  );
-  appendLog('INFO', args);
-};
-
-console.error = (...args) => {
-  originalConsoleError(
-    consolePrefix('ERROR'),
-    ...args
-  );
-  appendLog('ERROR', args);
-};
 
 const GOOD_POOL_FILE =
   process.env.WEIBO_GOOD_PROXY_FILE
@@ -1120,8 +1079,17 @@ if (
   === module
 ) {
   runForever()
-    .catch(error => {
+    .catch(async error => {
       console.error(error);
+
+      if (batchLogger) {
+        try {
+          await batchLogger.close();
+        } catch {
+          // ignore
+        }
+      }
+
       process.exitCode = 1;
     });
 }
