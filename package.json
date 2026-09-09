@@ -20,7 +20,8 @@
     "export-weibo-login": "node scripts/export-weibo-login-state.js",
     "jyz-login": "node scripts/jyz-login.js",
     "jyz-service": "node scripts/jyz-service.js",
-    "backfill-today-jyz": "node scripts/backfill-today-jyz.js"
+    "backfill-today-jyz": "node scripts/backfill-today-jyz.js",
+    "refresh-old-superlike": "node scripts/refresh-old-superlike-posts.js"
   },
   "dependencies": {
     "express": "^5.1.0",
