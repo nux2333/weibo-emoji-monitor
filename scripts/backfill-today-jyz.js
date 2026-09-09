@@ -952,7 +952,7 @@ async function queryJyz(
     + ' 秒，然后重新查询最新数据'
   );
   console.log(
-    '# 规则：经验值 > 80 -> 写入 superlike_users，并删除该UID全部 superlike_posts'
+    '# 规则：经验值 >= 80 -> 写入 superlike_users，并删除该UID全部 superlike_posts'
   );
   console.log(
     '# 经验值 <= 80 -> 仅更新 experience_7d'
@@ -999,11 +999,11 @@ async function queryJyz(
         + totalFailed
       );
       console.log(
-        '经验值>80加入超LIKE：'
+        '经验值>=80加入超LIKE：'
         + totalPromoted
       );
       console.log(
-        '因经验值>80删除帖子：'
+        '因经验值>=80删除帖子：'
         + totalDeletedPosts
       );
       break;
@@ -1052,7 +1052,7 @@ async function queryJyz(
         console.log(
           '[JYZ补数][跳过] UID='
           + normalizedUid
-          + ' | 本轮已因经验值>80加入超LIKE并删除全部帖子'
+          + ' | 本轮已因经验值>=80加入超LIKE并删除全部帖子'
         );
         continue;
       }
@@ -1099,7 +1099,7 @@ async function queryJyz(
          * 先写 superlike_users，再按UID删除全部 superlike_posts。
          */
         if (
-          experience7d > 80
+          experience7d >= 80
         ) {
           const userInserted =
             saveSuperLikeUser(
@@ -1129,7 +1129,7 @@ async function queryJyz(
             deletedPosts;
 
           console.log(
-            '[JYZ补数][经验值>80→超LIKE] UID='
+            '[JYZ补数][经验值>=80→超LIKE] UID='
             + normalizedUid
             + ' | jyz='
             + experience7d
