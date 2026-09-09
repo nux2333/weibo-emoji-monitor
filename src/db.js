@@ -473,6 +473,19 @@ function initDatabase() {
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
+    /*
+     * Fresh 每个来源最后一次“完整追到安全边界”的成功时间。
+     * 用于机器宕机后 Catch-up，避免只依赖 page/cursor。
+     */
+    CREATE TABLE IF NOT EXISTS superlike_scan_success_state (
+      monitor_id INTEGER NOT NULL,
+      source_key TEXT NOT NULL,
+      last_successful_scan_at_ms INTEGER NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(monitor_id, source_key),
+      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS superlike_pool_exit_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       monitor_id INTEGER NOT NULL,
@@ -1653,6 +1666,71 @@ function saveScanSourceCheckpoint(
 }
 
 
+function getScanSuccessState(
+  monitorId,
+  sourceKey
+) {
+  initDatabase();
+
+  return db.prepare(`
+    SELECT
+      monitor_id,
+      source_key,
+      last_successful_scan_at_ms,
+      updated_at
+    FROM superlike_scan_success_state
+    WHERE monitor_id = ?
+      AND source_key = ?
+  `).get(
+    Number(monitorId),
+    String(sourceKey)
+  ) || null;
+}
+
+
+function saveScanSuccessState(
+  monitorId,
+  sourceKey,
+  successfulAtMs = Date.now()
+) {
+  initDatabase();
+
+  const value =
+    Number(successfulAtMs);
+
+  if (
+    !monitorId
+    ||
+    !sourceKey
+    ||
+    !Number.isFinite(value)
+  ) {
+    return false;
+  }
+
+  db.prepare(`
+    INSERT INTO superlike_scan_success_state(
+      monitor_id,
+      source_key,
+      last_successful_scan_at_ms,
+      updated_at
+    )
+    VALUES(?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(monitor_id, source_key)
+    DO UPDATE SET
+      last_successful_scan_at_ms =
+        excluded.last_successful_scan_at_ms,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(
+    Number(monitorId),
+    String(sourceKey),
+    Math.floor(value)
+  );
+
+  return true;
+}
+
+
 function getScanSourceResume(
   monitorId,
   sourceKey
@@ -2287,6 +2365,8 @@ module.exports = {
   clearScanResume,
   getScanSourceCheckpoint,
   saveScanSourceCheckpoint,
+  getScanSuccessState,
+  saveScanSuccessState,
   getScanSourceResume,
   saveScanSourceResume,
   clearScanSourceResume,
