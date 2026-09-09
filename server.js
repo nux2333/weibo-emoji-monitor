@@ -282,6 +282,7 @@ app.use((req, res, next) => {
 
     '/api/superlike-posts',
     '/api/superlike-events',
+    '/api/superlike-move-intent',
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
     '/api/superlike-posts-moved',
@@ -427,6 +428,88 @@ app.get(
         );
       }
     );
+  }
+);
+
+/*
+ * Copy 抢占广播：
+ * 用户一点击 Copy 就先广播 moved=true，
+ * 不等待 SQLite 写入完成，尽量缩短多人同时抢到同一帖子的窗口。
+ * 真正持久化仍由 /api/superlike-posts-moved 完成。
+ */
+app.post(
+  '/api/superlike-move-intent',
+  (req, res) => {
+    try {
+      const ids =
+        Array.isArray(
+          req.body?.ids
+        )
+          ? req.body.ids
+          : [];
+
+      const normalizedIds =
+        Array.from(
+          new Set(
+            ids
+              .map(
+                id =>
+                  Number(id)
+              )
+              .filter(
+                id =>
+                  Number.isFinite(id)
+                  &&
+                  id > 0
+              )
+          )
+        );
+
+      if (
+        normalizedIds.length
+        === 0
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            '没有有效的帖子ID'
+        });
+      }
+
+      if (
+        normalizedIds.length
+        > 200
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            '一次最多广播200条'
+        });
+      }
+
+      broadcastSuperLikeMoved(
+        normalizedIds,
+        true
+      );
+
+      return res.json({
+        success: true,
+        ids:
+          normalizedIds
+      });
+
+    } catch (error) {
+      console.error(
+        '[SuperLike][抢占广播] 失败：',
+        error
+      );
+
+      return res.status(500).json({
+        success: false,
+        message:
+          error.message
+      });
+    }
   }
 );
 
