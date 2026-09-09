@@ -1,52 +1,64 @@
+const path = require('path');
+
+const NODE_EXE = process.execPath;
+
+const common = {
+  cwd: __dirname,
+  interpreter: NODE_EXE,
+  windowsHide: true,
+  autorestart: true,
+  restart_delay: 10000,
+  exp_backoff_restart_delay: 1000,
+  min_uptime: '10s',
+  max_restarts: 10,
+  kill_timeout: 5000
+};
+
 module.exports = {
   apps: [
     {
+      ...common,
       name: 'weibo-server',
-      script: 'server.js',
-      cwd: __dirname,
-      interpreter: process.execPath,
-      windowsHide: true,
-      autorestart: true,
-      restart_delay: 3000
+      script: path.join(__dirname, 'server.js')
     },
     {
+      ...common,
       name: 'superlike-scan',
-      script: 'scripts/start-superlike-workers.js',
-      cwd: __dirname,
-      interpreter: process.execPath,
-      windowsHide: true,
-      autorestart: true,
-      restart_delay: 5000
+      script: path.join(
+        __dirname,
+        'scripts',
+        'start-superlike-workers.js'
+      )
     },
     {
+      ...common,
       name: 'superlike-mode4',
-      script: 'scripts/recheck-superlike.js',
-      cwd: __dirname,
-      interpreter: process.execPath,
-      windowsHide: true,
+      script: path.join(
+        __dirname,
+        'scripts',
+        'recheck-superlike.js'
+      ),
       env: {
         SUPERLIKE_RECHECK_MODE: '4'
-      },
-      autorestart: true,
-      restart_delay: 5000
+      }
     },
     {
+      ...common,
       name: 'superlike-jyz',
-      script: 'scripts/backfill-today-jyz.js',
-      cwd: __dirname,
-      interpreter: process.execPath,
-      windowsHide: true,
-      autorestart: true,
-      restart_delay: 5000
+      script: path.join(
+        __dirname,
+        'scripts',
+        'backfill-today-jyz.js'
+      )
     },
     {
+      ...common,
       name: 'weibo-proxy-pool',
-      script: 'scripts/build-weibo-proxy-pool.js',
-      cwd: __dirname,
-      interpreter: process.execPath,
-      windowsHide: true,
-      autorestart: true,
-      restart_delay: 5000
+      script: path.join(
+        __dirname,
+        'scripts',
+        'build-weibo-proxy-pool.js'
+      )
     }
   ]
 };
