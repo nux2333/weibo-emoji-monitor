@@ -36,6 +36,7 @@ const {
   getPostCreatedAt,
   parsePostCreatedAtMs,
   getNewestPostInfo,
+  shouldStopAtCheckpoint,
   hasSuperLike,
   extractIcons,
   findPosts
@@ -43,6 +44,7 @@ const {
 const {
   SCAN_PROXY_POOL,
   acquireScanProxyWaiting,
+  Weibo418Error,
   isWeibo418Error,
   isProxyConnectionError,
   assertPageNot418
