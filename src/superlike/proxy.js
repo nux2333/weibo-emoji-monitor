@@ -127,6 +127,8 @@ function isProxyConnectionError(error) {
     ||
     /ERR_CONNECTION_RESET/i.test(text)
     ||
+    /ERR_EMPTY_RESPONSE/i.test(text)
+    ||
     /ERR_CONNECTION_CLOSED/i.test(text)
     ||
     /ERR_CONNECTION_REFUSED/i.test(text)
