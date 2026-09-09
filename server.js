@@ -205,6 +205,18 @@ app.use((req, res, next) => {
     '/superlike.html',
     '/superlike.js',
     '/style.css',
+
+    /*
+     * 远程管理页面本身允许通过 Cloudflare 打开。
+     * 真正的管理操作仍全部由 /api/admin/* + ADMIN_TOKEN 鉴权。
+     */
+    '/admin',
+    '/admin.html',
+    '/scripts',
+    '/scripts.html',
+    '/logs-live',
+    '/logs-live.html',
+
     '/api/superlike-posts',
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
@@ -683,52 +695,60 @@ const PM2_CLI_SCRIPT = findPm2CliScript();
 
 const SCRIPT_DEFINITIONS = [
   {
-    key: 'scan',
-    name: 'SuperLike Scan',
-    pm2Name: 'superlike-scan',
-    script: 'src/superlike-scanner.js',
-    env: {},
-    oneShot: false
+    key: 'fresh-latest',
+    name: '最新发帖',
+    pm2Name: 'scan-fresh-latest',
+    description: 'Fresh：最新发帖总流',
+    group: 'scan'
   },
   {
-    key: 'mode1',
-    name: 'Mode1',
-    pm2Name: 'superlike-mode1',
-    script: 'scripts/recheck-superlike.js',
-    env: { SUPERLIKE_RECHECK_MODE: '1' },
-    oneShot: false
+    key: 'fresh-superlike',
+    name: '超like分区',
+    pm2Name: 'scan-fresh-superlike',
+    description: 'Fresh：超like分区',
+    group: 'scan'
   },
   {
-    key: 'mode2',
-    name: 'Mode2',
-    pm2Name: 'superlike-mode2',
-    script: 'scripts/recheck-superlike.js',
-    env: { SUPERLIKE_RECHECK_MODE: '2' },
-    oneShot: false
+    key: 'fresh-yishanshui',
+    name: '一善水区',
+    pm2Name: 'scan-fresh-yishanshui',
+    description: 'Fresh：一善水区',
+    group: 'scan'
   },
   {
-    key: 'mode3',
-    name: 'Mode3',
-    pm2Name: 'superlike-mode3',
-    script: 'scripts/recheck-superlike.js',
-    env: { SUPERLIKE_RECHECK_MODE: '3' },
-    oneShot: false
+    key: 'fresh-qa',
+    name: '答疑专区',
+    pm2Name: 'scan-fresh-qa',
+    description: 'Fresh：答疑专区',
+    group: 'scan'
+  },
+  {
+    key: 'history',
+    name: 'History补扫',
+    pm2Name: 'scan-history',
+    description: '仅补最近48小时历史Resume',
+    group: 'scan'
   },
   {
     key: 'mode4',
-    name: 'Mode4',
+    name: 'Mode4 超LIKE名单',
     pm2Name: 'superlike-mode4',
-    script: 'scripts/recheck-superlike.js',
-    env: { SUPERLIKE_RECHECK_MODE: '4' },
-    oneShot: false
+    description: '24小时扫描超LIKE用户列表',
+    group: 'service'
+  },
+  {
+    key: 'jyz',
+    name: '补经验值',
+    pm2Name: 'superlike-jyz',
+    description: '24小时补experience_7d；>=80自动清理候选',
+    group: 'service'
   },
   {
     key: 'proxy-pool',
     name: '代理池维护',
     pm2Name: 'weibo-proxy-pool',
-    script: 'scripts/build-weibo-proxy-pool.js',
-    env: {},
-    oneShot: true
+    description: '每15分钟维护健康代理池',
+    group: 'service'
   }
 ];
 
@@ -868,7 +888,8 @@ app.get('/api/admin/scripts', checkAdmin, async (req, res) => {
           key: def.key,
           name: def.name,
           pm2Name: def.pm2Name,
-          oneShot: def.oneShot,
+          description: def.description || '',
+          group: def.group || '',
           ...(proc
             ? normalizePm2Status(proc)
             : {
@@ -956,7 +977,7 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
             def.pm2Name,
             '--update-env'
           ],
-          def.env
+          {}
         );
       } else {
         await runPm2(
@@ -966,7 +987,7 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
             '--only',
             def.pm2Name
           ],
-          def.env
+          {}
         );
       }
 
@@ -978,7 +999,7 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
             def.pm2Name,
             '--update-env'
           ],
-          def.env
+          {}
         );
       } else {
         await runPm2(
@@ -988,7 +1009,7 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
             '--only',
             def.pm2Name
           ],
-          def.env
+          {}
         );
       }
 
@@ -1032,6 +1053,67 @@ app.post('/api/admin/scripts/:key/:action', checkAdmin, async (req, res) => {
     });
   }
 });
+
+app.get('/api/admin/scripts/:key/logs', checkAdmin, async (req, res) => {
+  try {
+    const def =
+      getScriptDefinition(
+        req.params.key
+      );
+
+    if (!def) {
+      return res.status(404).json({
+        success: false,
+        message: '未知脚本'
+      });
+    }
+
+    const lines =
+      Math.min(
+        300,
+        Math.max(
+          20,
+          Number(req.query.lines) || 100
+        )
+      );
+
+    const result =
+      await runPm2([
+        'logs',
+        def.pm2Name,
+        '--nostream',
+        '--lines',
+        String(lines)
+      ]);
+
+    res.json({
+      success: true,
+      key: def.key,
+      pm2Name: def.pm2Name,
+      text:
+        [
+          result.stdout,
+          result.stderr
+        ]
+          .filter(Boolean)
+          .join('\n')
+          .trim()
+    });
+
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message:
+        error.message
+        + (
+          error.stderr
+            ? ' | ' + String(error.stderr).trim()
+            : ''
+        )
+    });
+  }
+});
+
 
 /* 普通 API */
 app.get('/api/monitors', (req, res) => {
