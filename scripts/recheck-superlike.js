@@ -289,7 +289,7 @@ const MODE3_ROUND_INTERVAL_MS =
 
 /*
  * Mode3 Profile：
- * 00:00-18:59 每2分钟一轮，每轮最多100个 UID。
+ * 00:00-18:59 每2分钟一轮，每轮最多300个 UID。
  * 只检查数据库 experience_7d >= 70 的 UID。
  * 按数据库现有 experience_7d 从高到低扫描；不读取、不更新经验值。
  * 同分数再按最久未检查排序。
@@ -297,7 +297,7 @@ const MODE3_ROUND_INTERVAL_MS =
  */
 const PROFILE_VERIFY_BATCH_SIZE =
   Number(process.env.SUPERLIKE_PROFILE_VERIFY_BATCH_SIZE)
-  || 100;
+  || 300;
 
 
 const LIST_FIRST_RUN_MAX_PAGES =
@@ -5756,7 +5756,7 @@ async function runMode4Forever() {
  * 模式2/3常驻轮询
  *
  * Mode2：15秒为最短轮询间隔，处理全部到期评论任务；上一轮不强制取消。
- * Mode3：2分钟一轮，每轮最多100个 UID，按最久未检查优先。
+ * Mode3：2分钟一轮，每轮最多300个 UID，按最久未检查优先。
  *
  * Mode3 到达下一轮边界时，如果上一轮仍未结束，会 abort 上一轮。
  * Mode2 则让当前到期队列完整跑完，避免低评论帖子长期饿死。
@@ -6064,7 +6064,7 @@ function askRecheckMode() {
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
-    console.log('3 = Profile高分UID复检（只查今天入库且jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多100个；晚19点后暂停）');
+    console.log('3 = Profile高分UID复检（只查今天入库且jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多300个；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续一直扫到上次last_uid边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
