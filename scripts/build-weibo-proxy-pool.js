@@ -737,21 +737,18 @@ async function fetchMonosansCandidates() {
 
 async function fetchHProxyCandidates() {
   return fetchPlainProxySources([
-    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/proxies/http.txt', 'http'],
-    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/proxies/socks5.txt', 'socks5']
+    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/hproxy-com/free-proxy-list/main/socks5.txt', 'socks5']
   ]);
 }
 
 async function fetchProxioCandidates() {
-  const sources = [
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/http.txt', 'http'],
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/https.txt', 'http'],
-    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/proxies/socks5.txt', 'socks5'],
+  // proxio-io/proxy-list 的稳定 raw 文件就在仓库根目录。
+  return fetchPlainProxySources([
     ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/http.txt', 'http'],
+    ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/https.txt', 'http'],
     ['https://raw.githubusercontent.com/proxio-io/proxy-list/main/socks5.txt', 'socks5']
-  ];
-
-  return fetchPlainProxySources(sources);
+  ]);
 }
 
 
