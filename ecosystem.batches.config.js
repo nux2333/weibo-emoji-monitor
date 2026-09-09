@@ -53,10 +53,18 @@ module.exports = {
       'scan-fresh-latest',
       'fresh-latest'
     ),
-    scanWorker(
-      'scan-fresh-superlike',
-      'fresh-superlike'
-    ),
+    {
+      ...scanWorker(
+        'scan-fresh-superlike',
+        'fresh-superlike'
+      ),
+      env: {
+        SUPERLIKE_WORKER_ONLY:
+          'fresh-superlike',
+        SUPERLIKE_HEADLESS:
+          '0'
+      }
+    },
     scanWorker(
       'scan-fresh-yishanshui',
       'fresh-yishanshui'
