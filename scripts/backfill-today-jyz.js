@@ -43,7 +43,7 @@ const JYZ_PROFILE_DIR =
     : path.join(
         ROOT,
         'data',
-        'superlike-browser-profile-scan'
+        'superlike-browser-profile-jyz'
       );
 
 const USE_PROXY =
@@ -413,7 +413,7 @@ async function ensureLocalContext() {
   }
 
   console.log(
-    '[JYZ补数] 启动老主浏览器 persistent profile'
+    '[JYZ补数] 启动独立JYZ persistent profile'
     + (
       currentProxyAssignment?.proxy
         ? ' | 代理='
@@ -1132,7 +1132,7 @@ async function queryJyz(
     + (
       USE_PROXY
         ? '健康代理池（显式开启）'
-        : '老主浏览器 profile：data/superlike-browser-profile-scan'
+        : 'JYZ独立 profile：data/superlike-browser-profile-jyz'
     )
   );
   console.log(
