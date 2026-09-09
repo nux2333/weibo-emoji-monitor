@@ -143,6 +143,46 @@ function getProfilePosts(
   return posts;
 }
 
+function pickHotProfileCandidatePost(
+  profilePosts
+) {
+  if (
+    !Array.isArray(profilePosts)
+    ||
+    profilePosts.length === 0
+  ) {
+    return null;
+  }
+
+  return profilePosts
+    .map(
+      post => ({
+        post,
+        comments:
+          getCommentsCount(post),
+        createdAtMs:
+          parsePostCreatedAtMs(post)
+      })
+    )
+    .filter(
+      item =>
+        item.comments !== null
+        &&
+        item.comments < 21
+        &&
+        Number.isFinite(
+          Number(item.createdAtMs)
+        )
+    )
+    .sort(
+      (a, b) =>
+        Number(b.createdAtMs)
+        - Number(a.createdAtMs)
+    )[0]?.post
+    || null;
+}
+
+
 function pickProfileReplacementPost(profilePosts) {
   const oneMonthAgo =
     Date.now()
@@ -1168,6 +1208,7 @@ module.exports = {
   profileHasSuperLike,
   getProfilePosts,
   pickProfileReplacementPost,
+  pickHotProfileCandidatePost,
   checkUserSuperLikeByProfileInner,
   checkUserSuperLikeByProfile
 };
