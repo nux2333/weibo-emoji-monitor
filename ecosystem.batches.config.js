@@ -62,7 +62,7 @@ module.exports = {
         SUPERLIKE_WORKER_ONLY:
           'fresh-superlike',
         SUPERLIKE_HEADLESS:
-          '0',
+          '1',
         SUPERLIKE_SCAN_FORCE_LOCAL:
           '1'
       }
