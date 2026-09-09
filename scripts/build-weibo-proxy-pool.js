@@ -1,6 +1,6 @@
 const fs = require('fs');
 const path = require('path');
-const { chromium } = require('playwright');
+const { request } = require('playwright');
 
 const LOG_DIR = path.join(__dirname, '..', 'logs', 'proxy-pool');
 
@@ -148,6 +148,59 @@ function normalizeProxy(rawValue, defaultScheme = 'http') {
 
   return `${defaultScheme}://${raw}`;
 }
+
+function getPlaywrightProxyConfig(rawValue) {
+  const normalized =
+    normalizeProxy(
+      rawValue
+    );
+
+  if (!normalized) {
+    return null;
+  }
+
+  try {
+    const parsed =
+      new URL(
+        normalized
+      );
+
+    const proxy = {
+      server:
+        parsed.protocol
+        + '//'
+        + parsed.hostname
+        + (
+          parsed.port
+            ? ':' + parsed.port
+            : ''
+        )
+    };
+
+    if (parsed.username) {
+      proxy.username =
+        decodeURIComponent(
+          parsed.username
+        );
+    }
+
+    if (parsed.password) {
+      proxy.password =
+        decodeURIComponent(
+          parsed.password
+        );
+    }
+
+    return proxy;
+
+  } catch {
+    return {
+      server:
+        normalized
+    };
+  }
+}
+
 
 function readGoodPool() {
   try {
@@ -565,46 +618,47 @@ async function testOne(proxy) {
   const startedAt =
     Date.now();
 
-  let browser = null;
+  let apiContext = null;
 
   try {
-    browser =
-      await chromium.launch({
-        headless: true,
-        proxy: {
-          server: proxy
-        }
+    const proxyConfig =
+      getPlaywrightProxyConfig(
+        proxy
+      );
+
+    apiContext =
+      await request.newContext({
+        proxy:
+          proxyConfig,
+        userAgent:
+          USER_AGENT,
+        extraHTTPHeaders: {
+          Accept:
+            'text/html,application/json,text/plain,*/*'
+        },
+        ignoreHTTPSErrors:
+          true
       });
 
-    const context =
-      await browser.newContext();
-
-    const page =
-      await context.newPage();
-
-    const weiboResponse =
-      await page.goto(
+    const response =
+      await apiContext.get(
         WEIBO_URL,
         {
-          waitUntil:
-            'domcontentloaded',
-
           timeout:
-            TIMEOUT_MS
+            TIMEOUT_MS,
+          failOnStatusCode:
+            false
         }
       );
 
     const status =
-      weiboResponse
-        ? weiboResponse.status()
-        : 0;
+      response.status();
 
     if (
-      !weiboResponse
-      || status >= 400
+      status >= 400
     ) {
       throw new Error(
-        `weibo HTTP ${status || 'NO_RESPONSE'}`
+        `weibo HTTP ${status}`
       );
     }
 
@@ -622,22 +676,24 @@ async function testOne(proxy) {
       ok: false,
       proxy,
       error:
-        error.message,
+        error?.message
+        || String(error),
       ms:
         Date.now()
         - startedAt
     };
 
   } finally {
-    if (browser) {
+    if (apiContext) {
       try {
-        await browser.close();
+        await apiContext.dispose();
       } catch {
         // ignore
       }
     }
   }
 }
+
 
 async function testMany(
   items,
