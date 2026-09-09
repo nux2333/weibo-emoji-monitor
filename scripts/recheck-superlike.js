@@ -2750,7 +2750,7 @@ function getDistinctUsersForLightProfile(
 ) {
   /*
    * 全量 UID 分批轮询：
-   * - 只处理数据库 experience_7d >= 70 的 UID
+   * - 只处理今天首次入库且数据库 experience_7d >= 70 的 UID
    * - 同一个 UID 无论有多少帖子，Profile 只检查一次
    * - 严格按数据库现有 experience_7d 从高到低
    * - 同分数再按从未检查 / 最久未检查排序
@@ -2774,9 +2774,8 @@ function getDistinctUsersForLightProfile(
     WHERE p.monitor_id = ?
       AND p.uid IS NOT NULL
       AND p.uid <> ''
-      -- Mode3：只处理今天、昨天、前天首次入库的数据
-      AND date(p.first_seen_at) >= date('now', '+8 hours', '-2 day')
-      AND date(p.first_seen_at) <= date('now', '+8 hours')
+      -- Mode3：只处理今天首次入库的数据（中国时间）
+      AND date(p.first_seen_at) = date('now', '+8 hours')
       AND NOT EXISTS (
         SELECT 1
         FROM superlike_users su
@@ -5910,7 +5909,7 @@ function askRecheckMode() {
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
-    console.log('3 = Profile高分UID复检（只查jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多30个；晚19点后暂停）');
+    console.log('3 = Profile高分UID复检（只查今天入库且jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多30个；晚19点后暂停）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续一直扫到上次last_uid边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
