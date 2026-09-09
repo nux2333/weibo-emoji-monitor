@@ -256,6 +256,20 @@ function isProxyConnectionError(
     ||
     /ERR_TIMED_OUT/i.test(message)
     ||
+    /ERR_EMPTY_RESPONSE/i.test(message)
+    ||
+    /ERR_CERT_AUTHORITY_INVALID/i.test(message)
+    ||
+    /ERR_CERT_COMMON_NAME_INVALID/i.test(message)
+    ||
+    /ERR_CERT_DATE_INVALID/i.test(message)
+    ||
+    /Failed to fetch/i.test(message)
+    ||
+    /NetworkError/i.test(message)
+    ||
+    /fetch failed/i.test(message)
+    ||
     /proxy/i.test(message)
   );
 }
@@ -859,7 +873,9 @@ async function queryJyz(
         console.log(
           '[JYZ补数][重试] UID='
           + uid
-          + ' | 代理连接失败后换代理 | '
+          + ' | '
+          + (result.message || '代理连接失败')
+          + ' → 淘汰当前代理并换代理重试 | '
           + attempt
           + '/'
           + maxAttempts
