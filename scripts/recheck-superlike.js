@@ -3208,6 +3208,11 @@ async function runLightSuperLikeRecheck(signal = null) {
         await chromium.launchPersistentContext(
           profileDir,
           {
+            /*
+             * Windows 下使用 bundled Chromium 的新 headless 模式，
+             * 避免旧 headless shell 弹出黑色控制台窗口。
+             */
+            channel: 'chromium',
             headless: true,
             ...(nextProxy ? { proxy: nextProxy } : {}),
             viewport: {
@@ -4315,6 +4320,7 @@ async function runLightCommentRecheck(
       await chromium.launchPersistentContext(
         profileDir,
         {
+          channel: 'chromium',
           headless: true,
           ...(proxy ? { proxy } : {}),
           viewport: {
@@ -4403,6 +4409,7 @@ async function runLightCommentRecheck(
               await chromium.launchPersistentContext(
                 profileDir,
                 {
+                  channel: 'chromium',
                   headless: true,
                   ...(retryProxy ? { proxy: retryProxy } : {}),
                   viewport: {
@@ -4461,6 +4468,7 @@ async function runLightCommentRecheck(
               await chromium.launchPersistentContext(
                 profileDir,
                 {
+                  channel: 'chromium',
                   headless: true,
                   proxy: retryProxy,
                   viewport: {
@@ -4555,6 +4563,7 @@ async function runLightCommentRecheck(
             await chromium.launchPersistentContext(
               profileDir,
               {
+                channel: 'chromium',
                 headless: true,
                 ...(retryProxy ? { proxy: retryProxy } : {}),
                 viewport: {
@@ -6109,12 +6118,13 @@ async function main() {
       await chromium.launchPersistentContext(
         profileDir,
         {
-
           /*
-           * 现在先保持浏览器窗口。
-           *
-           * 后面稳定以后再改 headless。
+           * Mode1 固定后台运行。
+           * 使用 Chromium 新 headless 模式，避免 Windows 弹黑窗口。
            */
+          channel:
+            'chromium',
+
           headless:
             true,
 
