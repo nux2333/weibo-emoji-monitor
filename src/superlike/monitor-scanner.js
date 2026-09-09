@@ -244,7 +244,7 @@ const NIGHT_FRESH_FIRST_PAGES =
 /*
  * Legacy/Fresh 兼容逻辑仍保留历史 Resume 时间预算。
  * 独立 History Worker 不再使用时间预算，会持续扫描直到：
- * - 到达 HISTORY_MAX_AGE_HOURS 边界
+ * - 到达中国时间昨天 00:00 边界
  * - 没有下一页
  * - 请求失败 / 418
  */
