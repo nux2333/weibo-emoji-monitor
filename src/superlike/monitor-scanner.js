@@ -191,11 +191,16 @@ function getTagSectionMaxPages(
   if (
     String(source?.key || '')
     === 'section-yishanshui'
+    ||
+    String(source?.key || '')
+    === 'section-hot'
   ) {
     return Math.max(
       1,
       Number(
-        process.env.SUPERLIKE_YISHANSHUI_PAGES
+        String(source?.key || '') === 'section-hot'
+          ? process.env.SUPERLIKE_HOT_PAGES
+          : process.env.SUPERLIKE_YISHANSHUI_PAGES
       )
       || 100
     );
@@ -215,6 +220,16 @@ const TAG_SECTION_CONCURRENCY =
   );
 
 const ALL_TAG_SECTION_SOURCES = [
+  {
+    key: 'section-hot',
+    name: '热门',
+    /*
+     * 超话第一个“热门”Tab，没有二级按钮。
+     * 首页对应的 AJAX flowId 就是超话 page_id 本身。
+     */
+    flowId:
+      '100808f1d33f71dff693a2708cb3e8ef584a44'
+  },
   {
     key: 'section-superlike',
     name: '超like',
