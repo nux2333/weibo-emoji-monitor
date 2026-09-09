@@ -3119,7 +3119,7 @@ async function runLightSuperLikeRecheck(signal = null) {
 
     /*
      * Mode3 使用自己独立的 Persistent Profile。
-     * Profile 检查本身仍通过共享 Visitor Context 复用本轮会话，
+     * Mode3 的 profile_allbadge 请求通过共享 Visitor Context 发出，
      * 不再和 Mode4 / Scan 抢同一个 user-data-dir。
      */
     proxyAssignment =
@@ -3215,11 +3215,11 @@ async function runLightSuperLikeRecheck(signal = null) {
         );
 
         const probe =
-          await checkUserSuperLikeByProfile(
-            context,
+          await checkSuperLikeByBrowser(
+            mode3VisitorContext,
             config,
             probeUid,
-            mode3VisitorContext
+            signal
           );
 
         if (probe?.ok) {
@@ -3387,11 +3387,11 @@ async function runLightSuperLikeRecheck(signal = null) {
             );
           } else {
             result =
-              await checkUserSuperLikeByProfile(
-                context,
+              await checkSuperLikeByBrowser(
+                mode3VisitorContext,
                 config,
                 uid,
-                mode3VisitorContext
+                signal
               );
           }
 
