@@ -5,8 +5,13 @@ const {
 } = require('../src/proxy-pool');
 const {
   db,
-  initDatabase
+  initDatabase,
+  saveSuperLikeUser
 } = require('../src/db');
+
+const {
+  deletePostsByUidWithLog
+} = require('../src/superlike/post-save');
 
 const ROOT =
   path.join(
@@ -891,6 +896,7 @@ async function queryJyz(
     db.prepare(`
       SELECT
         id,
+        monitor_id,
         uid,
         username,
         post_id,
@@ -914,6 +920,11 @@ async function queryJyz(
   let totalProcessed = 0;
   let totalUpdated = 0;
   let totalFailed = 0;
+  let totalPromoted = 0;
+  let totalDeletedPosts = 0;
+
+  const promotedUids =
+    new Set();
 
   console.log('');
   console.log(
@@ -941,7 +952,10 @@ async function queryJyz(
     + ' 秒，然后重新查询最新数据'
   );
   console.log(
-    '# 仅更新：experience_7d'
+    '# 规则：经验值 > 80 -> 写入 superlike_users，并删除该UID全部 superlike_posts'
+  );
+  console.log(
+    '# 经验值 <= 80 -> 仅更新 experience_7d'
   );
   console.log(
     '# 网络：'
@@ -984,6 +998,14 @@ async function queryJyz(
         '总失败：'
         + totalFailed
       );
+      console.log(
+        '经验值>80加入超LIKE：'
+        + totalPromoted
+      );
+      console.log(
+        '因经验值>80删除帖子：'
+        + totalDeletedPosts
+      );
       break;
     }
 
@@ -1003,6 +1025,8 @@ async function queryJyz(
 
     let roundUpdated = 0;
     let roundFailed = 0;
+    let roundPromoted = 0;
+    let roundDeletedPosts = 0;
 
     for (
       let i = 0;
@@ -1011,6 +1035,27 @@ async function queryJyz(
     ) {
       const row =
         rows[i];
+
+      const normalizedUid =
+        String(
+          row.uid
+          || ''
+        ).trim();
+
+      if (
+        normalizedUid
+        &&
+        promotedUids.has(
+          normalizedUid
+        )
+      ) {
+        console.log(
+          '[JYZ补数][跳过] UID='
+          + normalizedUid
+          + ' | 本轮已因经验值>80加入超LIKE并删除全部帖子'
+        );
+        continue;
+      }
 
       totalProcessed++;
 
@@ -1043,11 +1088,69 @@ async function queryJyz(
           )
         )
       ) {
+        const experience7d =
+          Number(
+            result.experience7d
+          );
+
+        /*
+         * 近7天经验值严格 > 80：
+         * 直接视为已达到超LIKE门槛，不再保留候选帖子。
+         * 先写 superlike_users，再按UID删除全部 superlike_posts。
+         */
+        if (
+          experience7d > 80
+        ) {
+          const userInserted =
+            saveSuperLikeUser(
+              Number(
+                row.monitor_id
+              ),
+              normalizedUid,
+              null,
+              experience7d
+            );
+
+          const deletedPosts =
+            deletePostsByUidWithLog(
+              normalizedUid,
+              'EXPERIENCE_7D_GT_80'
+            );
+
+          promotedUids.add(
+            normalizedUid
+          );
+
+          roundPromoted++;
+          totalPromoted++;
+          roundDeletedPosts +=
+            deletedPosts;
+          totalDeletedPosts +=
+            deletedPosts;
+
+          console.log(
+            '[JYZ补数][经验值>80→超LIKE] UID='
+            + normalizedUid
+            + ' | jyz='
+            + experience7d
+            + ' | superlike_users='
+            + (
+              userInserted
+                ? '新增'
+                : '已存在/更新'
+            )
+            + ' | 删除帖子='
+            + deletedPosts
+            + ' | 来源='
+            + (result.source || '-')
+          );
+
+          continue;
+        }
+
         const changes =
           updateStmt.run(
-            Number(
-              result.experience7d
-            ),
+            experience7d,
             Number(
               row.id
             )
@@ -1064,7 +1167,7 @@ async function queryJyz(
             '[JYZ补数][更新] UID='
             + row.uid
             + ' | jyz='
-            + result.experience7d
+            + experience7d
             + ' | 来源='
             + (result.source || '-')
             + ' | 本轮更新='
@@ -1107,6 +1210,10 @@ async function queryJyz(
       + rows.length
       + ' | 更新='
       + roundUpdated
+      + ' | >80加入超LIKE='
+      + roundPromoted
+      + ' | 删除帖子='
+      + roundDeletedPosts
       + ' | 失败='
       + roundFailed
     );
