@@ -245,6 +245,29 @@ const RESUME_TIME_BUDGET_MS =
   )
   || 5 * 60 * 1000;
 
+/*
+ * History 只保留最近 N 小时的数据。
+ * 默认 48 小时，可用 SUPERLIKE_HISTORY_MAX_AGE_HOURS 覆盖。
+ * 为防 sort_time 偶发乱序，连续若干个完整旧页后才真正结束并清除 Resume。
+ */
+const HISTORY_MAX_AGE_HOURS =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_HISTORY_MAX_AGE_HOURS
+    )
+    || 48
+  );
+
+const HISTORY_OLD_PAGE_THRESHOLD =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_HISTORY_OLD_PAGE_THRESHOLD
+    )
+    || 4
+  );
+
 const SCAN_PROFILE_CONCURRENCY =
   Math.max(
     1,
@@ -277,6 +300,65 @@ const SCAN_PROFILE_CACHE_MINUTES =
   || 15;
 
 let running = false;
+
+function getHistoryPageAgeState(
+  posts,
+  cutoffMs
+) {
+  if (
+    !Array.isArray(posts)
+    ||
+    posts.length === 0
+  ) {
+    return {
+      fullyOlder: true,
+      comparablePosts: 0
+    };
+  }
+
+  let comparablePosts = 0;
+  let fullyOlder = true;
+
+  for (const post of posts) {
+    const postId =
+      getPostId(post);
+
+    if (!postId) {
+      continue;
+    }
+
+    const createdAtMs =
+      parsePostCreatedAtMs(post);
+
+    if (
+      !Number.isFinite(
+        Number(createdAtMs)
+      )
+    ) {
+      fullyOlder = false;
+      break;
+    }
+
+    comparablePosts++;
+
+    if (
+      Number(createdAtMs)
+      >= cutoffMs
+    ) {
+      fullyOlder = false;
+      break;
+    }
+  }
+
+  return {
+    fullyOlder:
+      comparablePosts > 0
+        ? fullyOlder
+        : true,
+    comparablePosts
+  };
+}
+
 
 /* ============================================================
  * Scan Response JSON
@@ -1335,6 +1417,11 @@ async function scanOneSuperLikeMonitor(
         Date.now()
         + RESUME_TIME_BUDGET_MS;
 
+      const historyCutoffMs =
+        Date.now()
+        - HISTORY_MAX_AGE_HOURS
+          * 60 * 60 * 1000;
+
       const queue =
         TAG_SECTION_SOURCES
           .map(
@@ -1391,6 +1478,7 @@ async function scanOneSuperLikeMonitor(
             item.resume;
 
           let historyPage = 0;
+          let consecutiveOldPages = 0;
 
           while (
             resume
@@ -1452,6 +1540,17 @@ async function scanOneSuperLikeMonitor(
               `${source.key}-resume`
             );
 
+            const historyPosts =
+              findPosts(
+                result.json
+              );
+
+            const ageState =
+              getHistoryPageAgeState(
+                historyPosts,
+                historyCutoffMs
+              );
+
             const pageStats =
               await processPagePosts(
                 monitor.id,
@@ -1463,7 +1562,9 @@ async function scanOneSuperLikeMonitor(
                 browser,
                 config,
                 profileCache,
-                scanVisitorContext
+                scanVisitorContext,
+                historyPosts,
+                historyCutoffMs
               );
 
             for (
@@ -1492,9 +1593,32 @@ async function scanOneSuperLikeMonitor(
                 `Profile查=${pageStats.profileChecked}`,
                 `新增=${pageStats.inserted}`,
                 `更新UID=${pageStats.replaced}`,
+                `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`,
                 `剩余预算=${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}秒`
               ].join(' | ')
             );
+
+            if (ageState.fullyOlder) {
+              consecutiveOldPages++;
+            } else {
+              consecutiveOldPages = 0;
+            }
+
+            if (
+              consecutiveOldPages
+              >= HISTORY_OLD_PAGE_THRESHOLD
+            ) {
+              clearScanSourceResume(
+                monitor.id,
+                source.key
+              );
+
+              console.log(
+                `[SuperLike][分区历史48h完成] ${source.name} 连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过最近 ${HISTORY_MAX_AGE_HOURS} 小时边界，清除Resume；更老数据不再扫描。`
+              );
+
+              break;
+            }
 
             if (!nextParams) {
               clearScanSourceResume(
@@ -1820,6 +1944,17 @@ async function scanOneSuperLikeMonitor(
         Date.now()
         + RESUME_TIME_BUDGET_MS;
 
+      const historyCutoffMs =
+        Date.now()
+        - HISTORY_MAX_AGE_HOURS
+          * 60 * 60 * 1000;
+
+      let consecutiveOldPages = 0;
+
+      console.log(
+        `[SuperLike][History][latest-posts] 仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时；连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
+      );
+
       let latestResume =
         getScanResume(
           monitor.id
@@ -1885,6 +2020,17 @@ async function scanOneSuperLikeMonitor(
           'latest-posts-history'
         );
 
+        const historyPosts =
+          findPosts(
+            result.json
+          );
+
+        const ageState =
+          getHistoryPageAgeState(
+            historyPosts,
+            historyCutoffMs
+          );
+
         const pageStats =
           await processPagePosts(
             monitor.id,
@@ -1896,7 +2042,9 @@ async function scanOneSuperLikeMonitor(
             browser,
             config,
             profileCache,
-            scanVisitorContext
+            scanVisitorContext,
+            historyPosts,
+            historyCutoffMs
           );
 
         for (
@@ -1920,9 +2068,40 @@ async function scanOneSuperLikeMonitor(
             `Post=${pageStats.found}`,
             `Profile查=${pageStats.profileChecked}`,
             `新增=${pageStats.inserted}`,
-            `更新UID=${pageStats.replaced}`
+            `更新UID=${pageStats.replaced}`,
+            `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`
           ].join(' | ')
         );
+
+        if (ageState.fullyOlder) {
+          consecutiveOldPages++;
+
+          console.log(
+            `[SuperLike][History][48h边界] page=${params.page} 整页早于最近${HISTORY_MAX_AGE_HOURS}小时/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`
+          );
+        } else {
+          if (consecutiveOldPages > 0) {
+            console.log(
+              `[SuperLike][History][48h边界] page=${params.page} 仍有最近${HISTORY_MAX_AGE_HOURS}小时内帖子，连续旧页 ${consecutiveOldPages} -> 0`
+            );
+          }
+
+          consecutiveOldPages = 0;
+        }
+
+        if (
+          consecutiveOldPages
+          >= HISTORY_OLD_PAGE_THRESHOLD
+        ) {
+          clearScanResume(
+            monitor.id
+          );
+
+          console.log(
+            `[SuperLike][History][48h完成] 已连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过最近 ${HISTORY_MAX_AGE_HOURS} 小时边界，清除 latest-posts Resume；更老数据不再扫描。`
+          );
+          break;
+        }
 
         const nextParams =
           extractNextPageParams(
