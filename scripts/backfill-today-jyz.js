@@ -417,9 +417,15 @@ async function ensureLocalContext() {
       .launchPersistentContext(
         JYZ_PROFILE_DIR,
         {
+          /*
+           * Windows 下使用新版 Chromium headless，
+           * 避免旧 headless shell / Chromium 子进程反复弹黑窗口。
+           */
+          channel:
+            'chromium',
+
           headless:
-            process.env.JYZ_BACKFILL_HEADLESS
-            !== '0',
+            true,
 
           ...(
             currentProxyAssignment?.proxy
