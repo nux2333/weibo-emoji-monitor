@@ -2894,56 +2894,26 @@ async function checkSuperLikeByBrowser(
 
   try {
     /*
-     * Mode3：通过 Persistent Browser + Visitor Context 建立真实页面会话，
-     * 再在 m.weibo.cn 页面上下文中 fetch profile_allbadge。
-     * 不再直接使用 APIRequestContext.get()。
+     * Mode3：直接在 Visitor Context 中打开 profile_allbadge URL。
+     * 不再先打开 m.weibo.cn 首页，也不再 page.evaluate(fetch)。
+     * 这样更接近浏览器地址栏直接访问接口的行为。
      */
     page =
       await context.newPage();
 
-    await page.goto(
-      'https://m.weibo.cn/',
-      {
-        waitUntil: 'domcontentloaded',
-        timeout: LIGHT_REQUEST_TIMEOUT_MS
-      }
-    );
-
-    throwIfAborted(signal);
-
-    const result =
-      await page.evaluate(
-        async (url) => {
-          const response =
-            await fetch(
-              url,
-              {
-                method: 'GET',
-                credentials: 'include',
-                headers: {
-                  'Accept': 'application/json, text/plain, */*'
-                },
-                redirect: 'follow'
-              }
-            );
-
-          const text =
-            await response.text();
-
-          return {
-            ok: response.ok,
-            status: response.status,
-            finalUrl: response.url,
-            text
-          };
-        },
-        apiUrl
+    const response =
+      await page.goto(
+        apiUrl,
+        {
+          waitUntil: 'domcontentloaded',
+          timeout: LIGHT_REQUEST_TIMEOUT_MS
+        }
       );
 
     throwIfAborted(signal);
 
     const finalUrl =
-      String(result.finalUrl || '');
+      String(page.url() || '');
 
     if (
       finalUrl.includes(
@@ -2954,21 +2924,24 @@ async function checkSuperLikeByBrowser(
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status: result.status,
+        status: response?.status?.() ?? null,
         url: apiUrl,
         message:
           `profile_allbadge 跳转 visitor.passport | ${finalUrl}`
       };
     }
 
-    if (
-      Number(result.status) === 418
-    ) {
+    const status =
+      response
+        ? response.status()
+        : null;
+
+    if (status === 418) {
       return {
         ok: false,
         blocked: true,
         hasSuperLike: null,
-        status: 418,
+        status,
         url: apiUrl,
         message:
           'profile_allbadge HTTP 418'
@@ -2976,35 +2949,40 @@ async function checkSuperLikeByBrowser(
     }
 
     if (
-      !result.ok
+      status !== null
+      &&
+      (status < 200 || status >= 300)
     ) {
       return {
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status: result.status,
+        status,
         url: apiUrl,
         message:
-          `profile_allbadge HTTP ${result.status} | ${String(result.text || '').slice(0, 500)}`
+          `profile_allbadge HTTP ${status}`
       };
     }
+
+    const body =
+      await page.locator('body').innerText();
 
     let json = null;
 
     try {
       json =
         JSON.parse(
-          result.text
+          body
         );
     } catch {
       return {
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status: result.status,
+        status,
         url: apiUrl,
         message:
-          `profile_allbadge 返回的不是 JSON | ${String(result.text || '').slice(0, 500)}`
+          `profile_allbadge 返回的不是 JSON | ${String(body || '').slice(0, 500)}`
       };
     }
 
@@ -3015,10 +2993,10 @@ async function checkSuperLikeByBrowser(
         ok: false,
         blocked: false,
         hasSuperLike: null,
-        status: result.status,
+        status,
         url: apiUrl,
         message:
-          `profile_allbadge API ok=${json?.ok} | ${String(result.text || '').slice(0, 500)}`
+          `profile_allbadge API ok=${json?.ok} | ${String(body || '').slice(0, 500)}`
       };
     }
 
@@ -3027,9 +3005,9 @@ async function checkSuperLikeByBrowser(
       blocked: false,
       hasSuperLike:
         profileTextHasSuperLike(
-          result.text
+          body
         ),
-      status: result.status,
+      status,
       url: apiUrl
     };
 
@@ -3086,7 +3064,7 @@ async function runLightSuperLikeRecheck(signal = null) {
   console.log('');
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式3 profile_allbadge 模式');
-  console.log('# Mode3 使用 Persistent/Visitor Context 页面会话请求 profile_allbadge；本轮30个UID共享游客Context');
+  console.log('# Mode3 使用 Visitor Context 直接 goto profile_allbadge；本轮30个UID共享游客Context');
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
   console.log('# 只检查 experience_7d >= 70；按数据库经验值从高到低，不读取/更新经验值');
