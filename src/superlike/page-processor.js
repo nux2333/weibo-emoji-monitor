@@ -18,7 +18,8 @@ const {
 } = require('./post-utils');
 const {
   checkUserSuperLikeByProfile,
-  pickProfileReplacementPost
+  pickProfileReplacementPost,
+  pickHotProfileCandidatePost
 } = require('./profile');
 const {
   saveTargetPost,
@@ -42,8 +43,19 @@ async function processPagePosts(
   profileCache,
   reusableProfileContext = null,
   preExtractedPosts = null,
-  minCreatedAtMs = null
+  minCreatedAtMs = null,
+  options = null
 ) {
+  const processingMode =
+    String(
+      options?.mode
+      || ''
+    );
+
+  const hotMode =
+    processingMode === 'hot';
+
+
   const stats = {
     found: 0,
     duplicateInRun: 0,
@@ -223,6 +235,8 @@ async function processPagePosts(
      * 今天剩余时间 scanner 不再抓取该 UID 的任何帖子。
      */
     if (
+      !hotMode
+      &&
       uid
       &&
       isDailyExcludedUser(
@@ -290,6 +304,168 @@ async function processPagePosts(
         console.log(
           `[SuperLike][待删除] UID=${uid} feed Response发现 chao_like`
         );
+      }
+
+      continue;
+    }
+
+
+    if (hotMode) {
+      /*
+       * 热门专用逻辑：
+       * - feed 只看超LIKE icon，不看 feed 评论数；
+       * - 同一 UID 本轮只查一次主页；
+       * - 主页第一页里选“发帖时间最新 + 评论<21”的帖子；
+       * - 第一页没有符合条件的帖子就跳过该 UID；
+       * - Profile 请求失败不拿 feed 帖子兜底，避免热门误入库。
+       */
+      if (
+        uid
+        &&
+        seenUidThisRun.has(uid)
+      ) {
+        stats.duplicateUidInRun++;
+        continue;
+      }
+
+      if (!uid) {
+        console.log(
+          `[SuperLike][热门跳过] Post=${postId} 没有UID`
+        );
+        continue;
+      }
+
+      seenUidThisRun.add(uid);
+
+      let profileResult =
+        profileCache.get(uid)
+        || null;
+
+      if (!profileResult) {
+        stats.profileChecked++;
+
+        console.log(
+          `[SuperLike][热门Profile] UID=${uid} feed无超LIKE；忽略feed评论数，检查主页第一页`
+        );
+
+        profileResult =
+          await checkUserSuperLikeByProfile(
+            context,
+            config,
+            uid,
+            reusableProfileContext
+          );
+
+        profileCache.set(
+          uid,
+          profileResult
+        );
+      }
+
+      if (
+        profileResult?.ok
+        &&
+        profileResult.hasSuperLike
+      ) {
+        stats.hasSuperLike++;
+        stats.profileSuperLike++;
+
+        const userInserted =
+          saveSuperLikeUser(
+            monitorId,
+            uid
+          );
+
+        if (!deleteUidSet.has(uid)) {
+          stats.deleteQueued++;
+        }
+
+        deleteUidSet.add(uid);
+
+        console.log(
+          `[SuperLike][热门跳过] UID=${uid} 主页确认SuperLike | ${userInserted ? '写入' : '已存在'} superlike_users`
+        );
+
+        continue;
+      }
+
+      if (
+        !profileResult?.ok
+        ||
+        !Array.isArray(
+          profileResult.profilePosts
+        )
+      ) {
+        stats.profileFailed++;
+
+        console.log(
+          `[SuperLike][热门跳过] UID=${uid} 主页第一页获取失败，不使用feed帖子兜底 | ${profileResult?.message || '-'}`
+        );
+
+        continue;
+      }
+
+      const targetPost =
+        pickHotProfileCandidatePost(
+          profileResult.profilePosts
+        );
+
+      if (!targetPost) {
+        console.log(
+          `[SuperLike][热门跳过] UID=${uid} 主页第一页没有评论<21的帖子`
+        );
+
+        continue;
+      }
+
+      stats.target++;
+
+      console.log(
+        `[SuperLike][热门主页候选] UID=${uid} | Post=${getPostId(targetPost)} | 评论=${getCommentsCount(targetPost)} | 时间=${getPostCreatedAt(targetPost) || '-'}`
+      );
+
+      try {
+        const saved =
+          saveTargetPost(
+            monitorId,
+            targetPost,
+            'NO_SUPERLIKE'
+          );
+
+        if (
+          saved.status ===
+          'inserted'
+        ) {
+          stats.inserted++;
+        } else if (
+          saved.status ===
+          'replaced'
+        ) {
+          stats.replaced++;
+        } else if (
+          saved.status ===
+          'kept_existing'
+        ) {
+          stats.existingInDb++;
+        }
+
+        markSuperLikeProfileChecked(
+          monitorId,
+          uid,
+          'NO_SUPERLIKE'
+        );
+
+      } catch (error) {
+        if (
+          String(error.message)
+            .toLowerCase()
+            .includes('unique')
+        ) {
+          stats.existingInDb++;
+          continue;
+        }
+
+        throw error;
       }
 
       continue;
