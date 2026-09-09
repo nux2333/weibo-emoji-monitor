@@ -610,11 +610,52 @@ async function collectSources() {
   );
 }
 
+let sharedChromiumBrowser =
+  null;
+
+async function getSharedChromiumBrowser() {
+  if (
+    sharedChromiumBrowser
+    &&
+    sharedChromiumBrowser.isConnected()
+  ) {
+    return sharedChromiumBrowser;
+  }
+
+  sharedChromiumBrowser =
+    await chromium.launch({
+      headless: true
+    });
+
+  console.log(
+    '[健康池][Chromium] 已启动单个共享Headless Chromium；后续代理复用浏览器，不再反复启动进程。'
+  );
+
+  return sharedChromiumBrowser;
+}
+
+
+async function closeSharedChromiumBrowser() {
+  if (!sharedChromiumBrowser) {
+    return;
+  }
+
+  try {
+    await sharedChromiumBrowser.close();
+  } catch {
+    // ignore
+  }
+
+  sharedChromiumBrowser =
+    null;
+}
+
+
 async function chromiumVerify(proxy) {
   const startedAt =
     Date.now();
 
-  let browser = null;
+  let context = null;
 
   try {
     const proxyConfig =
@@ -622,15 +663,13 @@ async function chromiumVerify(proxy) {
         proxy
       );
 
-    browser =
-      await chromium.launch({
-        headless: true,
-        proxy:
-          proxyConfig
-      });
+    const browser =
+      await getSharedChromiumBrowser();
 
-    const context =
+    context =
       await browser.newContext({
+        proxy:
+          proxyConfig,
         userAgent:
           USER_AGENT,
         ignoreHTTPSErrors:
@@ -791,9 +830,9 @@ async function chromiumVerify(proxy) {
     };
 
   } finally {
-    if (browser) {
+    if (context) {
       try {
-        await browser.close();
+        await context.close();
       } catch {
         // ignore
       }
@@ -1393,6 +1432,8 @@ if (
     .catch(async error => {
       console.error(error);
 
+      await closeSharedChromiumBrowser();
+
       if (batchLogger) {
         try {
           await batchLogger.close();
@@ -1407,5 +1448,6 @@ if (
 
 module.exports = {
   main,
-  runForever
+  runForever,
+  closeSharedChromiumBrowser
 };
