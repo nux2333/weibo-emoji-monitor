@@ -105,6 +105,22 @@ const WEIBO_URL =
   process.env.WEIBO_GOOD_PROXY_WEIBO_URL
   || 'https://weibo.com/p/100808f1d33f71dff693a2708cb3e8ef584a44';
 
+const MOBILE_WEIBO_URL =
+  process.env.WEIBO_GOOD_PROXY_MOBILE_URL
+  || 'https://m.weibo.cn/';
+
+const MAX_LATENCY_MS =
+  Number(
+    process.env.WEIBO_GOOD_PROXY_MAX_LATENCY_MS
+  )
+  || 5000;
+
+const SOCKS5_MAX_LATENCY_MS =
+  Number(
+    process.env.WEIBO_GOOD_PROXY_SOCKS5_MAX_LATENCY_MS
+  )
+  || 3500;
+
 const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
   + 'AppleWebKit/537.36 (KHTML, like Gecko) '
@@ -640,6 +656,9 @@ async function testOne(proxy) {
           true
       });
 
+    const firstStartedAt =
+      Date.now();
+
     const response =
       await apiContext.get(
         WEIBO_URL,
@@ -654,6 +673,10 @@ async function testOne(proxy) {
     const status =
       response.status();
 
+    const pcMs =
+      Date.now()
+      - firstStartedAt;
+
     if (
       status >= 400
     ) {
@@ -662,10 +685,62 @@ async function testOne(proxy) {
       );
     }
 
+    const mobileStartedAt =
+      Date.now();
+
+    const mobileResponse =
+      await apiContext.get(
+        MOBILE_WEIBO_URL,
+        {
+          timeout:
+            TIMEOUT_MS,
+          failOnStatusCode:
+            false
+        }
+      );
+
+    const mobileStatus =
+      mobileResponse.status();
+
+    const mobileMs =
+      Date.now()
+      - mobileStartedAt;
+
+    if (
+      mobileStatus >= 400
+    ) {
+      throw new Error(
+        `m.weibo HTTP ${mobileStatus}`
+      );
+    }
+
+    const latencyLimit =
+      /^socks5:\/\//i.test(proxy)
+        ? SOCKS5_MAX_LATENCY_MS
+        : MAX_LATENCY_MS;
+
+    const worstMs =
+      Math.max(
+        pcMs,
+        mobileMs
+      );
+
+    if (
+      worstMs
+      > latencyLimit
+    ) {
+      throw new Error(
+        `latency too high: pc=${pcMs}ms mobile=${mobileMs}ms limit=${latencyLimit}ms`
+      );
+    }
+
     return {
       ok: true,
       proxy,
       status,
+      mobileStatus,
+      pcMs,
+      mobileMs,
       ms:
         Date.now()
         - startedAt
@@ -818,7 +893,10 @@ async function main() {
   console.log(`目标健康代理: ${TARGET_GOOD_COUNT}`);
   console.log(`单源最多候选: ${MAX_CANDIDATES_PER_SOURCE}`);
   console.log(`并发: ${CONCURRENCY}`);
-  console.log(`测试微博: ${WEIBO_URL}`);
+  console.log(`测试微博PC: ${WEIBO_URL}`);
+  console.log(`测试微博Mobile: ${MOBILE_WEIBO_URL}`);
+  console.log(`HTTP延迟上限: ${MAX_LATENCY_MS}ms`);
+  console.log(`SOCKS5延迟上限: ${SOCKS5_MAX_LATENCY_MS}ms`);
   console.log('==============================================');
   console.log('');
 
@@ -936,17 +1014,18 @@ async function main() {
         TARGET_GOOD_COUNT
       );
 
-  const diskPool =
-    readGoodPool();
-
+  /*
+   * 这里只保存“本轮实际复测通过”的代理。
+   * 旧逻辑会把 diskPool 再拼回来，导致本轮已经失败的旧代理重新进入健康池，
+   * 这是健康池可用率低的主要原因之一。
+   */
   const finalPool =
     Array.from(
-      new Set([
-        ...healthy.map(
+      new Set(
+        healthy.map(
           item => item.proxy
-        ),
-        ...diskPool
-      ])
+        )
+      )
     )
       .slice(
         0,
