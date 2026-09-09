@@ -147,6 +147,7 @@ const RATE_LIMIT_BACKOFF_2_MS =
   || 60 * 60 * 1000;
 
 let consecutive418 = 0;
+let running = false;
 
 /*
  * Worker 模式：
