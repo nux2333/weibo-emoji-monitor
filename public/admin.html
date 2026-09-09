@@ -9,9 +9,10 @@
 <body>
 <main class="container">
   <header class="page-header">
-    <div><h1>监控后台</h1><p>管理 Monitor、立即抓取、查看原始 API Response</p></div>
+    <div><h1>脚本控制台</h1><p>远程管理 Scan / Mode / JYZ / 代理池</p></div>
     <div class="actions">
       <a class="button" href="/scripts">脚本管理</a>
+      <a class="button" href="/monitors-admin">Monitor 管理</a>
       <a class="button" href="/logs-live">实时日志</a>
       <a class="button" href="/api-responses">API Response 管理</a>
     </div>
@@ -20,17 +21,6 @@
   <section class="card">
     <h2>管理员 Token</h2>
     <div class="row"><input id="token" type="password" placeholder="ADMIN_TOKEN"><button class="button" onclick="saveToken()">保存</button></div>
-  </section>
-
-  <section class="card">
-    <h2>新增 Monitor</h2>
-    <div class="grid">
-      <input id="name" placeholder="名称，例如：田栩宁 ELLE">
-      <input id="url" placeholder="微博评论 API / 页面 URL">
-      <input id="emojis" placeholder="Emoji，例如 😂,❤️,👍">
-      <input id="texts" placeholder="文本关键词，用逗号分隔">
-    </div>
-    <button class="button primary" onclick="createMonitor()">添加并抓取</button>
   </section>
 
   <section class="card">
@@ -47,15 +37,11 @@
     <div id="scriptList">加载中...</div>
   </section>
 
-  <section class="card">
-    <div class="section-title"><h2>Monitor 列表</h2><button class="button" onclick="loadMonitors()">刷新</button></div>
-    <div id="list">加载中...</div>
-  </section>
 </main>
 <script>
 const $=id=>document.getElementById(id);
 function getToken(){return localStorage.getItem('admin_token')||'';}
-function saveToken(){localStorage.setItem('admin_token',$('token').value.trim());loadMonitors();}
+function saveToken(){localStorage.setItem('admin_token',$('token').value.trim());loadScripts();}
 $('token').value=getToken();
 async function api(url,options={}){
   const headers={'Content-Type':'application/json','x-admin-token':getToken(),...(options.headers||{})};
@@ -64,33 +50,6 @@ async function api(url,options={}){
   if(!r.ok||j.success===false)throw new Error(j.message||`HTTP ${r.status}`); return j;
 }
 function esc(v){return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;');}
-async function loadMonitors(){
-  try{
-    const j=await api('/api/admin/monitors');
-    $('list').innerHTML=j.data.map(m=>`<div class="monitor-item">
-      <div><strong>${esc(m.name)}</strong><span class="status ${m.enabled?'ok':'muted'}">${m.enabled?'启用':'停用'}</span></div>
-      <div class="muted url">${esc(m.url)}</div>
-      <div>Emoji：${m.emojis.map(esc).join(' ')||'无'}</div>
-      <div>文本：${m.texts.map(esc).join(' / ')||'无'}</div>
-      <div class="actions">
-        <button class="button" onclick="runMonitor(${m.id})">立即抓取</button>
-        <button class="button" onclick="toggle(${m.id},${m.enabled})">${m.enabled?'停用':'启用'}</button>
-        <button class="button danger" onclick="removeMonitor(${m.id})">删除</button>
-      </div></div>`).join('')||'<div class="empty">暂无 Monitor</div>';
-  }catch(e){$('list').innerHTML=`<div class="error">${esc(e.message)}</div>`;}
-}
-async function createMonitor(){
-  try{
-    const split=v=>v.split(',').map(x=>x.trim()).filter(Boolean);
-    await api('/api/admin/monitors',{method:'POST',body:JSON.stringify({name:$('name').value.trim(),url:$('url').value.trim(),emojis:split($('emojis').value),texts:split($('texts').value),enabled:true})});
-    alert('已添加，后台开始抓取'); $('name').value=$('url').value=$('emojis').value=$('texts').value=''; loadMonitors();
-  }catch(e){alert(e.message);}
-}
-async function runMonitor(id){try{await api(`/api/admin/monitors/${id}/run`,{method:'POST'});alert('已开始抓取');}catch(e){alert(e.message);}}
-async function toggle(id,current){
-  try{const j=await api('/api/admin/monitors');const m=j.data.find(x=>x.id===id);await api(`/api/admin/monitors/${id}`,{method:'PUT',body:JSON.stringify({...m,enabled:!current})});loadMonitors();}catch(e){alert(e.message);}
-}
-async function removeMonitor(id){if(!confirm('确定删除？历史 comments、stats、responses 也会删除。'))return;try{await api(`/api/admin/monitors/${id}`,{method:'DELETE'});loadMonitors();}catch(e){alert(e.message);}}
 
 function scriptStatus(status){
   if(status==='online')return ['运行中','ok'];
@@ -139,7 +98,6 @@ async function scriptAct(key,action){
 }
 
 loadScripts();
-loadMonitors();
 setInterval(loadScripts,10000);
 </script>
 </body>
