@@ -6,7 +6,7 @@ const ROOT = path.join(__dirname, '..');
 const PROFILE_DIR =
   process.env.WEIBO_JYZ_PROFILE
     ? path.resolve(process.env.WEIBO_JYZ_PROFILE)
-    : path.join(ROOT, 'data', 'weibo-jyz-browser-profile');
+    : path.join(ROOT, 'data', 'superlike-browser-profile-scan');
 
 const PORT =
   Number(process.env.WEIBO_JYZ_PORT)
@@ -50,7 +50,7 @@ async function ensureContext() {
     );
 
   console.log(
-    '[JYZ Service] persistent profile ready: ' +
+    '[JYZ Service] 老主Scanner persistent profile ready: ' +
     PROFILE_DIR
   );
 
@@ -61,156 +61,107 @@ async function getJyz(topicHash, uid) {
   const ctx =
     await ensureContext();
 
-  let page = null;
+  const pageId =
+    '100808'
+    + topicHash;
+
+  const apiUrl =
+    new URL(
+      'https://huati.weibo.cn/aj/setting/icon/getconfig'
+    );
+
+  apiUrl.searchParams.set(
+    'type',
+    '1'
+  );
+
+  apiUrl.searchParams.set(
+    'union_id',
+    'chao_like'
+  );
+
+  apiUrl.searchParams.set(
+    'page_id',
+    pageId
+  );
+
+  apiUrl.searchParams.set(
+    'param_uid',
+    String(uid)
+  );
+
+  const referer =
+    new URL(
+      'https://huati.weibo.cn/super/setting/icon'
+    );
+
+  referer.searchParams.set(
+    'page_id',
+    pageId
+  );
+
+  referer.searchParams.set(
+    'icon_type',
+    '1'
+  );
+
+  referer.searchParams.set(
+    'union_id',
+    'chao_like'
+  );
+
+  referer.searchParams.set(
+    'param_uid',
+    String(uid)
+  );
 
   try {
-    const pageId =
-      '100808' + topicHash;
-
-    const referer =
-      new URL(
-        'https://huati.weibo.cn/super/setting/icon'
-      );
-
-    referer.searchParams.set(
-      'page_id',
-      pageId
-    );
-
-    referer.searchParams.set(
-      'icon_type',
-      '1'
-    );
-
-    referer.searchParams.set(
-      'union_id',
-      'chao_like'
-    );
-
-    referer.searchParams.set(
-      'param_uid',
-      String(uid)
-    );
-
-    const apiUrl =
-      new URL(
-        'https://huati.weibo.cn/aj/setting/icon/getconfig'
-      );
-
-    apiUrl.searchParams.set('type', '1');
-    apiUrl.searchParams.set(
-      'union_id',
-      'chao_like'
-    );
-    apiUrl.searchParams.set(
-      'page_id',
-      pageId
-    );
-    apiUrl.searchParams.set(
-      'param_uid',
-      String(uid)
-    );
-
-    page =
-      await ctx.newPage();
-
-    await page.goto(
-      referer.toString(),
-      {
-        waitUntil:
-          'domcontentloaded',
-        timeout:
-          15000
-      }
-    ).catch(() => null);
-
-    await page.waitForTimeout(
-      300
-    );
-
-    const finalUrl =
-      page.url();
-
-    if (
-      /passport\.weibo\.(cn|com)/i
-        .test(finalUrl)
-      ||
-      /login/i.test(finalUrl)
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        message:
-          'JYZ专用profile未登录huati：'
-          + finalUrl
-      };
-    }
-
-    const result =
-      await page.evaluate(
-        async url => {
-          try {
-            const response =
-              await fetch(
-                url,
-                {
-                  credentials:
-                    'include',
-                  cache:
-                    'no-store',
-                  headers: {
-                    Accept:
-                      'application/json, text/plain, */*',
-                    'X-Requested-With':
-                      'XMLHttpRequest'
-                  }
-                }
-              );
-
-            return {
-              status:
-                response.status,
-              text:
-                await response.text()
-            };
-          } catch (error) {
-            return {
-              status: null,
-              text: '',
-              error:
-                error?.message
-                || String(error)
-            };
+    /*
+     * 这个服务独占老主 scanner persistent profile。
+     * 直接使用 BrowserContext.request，继承该 profile 的完整 Cookie。
+     * 不再为每个 UID 新开页面。
+     */
+    const response =
+      await ctx.request.get(
+        apiUrl.toString(),
+        {
+          timeout:
+            10000,
+          failOnStatusCode:
+            false,
+          headers: {
+            Accept:
+              'application/json, text/plain, */*',
+            'X-Requested-With':
+              'XMLHttpRequest',
+            Referer:
+              referer.toString(),
+            'User-Agent':
+              'Mozilla/5.0 (Linux; Android 14) '
+              + 'AppleWebKit/537.36 (KHTML, like Gecko) '
+              + 'Mobile Safari/537.36 _weibo_'
           }
-        },
-        apiUrl.toString()
+        }
       );
 
-    if (
-      !result
-      ||
-      result.error
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        message:
-          result?.error
-          || '页面内fetch失败'
-      };
-    }
+    const status =
+      response.status();
+
+    const text =
+      await response.text();
 
     if (
-      Number(result.status) < 200
+      status < 200
       ||
-      Number(result.status) >= 300
+      status >= 300
     ) {
       return {
         ok: false,
         experience7d: null,
+        status,
         message:
           'HTTP '
-          + result.status
+          + status
       };
     }
 
@@ -219,12 +170,13 @@ async function getJyz(topicHash, uid) {
     try {
       json =
         JSON.parse(
-          result.text
+          text
         );
     } catch (error) {
       return {
         ok: false,
         experience7d: null,
+        status,
         message:
           'JSON解析失败：'
           + error.message
@@ -232,12 +184,14 @@ async function getJyz(topicHash, uid) {
     }
 
     if (
-      Number(json?.code)
-      !== 100000
+      Number(
+        json?.code
+      ) !== 100000
     ) {
       return {
         ok: false,
         experience7d: null,
+        status,
         message:
           'API code='
           + (json?.code ?? '-')
@@ -261,6 +215,7 @@ async function getJyz(topicHash, uid) {
       return {
         ok: false,
         experience7d: null,
+        status,
         currentInfo,
         message:
           'current_info没有可解析经验值'
@@ -270,19 +225,23 @@ async function getJyz(topicHash, uid) {
     return {
       ok: true,
       experience7d,
-      currentInfo
+      currentInfo,
+      status,
+      source:
+        'main-scanner-profile'
     };
-  } finally {
-    if (
-      page
-      &&
-      !page.isClosed()
-    ) {
-      await page.close()
-        .catch(() => {});
-    }
+  } catch (error) {
+    return {
+      ok: false,
+      experience7d: null,
+      status: null,
+      message:
+        error?.message
+        || String(error)
+    };
   }
 }
+
 
 function sendJson(
   res,
