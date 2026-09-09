@@ -1309,6 +1309,52 @@ function showCopyToast(
 }
 
 
+function broadcastMoveIntent(
+  id
+) {
+  if (
+    !Number.isFinite(
+      Number(id)
+    )
+    ||
+    Number(id) <= 0
+  ) {
+    return;
+  }
+
+  /*
+   * 抢占广播只负责“马上告诉其他在线用户变灰”。
+   * 不等待返回，不阻塞 Copy；真正数据库写入仍走后面的批量接口。
+   */
+  fetch(
+    '/api/superlike-move-intent',
+    {
+      method:
+        'POST',
+      headers: {
+        'Content-Type':
+          'application/json'
+      },
+      body:
+        JSON.stringify({
+          ids: [
+            Number(id)
+          ]
+        }),
+      keepalive:
+        true
+    }
+  ).catch(
+    error => {
+      console.warn(
+        '[SuperLike] 抢占广播失败，后续数据库写入仍会再次广播：',
+        error
+      );
+    }
+  );
+}
+
+
 function queueMovedWrite(
   tr,
   id
@@ -1344,6 +1390,14 @@ function queueMovedWrite(
   if (row) {
     row.moved_flag = 1;
   }
+
+  /*
+   * 先抢占广播，再排队写SQLite。
+   * 其他在线用户通常会在数据库提交前就看到该行变灰。
+   */
+  broadcastMoveIntent(
+    id
+  );
 
   movedWriteQueue.set(
     id,
