@@ -625,12 +625,22 @@ class ProxyPool {
     this.runtimeRemoved =
       new Set();
 
-    this.items =
-      shuffleArray(
-        Array.from(
-          new Set(pool)
-        )
+    const uniquePool =
+      Array.from(
+        new Set(pool)
       );
+
+    this.items =
+      String(
+        filePath
+        || ''
+      )
+        .toLowerCase()
+        .endsWith('.txt')
+        ? uniquePool
+        : shuffleArray(
+            uniquePool
+          );
 
     this.cooldownMs =
       Number(cooldownMs)
@@ -697,7 +707,14 @@ class ProxyPool {
       this.items.length > 1
     ) {
       console.log(
-        `[ProxyPool:${this.name}] 启动时已随机打乱代理顺序，共${this.items.length}个。`
+        String(
+          filePath
+          || ''
+        )
+          .toLowerCase()
+          .endsWith('.txt')
+          ? `[ProxyPool:${this.name}] 启动时按健康池评分顺序加载，共${this.items.length}个。`
+          : `[ProxyPool:${this.name}] 启动时已随机打乱代理顺序，共${this.items.length}个。`
       );
     }
   }
@@ -743,8 +760,12 @@ class ProxyPool {
       const before =
         this.items.join('\n');
 
+      /*
+       * 健康池文件已经按评分从高到低写入。
+       * 不再随机打乱，让 A 级代理优先被 acquire() 使用。
+       */
       const next =
-        shuffleArray(
+        Array.from(
           fromFile
         );
 
