@@ -252,7 +252,10 @@ const ALL_TAG_SECTION_SOURCES = [
 
 const TAG_SECTION_SOURCES =
   SCAN_WORKER_MODE === 'history'
-    ? ALL_TAG_SECTION_SOURCES
+    ? ALL_TAG_SECTION_SOURCES.filter(
+        source =>
+          source.key !== 'section-hot'
+      )
     : SCAN_WORKER_MODE === 'fresh'
       ? ALL_TAG_SECTION_SOURCES.filter(
           source =>
@@ -2000,12 +2003,16 @@ async function scanOneSuperLikeMonitor(
               break;
             }
 
-            saveScanSourceResume(
-              monitor.id,
-              source.key,
-              source.flowId,
-              nextParams
-            );
+            if (
+              source.key !== 'section-hot'
+            ) {
+              saveScanSourceResume(
+                monitor.id,
+                source.key,
+                source.flowId,
+                nextParams
+              );
+            }
 
             resume =
               getScanSourceResume(
@@ -2566,13 +2573,17 @@ async function scanOneSuperLikeMonitor(
             );
 
           const freshSourceCheckpoint =
-            SCAN_WORKER_MODE === 'fresh'
-              ? buildCatchupCheckpoint(
-                  monitor.id,
-                  source.key,
-                  sourceCheckpoint
-                )
-              : sourceCheckpoint;
+            source.key === 'section-hot'
+              ? null
+              : (
+                  SCAN_WORKER_MODE === 'fresh'
+                    ? buildCatchupCheckpoint(
+                        monitor.id,
+                        source.key,
+                        sourceCheckpoint
+                      )
+                    : sourceCheckpoint
+                );
 
           let newestSourceThisRound =
             null;
@@ -2600,9 +2611,13 @@ async function scanOneSuperLikeMonitor(
           }
 
           console.log(
-            sourceCheckpoint
-              ? `[SuperLike][分区Fresh] ${source.name} 上轮时间checkpoint=${freshSourceCheckpoint.latest_created_at || '-'}；PostID=${freshSourceCheckpoint.latest_post_id}仅作辅助，连续4个完整旧页即停止。`
-              : `[SuperLike][分区Fresh] ${source.name} 首次运行；先扫描 ${freshFirstPages} 页建立checkpoint，历史由Resume继续补。`
+            source.key === 'section-hot'
+              ? '[SuperLike][分区Fresh] 热门不按时间排序：每轮固定从第1页扫描100页，不使用checkpoint/Resume提前停止。'
+              : (
+                  sourceCheckpoint
+                    ? `[SuperLike][分区Fresh] ${source.name} 上轮时间checkpoint=${freshSourceCheckpoint.latest_created_at || '-'}；PostID=${freshSourceCheckpoint.latest_post_id}仅作辅助，连续4个完整旧页即停止。`
+                    : `[SuperLike][分区Fresh] ${source.name} 首次运行；先扫描 ${freshFirstPages} 页建立checkpoint，历史由Resume继续补。`
+                )
           );
 
           const requestHeaders =
@@ -2844,6 +2859,8 @@ async function scanOneSuperLikeMonitor(
              * 只扫原 freshFirstPages 建立起点；以后都改为追到 checkpoint。
              */
             if (
+              source.key !== 'section-hot'
+              &&
               !sourceCheckpoint
               &&
               sectionPageIndex >=
@@ -2877,16 +2894,29 @@ async function scanOneSuperLikeMonitor(
               sectionPageIndex >=
               sectionMaxPages
             ) {
-              saveScanSourceResume(
-                monitor.id,
-                source.key,
-                source.flowId,
-                nextParams
-              );
+              if (
+                source.key === 'section-hot'
+              ) {
+                clearScanSourceResume(
+                  monitor.id,
+                  source.key
+                );
 
-              console.log(
-                `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${sectionMaxPages} 页仍未安全跨过旧时间checkpoint；旧边界不推进，保存cursor后下轮继续。`
-              );
+                console.log(
+                  `[SuperLike][热门完成] 固定扫描 ${sectionMaxPages} 页完成；下轮重新从第1页开始。`
+                );
+              } else {
+                saveScanSourceResume(
+                  monitor.id,
+                  source.key,
+                  source.flowId,
+                  nextParams
+                );
+
+                console.log(
+                  `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${sectionMaxPages} 页仍未安全跨过旧时间checkpoint；旧边界不推进，保存cursor后下轮继续。`
+                );
+              }
 
               break;
             }
