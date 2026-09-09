@@ -11,12 +11,13 @@
   <header class="page-header">
     <div>
       <h1>脚本管理</h1>
-      <p>通过 PM2 启动、停止和重启 Scan / Mode / 代理池</p>
+      <p>通过 PM2 管理 4 个 Fresh / History / Mode4 / JYZ / 代理池</p>
     </div>
     <div class="actions">
       <a class="button" href="/admin">返回后台</a>
       <a class="button" href="/logs-live">实时日志</a>
       <button class="button" onclick="loadScripts()">刷新状态</button>
+      <button class="button primary" onclick="startAll()">全部启动</button>
     </div>
   </header>
 
@@ -111,7 +112,7 @@ async function loadScripts(){
           '<div class="process-name">'+
             '<strong>'+esc(item.name)+'</strong>'+
             '<span class="status '+st[1]+'">'+esc(st[0])+'</span>'+
-            (item.oneShot?'<span class="muted">一次性任务</span>':'')+
+            (item.description?'<span class="muted">'+esc(item.description)+'</span>':'')+
           '</div>'+
           '<div class="process-meta">'+
             '<span>PM2: '+esc(item.pm2Name)+'</span>'+
@@ -128,7 +129,7 @@ async function loadScripts(){
           '<button class="button" '+(!running?'disabled':'')+
             ' onclick="act(\''+esc(item.key)+'\',\'stop\')">停止</button>'+
           '<button class="button" onclick="act(\''+esc(item.key)+'\',\'restart\')">重启</button>'+
-          '<a class="button" href="/logs-live">日志</a>'+
+          '<button class="button" onclick="showLogs(\''+esc(item.key)+'\',\''+esc(item.name)+'\')">日志</button>'+
         '</div>'+
       '</div>';
     }).join('')||'<div class="empty">暂无脚本配置</div>';
@@ -145,6 +146,34 @@ async function act(key,action){
   }catch(e){
     alert(e.message);
   }
+}
+
+async function showLogs(key,name){
+  try{
+    const j=await api('/api/admin/scripts/'+encodeURIComponent(key)+'/logs?lines=120');
+    const text=j.text||'暂无日志';
+    const win=window.open('','_blank','width=1000,height=700');
+    if(!win){alert('浏览器阻止了日志窗口');return;}
+    win.document.write(
+      '<!doctype html><meta charset="UTF-8"><title>'+esc(name)+' 日志</title>'+
+      '<style>body{font-family:Consolas,monospace;background:#111;color:#eee;padding:16px;white-space:pre-wrap;word-break:break-word}</style>'+
+      '<h3>'+esc(name)+' / '+esc(j.pm2Name||'')+'</h3><pre>'+esc(text)+'</pre>'
+    );
+    win.document.close();
+  }catch(e){alert(e.message);}
+}
+
+async function startAll(){
+  if(!confirm('启动全部常驻任务？'))return;
+  try{
+    const j=await api('/api/admin/scripts');
+    for(const item of (j.data||[])){
+      if(item.status!=='online'&&item.status!=='launching'){
+        await api('/api/admin/scripts/'+encodeURIComponent(item.key)+'/start',{method:'POST'});
+      }
+    }
+    setTimeout(loadScripts,1200);
+  }catch(e){alert(e.message);}
 }
 
 setInterval(loadScripts,5000);
