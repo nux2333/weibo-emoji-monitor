@@ -14,22 +14,66 @@ const common = {
   kill_timeout: 5000
 };
 
+function scanWorker(
+  name,
+  workerOnly
+) {
+  return {
+    ...common,
+    name,
+    script: path.join(
+      __dirname,
+      'scripts',
+      'start-superlike-workers.js'
+    ),
+    env: {
+      SUPERLIKE_WORKER_ONLY:
+        workerOnly
+    }
+  };
+}
+
 module.exports = {
   apps: [
     {
       ...common,
       name: 'weibo-server',
-      script: path.join(__dirname, 'server.js')
-    },
-    {
-      ...common,
-      name: 'superlike-scan',
       script: path.join(
         __dirname,
-        'scripts',
-        'start-superlike-workers.js'
+        'server.js'
       )
     },
+
+    /*
+     * 四个 Fresh 来源完全独立：
+     * 可单独启动，也可同时启动。
+     * launcher 内仍保留 0/3/6/9 秒错峰。
+     */
+    scanWorker(
+      'scan-fresh-latest',
+      'fresh-latest'
+    ),
+    scanWorker(
+      'scan-fresh-superlike',
+      'fresh-superlike'
+    ),
+    scanWorker(
+      'scan-fresh-yishanshui',
+      'fresh-yishanshui'
+    ),
+    scanWorker(
+      'scan-fresh-qa',
+      'fresh-qa'
+    ),
+
+    /*
+     * History 独立，不属于四个 Fresh。
+     */
+    scanWorker(
+      'scan-history',
+      'history'
+    ),
+
     {
       ...common,
       name: 'superlike-mode4',
