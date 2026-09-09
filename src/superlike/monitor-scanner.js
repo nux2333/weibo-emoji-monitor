@@ -888,174 +888,206 @@ async function scanOneSuperLikeMonitor(
     );
 
 
-    /*
-     * 只走微博真实前端路径：
-     * 先监听 _feed，再点击一级“最新”。
-     *
-     * 已确认：找不到一级“最新”时，直接请求 _feed 没有救援价值。
-     * 因此不再做 _feed fallback：
-     * - 代理环境：直接判定当前代理页面不可用，淘汰并换代理；
-     * - 本地IP：直接结束当前 Monitor，等待下一轮。
-     */
-    const feedWaiter =
-      waitForChaohuaResponse(
-        page,
-        config.feedFlowId,
-        FEED_WAIT_MS
+    const directSectionWorker =
+      SCAN_WORKER_MODE === 'fresh'
+      &&
+      SCAN_WORKER_SOURCE.startsWith(
+        'section-'
       );
 
+    /*
+     * 三个专区 Fresh Worker 不再走：
+     *   一级“最新” -> _feed -> 总流“最新发帖” -> _sort_time
+     *
+     * 它们只需要先打开真实超话首页建立 weibo.com 页面会话，
+     * 随后由 scanTagSection() 直接请求自己的 tag_status_sort 第一页。
+     *
+     * fresh-latest / history 仍保留原来的总流初始化流程。
+     */
+    let feedResult = null;
+    let sortTimeFlowId = null;
+    let firstSortTimeResult = null;
+    let sortTimeRequestTemplateUrl = null;
+    let sortTimeRequestTemplateHeaders = {};
+    let current = null;
+    let logicalPageNumber = 1;
 
-    console.log(
-      '[SuperLike] 点击一级“最新”...'
-    );
-
-
-    const clicked =
-      await clickPrimaryLatest(
+    if (directSectionWorker) {
+      console.log(
+        `[SuperLike][专区直达] Worker=${SCAN_WORKER_SOURCE} | 已打开超话首页；跳过 _feed / 总流最新发帖 _sort_time，直接进入当前专区“最新发帖”扫描。`
+      );
+    } else {
+      /*
+       * 只走微博真实前端路径：
+       * 先监听 _feed，再点击一级“最新”。
+       *
+       * 已确认：找不到一级“最新”时，直接请求 _feed 没有救援价值。
+       * 因此不再做 _feed fallback：
+       * - 代理环境：直接判定当前代理页面不可用，淘汰并换代理；
+       * - 本地IP：直接结束当前 Monitor，等待下一轮。
+       */
+      const feedWaiter =
+        waitForChaohuaResponse(
+          page,
+          config.feedFlowId,
+          FEED_WAIT_MS
+        );
+  
+  
+      console.log(
+        '[SuperLike] 点击一级“最新”...'
+      );
+  
+  
+      const clicked =
+        await clickPrimaryLatest(
+          page
+        );
+  
+  
+      if (!clicked) {
+        stopReason =
+          '15秒内仍未找到一级“最新”Tab';
+  
+        if (
+          proxyAssignment?.raw
+          &&
+          !forceLocal
+        ) {
+          throw new Error(
+            'PROXY_PAGE_INVALID：15秒内仍未找到一级“最新”Tab'
+          );
+        }
+  
+        console.error(
+          `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
+        );
+  
+        return;
+      }
+  
+  
+      feedResult =
+        await feedWaiter;
+  
+  
+      if (feedResult?.http418) {
+        throw new Weibo418Error(
+          '_feed 返回 HTTP 418'
+        );
+      }
+  
+  
+      if (!feedResult) {
+        stopReason =
+          '点击一级“最新”后未捕获到 _feed';
+  
+        if (
+          proxyAssignment?.raw
+          &&
+          !forceLocal
+        ) {
+          throw new Error(
+            'PROXY_PAGE_INVALID：点击一级“最新”后未捕获到 _feed'
+          );
+        }
+  
+        console.error(
+          `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
+        );
+  
+        return;
+      }
+  
+  
+      console.log(
+        `[SuperLike] _feed 第一页成功：${feedResult.url}`
+      );
+  
+  
+      /*
+       * 从 _feed Response 获取“最新发帖” flowId
+       */
+      sortTimeFlowId =
+        extractLatestPostFlowId(
+          feedResult.json
+        );
+  
+  
+      if (!sortTimeFlowId) {
+        stopReason =
+          '_feed Response 中没有找到“最新发帖”containerid';
+  
+        console.error(
+          `[SuperLike] ${stopReason}`
+        );
+  
+        return;
+      }
+  
+  
+      console.log(
+        `[SuperLike] 从 _feed Response 找到“最新发帖” flowId：${sortTimeFlowId}`
+      );
+  
+  
+      /*
+       * 关键：
+       * 监听器必须先挂，再点击 DOM。
+       */
+      const firstSortTimeWaiter =
+        waitForChaohuaResponse(
+          page,
+          sortTimeFlowId,
+          FEED_WAIT_MS
+        );
+  
+  
+      await clickLatestPostTab(
         page
       );
-
-
-    if (!clicked) {
-      stopReason =
-        '15秒内仍未找到一级“最新”Tab';
-
-      if (
-        proxyAssignment?.raw
-        &&
-        !forceLocal
-      ) {
-        throw new Error(
-          'PROXY_PAGE_INVALID：15秒内仍未找到一级“最新”Tab'
+  
+  
+      firstSortTimeResult =
+        await firstSortTimeWaiter;
+  
+  
+      if (!firstSortTimeResult) {
+        stopReason =
+          '点击“最新发帖”后未捕获到 sort_time 第一页';
+  
+        console.error(
+          `[SuperLike] ${stopReason}`
         );
+  
+        return;
       }
-
-      console.error(
-        `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
+  
+  
+      console.log(
+        `[SuperLike] sort_time 第一页成功：${firstSortTimeResult.url}`
       );
-
-      return;
+  
+  
+      /*
+       * 后续分页始终以微博前端真实发出的第一页 sort_time 请求为模板。
+       */
+      sortTimeRequestTemplateUrl =
+        firstSortTimeResult.url;
+  
+      sortTimeRequestTemplateHeaders =
+        firstSortTimeResult?.requestHeaders
+        ||
+        {};
+  
+  
+      current =
+        firstSortTimeResult;
+  
+      logicalPageNumber = 1;
+  
+  
     }
-
-
-    const feedResult =
-      await feedWaiter;
-
-
-    if (feedResult?.http418) {
-      throw new Weibo418Error(
-        '_feed 返回 HTTP 418'
-      );
-    }
-
-
-    if (!feedResult) {
-      stopReason =
-        '点击一级“最新”后未捕获到 _feed';
-
-      if (
-        proxyAssignment?.raw
-        &&
-        !forceLocal
-      ) {
-        throw new Error(
-          'PROXY_PAGE_INVALID：点击一级“最新”后未捕获到 _feed'
-        );
-      }
-
-      console.error(
-        `[SuperLike] ${stopReason}；当前为本地IP，不直接请求 _feed。`
-      );
-
-      return;
-    }
-
-
-    console.log(
-      `[SuperLike] _feed 第一页成功：${feedResult.url}`
-    );
-
-
-    /*
-     * 从 _feed Response 获取“最新发帖” flowId
-     */
-    const sortTimeFlowId =
-      extractLatestPostFlowId(
-        feedResult.json
-      );
-
-
-    if (!sortTimeFlowId) {
-      stopReason =
-        '_feed Response 中没有找到“最新发帖”containerid';
-
-      console.error(
-        `[SuperLike] ${stopReason}`
-      );
-
-      return;
-    }
-
-
-    console.log(
-      `[SuperLike] 从 _feed Response 找到“最新发帖” flowId：${sortTimeFlowId}`
-    );
-
-
-    /*
-     * 关键：
-     * 监听器必须先挂，再点击 DOM。
-     */
-    const firstSortTimeWaiter =
-      waitForChaohuaResponse(
-        page,
-        sortTimeFlowId,
-        FEED_WAIT_MS
-      );
-
-
-    await clickLatestPostTab(
-      page
-    );
-
-
-    const firstSortTimeResult =
-      await firstSortTimeWaiter;
-
-
-    if (!firstSortTimeResult) {
-      stopReason =
-        '点击“最新发帖”后未捕获到 sort_time 第一页';
-
-      console.error(
-        `[SuperLike] ${stopReason}`
-      );
-
-      return;
-    }
-
-
-    console.log(
-      `[SuperLike] sort_time 第一页成功：${firstSortTimeResult.url}`
-    );
-
-
-    /*
-     * 后续分页始终以微博前端真实发出的第一页 sort_time 请求为模板。
-     */
-    const sortTimeRequestTemplateUrl =
-      firstSortTimeResult.url;
-
-    const sortTimeRequestTemplateHeaders =
-      firstSortTimeResult.requestHeaders
-      ||
-      {};
-
-
-    let current =
-      firstSortTimeResult;
-
-    let logicalPageNumber = 1;
 
     /*
      * Fresh-first：
@@ -1334,8 +1366,8 @@ async function scanOneSuperLikeMonitor(
       );
 
       const requestHeaders =
-        firstSortTimeResult.requestHeaders
-        || feedResult.requestHeaders
+        firstSortTimeResult?.requestHeaders
+        || feedResult?.requestHeaders
         || {};
 
       async function worker() {
@@ -2009,8 +2041,8 @@ async function scanOneSuperLikeMonitor(
           );
 
           const requestHeaders =
-            firstSortTimeResult.requestHeaders
-            || feedResult.requestHeaders
+            firstSortTimeResult?.requestHeaders
+            || feedResult?.requestHeaders
             || {};
 
           let currentUrl =
@@ -2365,7 +2397,7 @@ async function scanOneSuperLikeMonitor(
         feedResult.url;
       
       const commentsTemplateHeaders =
-        feedResult.requestHeaders
+        feedResult?.requestHeaders
         || {};
       
       for (
