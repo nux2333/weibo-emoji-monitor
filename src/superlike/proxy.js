@@ -129,6 +129,14 @@ function isProxyConnectionError(error) {
     ||
     /ERR_EMPTY_RESPONSE/i.test(text)
     ||
+    /ERR_CERT_AUTHORITY_INVALID/i.test(text)
+    ||
+    /ERR_CERT_COMMON_NAME_INVALID/i.test(text)
+    ||
+    /ERR_CERT_DATE_INVALID/i.test(text)
+    ||
+    /CERT_(?:AUTHORITY|COMMON_NAME|DATE)_INVALID/i.test(text)
+    ||
     /ERR_CONNECTION_CLOSED/i.test(text)
     ||
     /ERR_CONNECTION_REFUSED/i.test(text)
