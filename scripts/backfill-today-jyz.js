@@ -1046,7 +1046,11 @@ async function queryJyz(
           return {
             ...row,
             first_seen_at_ms:
-              firstSeenMs
+              firstSeenMs,
+            post_created_at_ms:
+              parsePostTimeMs(
+                row.post_created_at
+              )
           };
         }
       )
@@ -1063,14 +1067,50 @@ async function queryJyz(
           ) === today
       )
       .sort(
-        (a, b) =>
-          Number(
-            b.first_seen_at_ms
-          )
-          -
-          Number(
-            a.first_seen_at_ms
-          )
+        (a, b) => {
+          const aPostMs =
+            Number.isFinite(
+              Number(
+                a.post_created_at_ms
+              )
+            )
+              ? Number(
+                  a.post_created_at_ms
+                )
+              : Number.NEGATIVE_INFINITY;
+
+          const bPostMs =
+            Number.isFinite(
+              Number(
+                b.post_created_at_ms
+              )
+            )
+              ? Number(
+                  b.post_created_at_ms
+                )
+              : Number.NEGATIVE_INFINITY;
+
+          if (
+            bPostMs !==
+            aPostMs
+          ) {
+            return (
+              bPostMs
+              -
+              aPostMs
+            );
+          }
+
+          return (
+            Number(
+              b.first_seen_at_ms
+            )
+            -
+            Number(
+              a.first_seen_at_ms
+            )
+          );
+        }
       );
 
   console.log('');
@@ -1089,7 +1129,7 @@ async function queryJyz(
     + todayRows.length
   );
   console.log(
-    '# 筛选/顺序：first_seen_at 今天，首次入库时间 新 → 旧'
+    '# 筛选：first_seen_at 今天 | 顺序：发帖时间 post_created_at 新 → 旧'
   );
   console.log(
     '# 每成功更新 '
