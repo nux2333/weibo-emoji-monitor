@@ -158,10 +158,10 @@ function restoreSearchState() {
     /*
      * 排序不从 localStorage 恢复。
      * 每次进入页面都固定使用页面默认：
-     * post_created_at DESC（帖子发布日期最新在前）。
+     * experience_7d DESC（经验值高的在前）。
      */
     sortKey =
-      'post_created_at';
+      'experience_7d';
 
     sortDirection =
       'desc';
@@ -652,7 +652,43 @@ function compareRows(
 ) {
   if (
     key === 'comments_count'
+    ||
+    key === 'experience_7d'
   ) {
+    /*
+     * experience_7d 未取得的数据固定排在最后，
+     * 不让 NULL / '-' 混进高经验值数据中。
+     */
+    if (
+      key === 'experience_7d'
+    ) {
+      const aMissing =
+        a?.[key] === null
+        || a?.[key] === undefined
+        || a?.[key] === '';
+
+      const bMissing =
+        b?.[key] === null
+        || b?.[key] === undefined
+        || b?.[key] === '';
+
+      if (aMissing && bMissing) {
+        return 0;
+      }
+
+      if (aMissing) {
+        return sortDirection === 'asc'
+          ? -1
+          : 1;
+      }
+
+      if (bMissing) {
+        return sortDirection === 'asc'
+          ? 1
+          : -1;
+      }
+    }
+
     return (
       Number(a?.[key] ?? 0)
       -
