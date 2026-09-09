@@ -242,14 +242,20 @@ const NIGHT_FRESH_FIRST_PAGES =
   || 30;
 
 /*
- * 历史 Resume 每轮最多补 5 分钟。
- * 到时保存下一页断点并结束当前轮，让下一轮重新先抓最新数据。
+ * Legacy/Fresh 兼容逻辑仍保留历史 Resume 时间预算。
+ * 独立 History Worker 不再使用时间预算，会持续扫描直到：
+ * - 到达 HISTORY_MAX_AGE_HOURS 边界
+ * - 没有下一页
+ * - 请求失败 / 418
  */
 const RESUME_TIME_BUDGET_MS =
   Number(
     process.env.SUPERLIKE_RESUME_TIME_BUDGET_MS
   )
   || 5 * 60 * 1000;
+
+const HISTORY_CONTINUOUS =
+  SCAN_WORKER_MODE === 'history';
 
 /*
  * History 只保留最近 N 小时的数据。
@@ -1568,8 +1574,10 @@ async function scanOneSuperLikeMonitor(
       tagHistoryResumeDone = true;
 
       const deadline =
-        Date.now()
-        + RESUME_TIME_BUDGET_MS;
+        HISTORY_CONTINUOUS
+          ? Number.POSITIVE_INFINITY
+          : Date.now()
+            + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
         Date.now()
@@ -1603,7 +1611,9 @@ async function scanOneSuperLikeMonitor(
       }
 
       console.log(
-        `[SuperLike][分区历史Resume] fresh已入库；开始补历史，${queue.length}个分区共享${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算。`
+        HISTORY_CONTINUOUS
+          ? `[SuperLike][分区历史Resume] 开始连续补历史，${queue.length}个分区持续扫描直到48h边界/无下一页/请求失败。`
+          : `[SuperLike][分区历史Resume] fresh已入库；开始补历史，${queue.length}个分区共享${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算。`
       );
 
       const requestHeaders =
@@ -1748,7 +1758,9 @@ async function scanOneSuperLikeMonitor(
                 `新增=${pageStats.inserted}`,
                 `更新UID=${pageStats.replaced}`,
                 `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`,
-                `剩余预算=${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}秒`
+                HISTORY_CONTINUOUS
+                  ? '剩余预算=不限'
+                  : `剩余预算=${Math.max(0, Math.ceil((deadline - Date.now()) / 1000))}秒`
               ].join(' | ')
             );
 
@@ -1836,10 +1848,12 @@ async function scanOneSuperLikeMonitor(
       );
 
       if (
+        !HISTORY_CONTINUOUS
+        &&
         Date.now() >= deadline
       ) {
         console.log(
-          '[SuperLike][分区历史Resume] 5分钟预算已到，保留各分区当前cursor，下轮继续。'
+          `[SuperLike][分区历史Resume] ${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算已到，保留各分区当前cursor，下轮继续。`
         );
       }
     }
@@ -2095,8 +2109,10 @@ async function scanOneSuperLikeMonitor(
       }
 
       const deadline =
-        Date.now()
-        + RESUME_TIME_BUDGET_MS;
+        HISTORY_CONTINUOUS
+          ? Number.POSITIVE_INFINITY
+          : Date.now()
+            + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
         Date.now()
@@ -2106,7 +2122,9 @@ async function scanOneSuperLikeMonitor(
       let consecutiveOldPages = 0;
 
       console.log(
-        `[SuperLike][History][latest-posts] 仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时；连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
+        HISTORY_CONTINUOUS
+          ? `[SuperLike][History][latest-posts] 连续补扫，不设时间上限；仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时，连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
+          : `[SuperLike][History][latest-posts] 仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时；连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
       );
 
       let latestResume =
