@@ -730,6 +730,27 @@ const SCRIPT_DEFINITIONS = [
     group: 'scan'
   },
   {
+    key: 'mode1',
+    name: 'Mode1',
+    pm2Name: 'superlike-mode1',
+    description: '手动复检 Mode1',
+    group: 'recheck'
+  },
+  {
+    key: 'mode2',
+    name: 'Mode2',
+    pm2Name: 'superlike-mode2',
+    description: '手动复检 Mode2',
+    group: 'recheck'
+  },
+  {
+    key: 'mode3',
+    name: 'Mode3',
+    pm2Name: 'superlike-mode3',
+    description: '手动复检 Mode3',
+    group: 'recheck'
+  },
+  {
     key: 'mode4',
     name: 'Mode4 超LIKE名单',
     pm2Name: 'superlike-mode4',
