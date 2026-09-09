@@ -1357,7 +1357,7 @@ function queueMovedWrite(
   movedWriteTimer =
     setTimeout(
       flushMovedWriteQueue,
-      300
+      50
     );
 }
 
@@ -1465,7 +1465,7 @@ async function flushMovedWriteQueue() {
       movedWriteTimer =
         setTimeout(
           flushMovedWriteQueue,
-          300
+          50
         );
     }
   }
@@ -2435,6 +2435,152 @@ async function downloadCsv() {
 
 
 /* ============================================================
+ * 多人实时 moved_flag 同步
+ * ============================================================ */
+
+let superLikeEventSource =
+  null;
+
+function applyRemoteMovedState(
+  ids,
+  moved
+) {
+  const idSet =
+    new Set(
+      (ids || [])
+        .map(id => Number(id))
+        .filter(
+          id =>
+            Number.isFinite(id)
+            &&
+            id > 0
+        )
+    );
+
+  if (
+    idSet.size === 0
+  ) {
+    return;
+  }
+
+  for (
+    const row
+    of allRows
+  ) {
+    if (
+      idSet.has(
+        Number(row.id)
+      )
+    ) {
+      row.moved_flag =
+        moved
+          ? 1
+          : 0;
+    }
+  }
+
+  document
+    .querySelectorAll(
+      'tr[data-post-row-id]'
+    )
+    .forEach(
+      tr => {
+        const id =
+          Number(
+            tr.dataset.postRowId
+          );
+
+        if (
+          !idSet.has(id)
+        ) {
+          return;
+        }
+
+        tr.dataset.moved =
+          moved
+            ? '1'
+            : '0';
+
+        tr.classList.toggle(
+          'is-moved',
+          moved
+        );
+      }
+    );
+}
+
+
+function initSuperLikeRealtime() {
+  if (
+    !window.EventSource
+  ) {
+    console.warn(
+      '[SuperLike] 浏览器不支持EventSource，继续使用30秒刷新兜底。'
+    );
+
+    return;
+  }
+
+  if (
+    superLikeEventSource
+  ) {
+    try {
+      superLikeEventSource.close();
+    } catch {
+      // ignore
+    }
+  }
+
+  const source =
+    new EventSource(
+      '/api/superlike-events'
+    );
+
+  superLikeEventSource =
+    source;
+
+  source.addEventListener(
+    'moved',
+    event => {
+      try {
+        const data =
+          JSON.parse(
+            event.data
+            || '{}'
+          );
+
+        if (
+          data.type !== 'moved'
+        ) {
+          return;
+        }
+
+        applyRemoteMovedState(
+          data.ids,
+          data.moved === true
+        );
+
+      } catch (error) {
+        console.warn(
+          '[SuperLike] 实时搬运状态解析失败：',
+          error
+        );
+      }
+    }
+  );
+
+  source.addEventListener(
+    'error',
+    () => {
+      /*
+       * EventSource 自带自动重连，不主动刷新页面。
+       */
+    }
+  );
+}
+
+
+/* ============================================================
  * Events
  * ============================================================ */
 
@@ -2502,6 +2648,8 @@ loadEnvironmentBadge();
 loadData(
   false
 );
+
+initSuperLikeRealtime();
 
 
 /*
