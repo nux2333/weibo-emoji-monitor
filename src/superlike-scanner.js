@@ -296,122 +296,6 @@ const SCAN_PROFILE_CACHE_MINUTES =
 
 let running = false;
 
-/*
- * 4个 Fresh / History worker 各自使用独立 persistent profile，
- * 但 JYZ 需要继承原先已登录的主浏览器状态。
- *
- * 每个 worker 进程启动后第一次扫描前：
- * - 以 data/superlike-browser-profile-scan 为模板
- * - 完整复制到该 worker 自己的 profile
- * - 排除 Chromium 的 Singleton* 运行锁文件
- *
- * 每个进程只同步一次，后续轮次继续复用自己的 persistent profile。
- */
-const SEEDED_WORKER_PROFILES =
-  new Set();
-
-function seedWorkerProfileFromMain(
-  workerProfileDir
-) {
-  const resolvedWorker =
-    path.resolve(
-      workerProfileDir
-    );
-
-  if (
-    SEEDED_WORKER_PROFILES.has(
-      resolvedWorker
-    )
-  ) {
-    return;
-  }
-
-  const mainProfileDir =
-    path.join(
-      __dirname,
-      '..',
-      'data',
-      'superlike-browser-profile-scan'
-    );
-
-  if (
-    !fs.existsSync(
-      mainProfileDir
-    )
-  ) {
-    console.log(
-      '[SuperLike][登录Profile] 老主浏览器Profile不存在，跳过同步：'
-      + mainProfileDir
-    );
-
-    SEEDED_WORKER_PROFILES.add(
-      resolvedWorker
-    );
-
-    return;
-  }
-
-  try {
-    fs.rmSync(
-      workerProfileDir,
-      {
-        recursive: true,
-        force: true
-      }
-    );
-
-    fs.mkdirSync(
-      path.dirname(
-        workerProfileDir
-      ),
-      {
-        recursive: true
-      }
-    );
-
-    fs.cpSync(
-      mainProfileDir,
-      workerProfileDir,
-      {
-        recursive: true,
-        force: true,
-        filter:
-          source => {
-            const name =
-              path.basename(
-                source
-              );
-
-            return (
-              !name.startsWith(
-                'Singleton'
-              )
-              &&
-              name !== 'DevToolsActivePort'
-            );
-          }
-      }
-    );
-
-    SEEDED_WORKER_PROFILES.add(
-      resolvedWorker
-    );
-
-    console.log(
-      '[SuperLike][登录Profile] 已从老主Profile同步登录态到 worker：'
-      + path.basename(
-          workerProfileDir
-        )
-    );
-
-  } catch (error) {
-    console.log(
-      '[SuperLike][登录Profile] 同步失败：'
-      + error.message
-    );
-  }
-}
-
 const SCAN_PROXY_POOL =
   new ProxyPool({
     /*
@@ -2788,198 +2672,76 @@ async function fetchSuperLikeExperience7d(
   uid
 ) {
   try {
-    if (
-      !context
-      ||
-      !context.request
-      ||
-      typeof context.request.get
-        !== 'function'
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        message:
-          '当前scanner persistent BrowserContext不支持request.get'
-      };
-    }
-
-    const pageId =
-      `100808${config.topicHash}`;
-
-    const url =
+    const serviceUrl =
       new URL(
-        'https://huati.weibo.cn/aj/setting/icon/getconfig'
+        process.env.WEIBO_JYZ_SERVICE_URL
+        || 'http://127.0.0.1:3011/jyz'
       );
 
-    url.searchParams.set(
-      'type',
-      '1'
+    serviceUrl.searchParams.set(
+      'topicHash',
+      config.topicHash
     );
 
-    url.searchParams.set(
-      'union_id',
-      'chao_like'
-    );
-
-    url.searchParams.set(
-      'page_id',
-      pageId
-    );
-
-    url.searchParams.set(
-      'param_uid',
+    serviceUrl.searchParams.set(
+      'uid',
       String(uid)
     );
 
-    const referer =
-      new URL(
-        'https://huati.weibo.cn/super/setting/icon'
-      );
-
-    referer.searchParams.set(
-      'page_id',
-      pageId
-    );
-
-    referer.searchParams.set(
-      'icon_type',
-      '1'
-    );
-
-    referer.searchParams.set(
-      'union_id',
-      'chao_like'
-    );
-
-    referer.searchParams.set(
-      'param_uid',
-      String(uid)
-    );
-
-    /*
-     * JYZ 回到最初方案：
-     * 直接使用当前 scanner 的 persistent BrowserContext.request。
-     * 这样继承该 worker 自己的 Cookie / 登录态 / 代理环境。
-     * Profile 校验仍继续使用独立游客 Context。
-     */
     const response =
-      await context.request.get(
-        url.toString(),
+      await fetch(
+        serviceUrl.toString(),
         {
-          timeout:
-            SCAN_EXPERIENCE_TIMEOUT_MS,
-          failOnStatusCode:
-            false,
-          headers: {
-            'Accept':
-              'application/json, text/plain, */*',
-            'X-Requested-With':
-              'XMLHttpRequest',
-            'Referer':
-              referer.toString(),
-            'User-Agent':
-              'Mozilla/5.0 (Linux; Android 14) '
-              + 'AppleWebKit/537.36 (KHTML, like Gecko) '
-              + 'Mobile Safari/537.36 _weibo_'
-          }
+          signal:
+            AbortSignal.timeout(
+              SCAN_EXPERIENCE_TIMEOUT_MS
+              + 3000
+            )
         }
       );
 
-    const status =
-      response.status();
-
-    const text =
-      await response.text();
-
-    if (
-      status < 200
-      ||
-      status >= 300
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        status,
-        message:
-          `HTTP ${status}`
-      };
-    }
-
-    if (
-      text
-        .trimStart()
-        .startsWith('<')
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        status,
-        message:
-          '返回HTML/Access Deny'
-      };
-    }
-
-    let json;
-
-    try {
-      json =
-        JSON.parse(
-          text
+    const json =
+      await response
+        .json()
+        .catch(
+          () => null
         );
-    } catch (error) {
-      return {
-        ok: false,
-        experience7d: null,
-        status,
-        message:
-          `JSON解析失败：${error.message}`
-      };
-    }
 
     if (
-      Number(
-        json?.code
-      ) !== 100000
+      json?.ok
+      &&
+      Number.isFinite(
+        Number(
+          json.experience7d
+        )
+      )
     ) {
       return {
-        ok: false,
-        experience7d: null,
-        status,
-        message:
-          `API code=${json?.code ?? '-'} msg=${json?.msg || '-'}`
-      };
-    }
-
-    const currentInfo =
-      json?.data?.current_info
-      || '';
-
-    const experience7d =
-      extractExperience7d(
-        currentInfo
-      );
-
-    if (
-      experience7d === null
-    ) {
-      return {
-        ok: false,
-        experience7d: null,
-        status,
-        currentInfo,
-        message:
-          'current_info没有可解析经验值'
+        ok: true,
+        experience7d:
+          Number(
+            json.experience7d
+          ),
+        currentInfo:
+          json.currentInfo
+          || '',
+        status:
+          json.status
+          ?? response.status,
+        source:
+          'main-scanner-profile-service'
       };
     }
 
     return {
-      ok: true,
-      experience7d,
-      currentInfo,
-      status,
-      source:
-        'scanner-persistent-context'
+      ok: false,
+      experience7d: null,
+      status:
+        json?.status
+        ?? response.status,
+      message:
+        json?.message
+        || ('JYZ Service HTTP ' + response.status)
     };
 
   } catch (error) {
@@ -2988,8 +2750,11 @@ async function fetchSuperLikeExperience7d(
       experience7d: null,
       status: null,
       message:
-        error?.message
-        || String(error)
+        'JYZ Service不可用：'
+        + (
+          error?.message
+          || String(error)
+        )
     };
   }
 }
@@ -4407,10 +4172,6 @@ async function scanOneSuperLikeMonitor(
       'data',
       `superlike-browser-profile-scan-${workerProfileSuffix}`
     );
-
-  seedWorkerProfileFromMain(
-    profileDir
-  );
 
   let browser = null;
   let scanVisitorContext = null;
