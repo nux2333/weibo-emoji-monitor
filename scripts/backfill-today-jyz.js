@@ -110,6 +110,12 @@ const REQUEST_DELAY_MS =
   )
   || 300;
 
+const PAGE_FETCH_TIMEOUT_MS =
+  Number(
+    process.env.JYZ_PAGE_FETCH_TIMEOUT_MS
+  )
+  || 10000;
+
 let localContext = null;
 let currentProxyAssignment = null;
 
@@ -269,6 +275,10 @@ function isProxyConnectionError(
     /NetworkError/i.test(message)
     ||
     /fetch failed/i.test(message)
+    ||
+    /JYZ_PAGE_FETCH_TIMEOUT/i.test(message)
+    ||
+    /AbortError/i.test(message)
     ||
     /proxy/i.test(message)
   );
@@ -560,7 +570,20 @@ async function queryJyzLocal(
       try {
         result =
           await page.evaluate(
-            async url => {
+            async ({
+              url,
+              timeoutMs
+            }) => {
+              const controller =
+                new AbortController();
+
+              const timer =
+                setTimeout(
+                  () =>
+                    controller.abort(),
+                  timeoutMs
+                );
+
               try {
                 const response =
                   await fetch(
@@ -570,6 +593,8 @@ async function queryJyzLocal(
                         'include',
                       cache:
                         'no-store',
+                      signal:
+                        controller.signal,
                       headers: {
                         Accept:
                           'application/json, text/plain, */*',
@@ -586,16 +611,32 @@ async function queryJyzLocal(
                     await response.text()
                 };
               } catch (error) {
+                const aborted =
+                  error?.name === 'AbortError';
+
                 return {
                   status: null,
                   text: '',
                   error:
-                    error?.message
-                    || String(error)
+                    aborted
+                      ? 'JYZ_PAGE_FETCH_TIMEOUT'
+                      : (
+                          error?.message
+                          || String(error)
+                        )
                 };
+              } finally {
+                clearTimeout(
+                  timer
+                );
               }
             },
-            apiUrl.toString()
+            {
+              url:
+                apiUrl.toString(),
+              timeoutMs:
+                PAGE_FETCH_TIMEOUT_MS
+            }
           );
 
         break;
@@ -669,6 +710,19 @@ async function queryJyzLocal(
       ||
       result.error
     ) {
+      if (
+        result?.error ===
+        'JYZ_PAGE_FETCH_TIMEOUT'
+      ) {
+        console.warn(
+          '[JYZ补数][硬超时] UID='
+          + uid
+          + ' | 页面内fetch超过 '
+          + PAGE_FETCH_TIMEOUT_MS
+          + 'ms，当前链路将重建并重试'
+        );
+      }
+
       return {
         ok: false,
         message:
