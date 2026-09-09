@@ -5573,10 +5573,10 @@ async function runMode4Forever() {
           /*
            * Mode4 作为24小时常驻任务默认后台运行。
            * Persistent Profile 仍保留，因此不会影响现有 visitor/session。
-           * Mode4 固定后台运行，不再读取旧的可见窗口环境变量。
+           * Mode4 保持可见窗口，便于登录并复用 Persistent Profile 登录态。
            */
           headless:
-            true,
+            false,
           ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
