@@ -1214,29 +1214,83 @@ async function scanOneSuperLikeMonitor(
   
   
       /*
-       * 关键：
-       * 监听器必须先挂，再点击 DOM。
+       * 最新发帖初始化允许最多3次重试：
+       * - 每次都先挂监听，再点击 DOM；
+       * - 明确区分“根本没点到”与“点到了但未捕获XHR”；
+       * - 页面偶发慢/Tab状态异常时，不直接结束整轮。
        */
-      const firstSortTimeWaiter =
-        waitForChaohuaResponse(
-          page,
-          sortTimeFlowId,
-          FEED_WAIT_MS
+      const latestPostInitMaxAttempts =
+        3;
+
+      for (
+        let latestPostAttempt = 1;
+        latestPostAttempt <= latestPostInitMaxAttempts;
+        latestPostAttempt++
+      ) {
+        const firstSortTimeWaiter =
+          waitForChaohuaResponse(
+            page,
+            sortTimeFlowId,
+            FEED_WAIT_MS
+          );
+
+        const latestPostClicked =
+          await clickLatestPostTab(
+            page
+          );
+
+        if (!latestPostClicked) {
+          console.warn(
+            `[SuperLike][最新发帖初始化] 第${latestPostAttempt}/${latestPostInitMaxAttempts}次：未找到或未成功点击“最新发帖”Tab。`
+          );
+
+          if (
+            latestPostAttempt <
+            latestPostInitMaxAttempts
+          ) {
+            await page.waitForTimeout(
+              1000
+            );
+
+            continue;
+          }
+
+          break;
+        }
+
+        console.log(
+          `[SuperLike][最新发帖初始化] 第${latestPostAttempt}/${latestPostInitMaxAttempts}次点击成功，等待 sort_time 第一页...`
         );
-  
-  
-      await clickLatestPostTab(
-        page
-      );
-  
-  
-      firstSortTimeResult =
-        await firstSortTimeWaiter;
+
+        firstSortTimeResult =
+          await firstSortTimeWaiter;
+
+        if (firstSortTimeResult) {
+          console.log(
+            `[SuperLike][最新发帖初始化] 第${latestPostAttempt}次捕获成功：${firstSortTimeResult.url}`
+          );
+
+          break;
+        }
+
+        console.warn(
+          `[SuperLike][最新发帖初始化] 第${latestPostAttempt}/${latestPostInitMaxAttempts}次：点击成功，但未捕获 sort_time 第一页。`
+        );
+
+        if (
+          latestPostAttempt <
+          latestPostInitMaxAttempts
+        ) {
+          await page.waitForTimeout(
+            1200
+          );
+        }
+      }
   
   
       if (!firstSortTimeResult) {
         stopReason =
-          '点击“最新发帖”后未捕获到 sort_time 第一页';
+          '“最新发帖”初始化重试3次后仍未捕获 sort_time 第一页';
   
         console.error(
           `[SuperLike] ${stopReason}`
