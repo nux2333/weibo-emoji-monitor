@@ -2330,6 +2330,7 @@ function getCommentCandidatePosts(queueType = 'normal') {
       username,
       post_link,
       comments_count,
+      experience_7d,
       comment_last_checked_at,
       comment_next_check_at
     FROM superlike_posts
@@ -2361,8 +2362,38 @@ function getCommentCandidatePosts(queueType = 'normal') {
           AND deu.exclude_date = date('now', '+8 hours')
       )
     ORDER BY
-      COALESCE(moved_flag, 0) DESC,
+      /*
+       * Mode2 优先级：
+       * 先按“经验值离80最近、需要盯的评论档位最低”排序。
+       *
+       * 79分      -> 优先盯 5 评论
+       * 77~78分   -> 优先盯 10 评论
+       * 74~76分   -> 优先盯 15 评论
+       * 70~73分   -> 优先盯 20 评论
+       * 其它/未知 -> 放后面
+       */
+      CASE
+        WHEN experience_7d >= 79 THEN 5
+        WHEN experience_7d >= 77 THEN 10
+        WHEN experience_7d >= 74 THEN 15
+        WHEN experience_7d >= 70 THEN 20
+        ELSE 999
+      END ASC,
+
+      CASE
+        WHEN experience_7d IS NULL THEN 1
+        ELSE 0
+      END ASC,
+
+      experience_7d DESC,
+
+      /*
+       * 同经验优先级下，已经更接近目标评论档位的先查。
+       */
       comments_count DESC,
+
+      COALESCE(moved_flag, 0) DESC,
+
       CASE
         WHEN comment_last_checked_at IS NULL THEN 0
         ELSE 1
@@ -4219,7 +4250,7 @@ async function runLightCommentRecheck(
       ? '# HOT：只查18-20条；每15秒独立调度，不等待普通队列'
       : '# NORMAL：只查0-17条；按comment_next_check_at到期轮询'
   );
-  console.log('# 当前队列无数量上限；已搬运优先，同组内按 comments_count DESC 优先');
+  console.log('# 当前队列无数量上限；Mode2按经验值优先：79→盯5评，77~78→盯10评，74~76→盯15评，70~73→盯20评');
   console.log('# 18-20条≈15秒；15-17条≈30秒；10-14条≈1分钟；0-9条≈5分钟');
   console.log(`本轮${queueLabel}到期=${posts.length}`);
   console.log('########################################');
