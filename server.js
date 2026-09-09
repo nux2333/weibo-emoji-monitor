@@ -35,6 +35,67 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+/*
+ * SuperLike 多人实时状态同步。
+ * 每个打开 /superlike 的浏览器维持一个轻量 SSE 连接；
+ * 任一用户标记 moved 后，广播给其他在线页面。
+ */
+const superLikeEventClients =
+  new Set();
+
+function broadcastSuperLikeMoved(
+  ids,
+  moved = true
+) {
+  const normalizedIds =
+    Array.from(
+      new Set(
+        (ids || [])
+          .map(id => Number(id))
+          .filter(
+            id =>
+              Number.isFinite(id)
+              &&
+              id > 0
+          )
+      )
+    );
+
+  if (
+    normalizedIds.length === 0
+  ) {
+    return;
+  }
+
+  const payload =
+    JSON.stringify({
+      type:
+        'moved',
+      ids:
+        normalizedIds,
+      moved:
+        moved === true,
+      ts:
+        Date.now()
+    });
+
+  for (
+    const res
+    of superLikeEventClients
+  ) {
+    try {
+      res.write(
+        `event: moved\ndata: ${payload}\n\n`
+      );
+    } catch {
+      superLikeEventClients.delete(
+        res
+      );
+    }
+  }
+}
+
 /*
  * 默认只监听本机回环地址。
  * Cloudflare Tunnel 应连接 http://127.0.0.1:PORT，
@@ -220,6 +281,7 @@ app.use((req, res, next) => {
     '/monitors-admin.html',
 
     '/api/superlike-posts',
+    '/api/superlike-events',
     '/api/superlike-mark-user',
     '/api/superlike-post-moved',
     '/api/superlike-posts-moved',
@@ -299,6 +361,73 @@ app.get('/api-responses', (req, res) =>
 
 app.get('/superlike', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'superlike.html'))
+);
+
+/*
+ * SuperLike moved_flag 实时广播。
+ * SSE 比页面轮询轻得多：30~100个在线用户只维持长连接，
+ * 状态改变时才发送一小段事件。
+ */
+app.get(
+  '/api/superlike-events',
+  (req, res) => {
+    res.status(200);
+    res.setHeader(
+      'Content-Type',
+      'text/event-stream; charset=utf-8'
+    );
+    res.setHeader(
+      'Cache-Control',
+      'no-cache, no-transform'
+    );
+    res.setHeader(
+      'Connection',
+      'keep-alive'
+    );
+    res.setHeader(
+      'X-Accel-Buffering',
+      'no'
+    );
+
+    res.flushHeaders?.();
+
+    superLikeEventClients.add(
+      res
+    );
+
+    res.write(
+      `event: connected\ndata: {"ok":true}\n\n`
+    );
+
+    const heartbeat =
+      setInterval(
+        () => {
+          try {
+            res.write(
+              ': keepalive\n\n'
+            );
+          } catch {
+            clearInterval(
+              heartbeat
+            );
+          }
+        },
+        20000
+      );
+
+    req.on(
+      'close',
+      () => {
+        clearInterval(
+          heartbeat
+        );
+
+        superLikeEventClients.delete(
+          res
+        );
+      }
+    );
+  }
 );
 
 app.get('/logs-live', (req, res) =>
@@ -1728,6 +1857,11 @@ app.post('/api/superlike-post-moved', (req, res) => {
       });
     }
 
+    broadcastSuperLikeMoved(
+      [id],
+      moved
+    );
+
     res.json({
       success: true,
       id,
@@ -1780,6 +1914,11 @@ app.post('/api/superlike-posts-moved', (req, res) => {
         normalizedIds,
         true
       );
+
+    broadcastSuperLikeMoved(
+      normalizedIds,
+      true
+    );
 
     res.json({
       success: true,
