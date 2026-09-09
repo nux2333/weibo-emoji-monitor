@@ -2834,10 +2834,10 @@ function buildLightProfileApiUrl(
     `${config.profileContainerId.replace(/_-_profile_inpage$/, '')}_-_profile_allbadge`
   );
 
-  // URLSearchParams 会再次编码 %，最终得到 target_uid%2523{uid}
+  // 传入原始 #，由 URLSearchParams 编码一次，最终得到 target_uid%23{uid}
   url.searchParams.set(
     'extparam',
-    `target_uid%23${uid}`
+    `target_uid#${uid}`
   );
 
   url.searchParams.set(
