@@ -258,27 +258,72 @@ const HISTORY_CONTINUOUS =
   SCAN_WORKER_MODE === 'history';
 
 /*
- * History 只保留最近 N 小时的数据。
- * 默认 48 小时，可用 SUPERLIKE_HISTORY_MAX_AGE_HOURS 覆盖。
- * 为防 sort_time 偶发乱序，连续若干个完整旧页后才真正结束并清除 Resume。
+ * History 只补到“中国时间昨天 00:00”。
+ * 一旦整页已经越过该边界，就清除对应 Resume/cursor，
+ * 下一次历史扫描重新从新的日内 Resume 开始，不继续背旧页码。
  */
-const HISTORY_MAX_AGE_HOURS =
-  Math.max(
-    1,
-    Number(
-      process.env.SUPERLIKE_HISTORY_MAX_AGE_HOURS
-    )
-    || 48
-  );
-
 const HISTORY_OLD_PAGE_THRESHOLD =
   Math.max(
     1,
     Number(
       process.env.SUPERLIKE_HISTORY_OLD_PAGE_THRESHOLD
     )
-    || 4
+    || 1
   );
+
+function getChinaYesterdayStartMs() {
+  const parts =
+    new Intl.DateTimeFormat(
+      'en-CA',
+      {
+        timeZone: 'Asia/Shanghai',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }
+    ).formatToParts(
+      new Date()
+    );
+
+  const map = {};
+
+  for (const part of parts) {
+    if (part.type !== 'literal') {
+      map[part.type] = part.value;
+    }
+  }
+
+  /*
+   * 中国时间 UTC+8：
+   * “昨天 00:00 CST” = 对应 UTC 的前一天 16:00。
+   */
+  return Date.UTC(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day) - 1,
+    16,
+    0,
+    0,
+    0
+  );
+}
+
+function formatChinaCutoff(ms) {
+  return new Intl.DateTimeFormat(
+    'zh-CN',
+    {
+      timeZone: 'Asia/Shanghai',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }
+  ).format(
+    new Date(ms)
+  );
+}
 
 const SCAN_PROFILE_CONCURRENCY =
   Math.max(
@@ -1580,9 +1625,7 @@ async function scanOneSuperLikeMonitor(
             + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
-        Date.now()
-        - HISTORY_MAX_AGE_HOURS
-          * 60 * 60 * 1000;
+        getChinaYesterdayStartMs();
 
       const queue =
         TAG_SECTION_SOURCES
@@ -1612,7 +1655,7 @@ async function scanOneSuperLikeMonitor(
 
       console.log(
         HISTORY_CONTINUOUS
-          ? `[SuperLike][分区历史Resume] 开始连续补历史，${queue.length}个分区持续扫描直到48h边界/无下一页/请求失败。`
+          ? `[SuperLike][分区历史Resume] 连续补扫，不限时；截止=${formatChinaCutoff(historyCutoffMs)} | 分区数=${queue.length}`
           : `[SuperLike][分区历史Resume] fresh已入库；开始补历史，${queue.length}个分区共享${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算。`
       );
 
@@ -1640,6 +1683,10 @@ async function scanOneSuperLikeMonitor(
 
           let resume =
             item.resume;
+
+          console.log(
+            `[SuperLike][History开始] 分区=${source.name} | Resume page=${resume.next_page ?? '-'} | 截止=${formatChinaCutoff(historyCutoffMs)}`
+          );
 
           let historyPage = 0;
           let consecutiveOldPages = 0;
@@ -1753,6 +1800,7 @@ async function scanOneSuperLikeMonitor(
             console.log(
               [
                 `[分区历史Resume ${source.name} #${historyPage}]`,
+                `page=${params.page ?? '-'}`,
                 `Post=${pageStats.found}`,
                 `Profile查=${pageStats.profileChecked}`,
                 `新增=${pageStats.inserted}`,
@@ -1780,7 +1828,7 @@ async function scanOneSuperLikeMonitor(
               );
 
               console.log(
-                `[SuperLike][分区历史48h完成] ${source.name} 连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过最近 ${HISTORY_MAX_AGE_HOURS} 小时边界，清除Resume；更老数据不再扫描。`
+                `[SuperLike][分区历史日边界完成] ${source.name} 连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过昨天 00:00 边界，清除Resume；已清除Resume，历史页数重置。`
               );
 
               break;
@@ -2115,16 +2163,14 @@ async function scanOneSuperLikeMonitor(
             + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
-        Date.now()
-        - HISTORY_MAX_AGE_HOURS
-          * 60 * 60 * 1000;
+        getChinaYesterdayStartMs();
 
       let consecutiveOldPages = 0;
 
       console.log(
         HISTORY_CONTINUOUS
-          ? `[SuperLike][History][latest-posts] 连续补扫，不设时间上限；仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时，连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
-          : `[SuperLike][History][latest-posts] 仅补最近 ${HISTORY_MAX_AGE_HOURS} 小时；连续 ${HISTORY_OLD_PAGE_THRESHOLD} 个完整旧页后停止并清除Resume。`
+          ? `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 不限时 | 截止=${formatChinaCutoff(historyCutoffMs)}`
+          : `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 截止=${formatChinaCutoff(historyCutoffMs)}`
       );
 
       let latestResume =
@@ -2249,12 +2295,12 @@ async function scanOneSuperLikeMonitor(
           consecutiveOldPages++;
 
           console.log(
-            `[SuperLike][History][48h边界] page=${params.page} 整页早于最近${HISTORY_MAX_AGE_HOURS}小时/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`
+            `[SuperLike][History][昨日00:00边界] page=${params.page} 整页早于昨日00:00之后/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`
           );
         } else {
           if (consecutiveOldPages > 0) {
             console.log(
-              `[SuperLike][History][48h边界] page=${params.page} 仍有最近${HISTORY_MAX_AGE_HOURS}小时内帖子，连续旧页 ${consecutiveOldPages} -> 0`
+              `[SuperLike][History][昨日00:00边界] page=${params.page} 仍有昨日00:00之后内帖子，连续旧页 ${consecutiveOldPages} -> 0`
             );
           }
 
@@ -2270,7 +2316,7 @@ async function scanOneSuperLikeMonitor(
           );
 
           console.log(
-            `[SuperLike][History][48h完成] 已连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过最近 ${HISTORY_MAX_AGE_HOURS} 小时边界，清除 latest-posts Resume；更老数据不再扫描。`
+            `[SuperLike][History][日边界完成] 已连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过昨天 00:00 边界，清除 latest-posts Resume；已清除Resume，历史页数重置。`
           );
           break;
         }
