@@ -989,7 +989,14 @@ async function queryJyz(
   const updateStmt =
     db.prepare(`
       UPDATE superlike_posts
-      SET experience_7d = ?
+      SET
+        experience_7d = ?,
+        profile_status =
+          CASE
+            WHEN profile_status = 'PROFILE_FAILED'
+            THEN 'NO_SUPERLIKE'
+            ELSE profile_status
+          END
       WHERE id = ?
         AND experience_7d IS NULL
     `);
@@ -1001,7 +1008,14 @@ async function queryJyz(
   const updateUidExperienceStmt =
     db.prepare(`
       UPDATE superlike_posts
-      SET experience_7d = ?
+      SET
+        experience_7d = ?,
+        profile_status =
+          CASE
+            WHEN profile_status = 'PROFILE_FAILED'
+            THEN 'NO_SUPERLIKE'
+            ELSE profile_status
+          END
       WHERE uid = ?
     `);
 
