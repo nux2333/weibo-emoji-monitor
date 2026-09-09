@@ -1086,25 +1086,165 @@ function saveSuperLikeTargetPost(data = {}) {
       ? Date.parse(existing.post_created_at)
       : null;
 
-    const shouldReplace =
-      (
-        Number.isFinite(commentsCount)
-        && (
-          !Number.isFinite(existingComments)
-          || commentsCount > existingComments
-        )
-      )
-      ||
-      (
-        Number.isFinite(commentsCount)
-        && Number.isFinite(existingComments)
-        && commentsCount === existingComments
-        && Number.isFinite(postCreatedAtMs)
-        && (
-          !Number.isFinite(existingMs)
-          || postCreatedAtMs > existingMs
-        )
+    /*
+     * 同 UID 候选帖替换规则：
+     * 1) 不同自然日：优先日期更新的帖子，不比较评论数。
+     * 2) 同一自然日：优先评论数更多的帖子。
+     * 3) 同日且评论数相同：再用发帖时间更晚的帖子兜底。
+     *
+     * 日期按 post_created_at 所带时间解析后的本地日期比较。
+     */
+    const toDateKey =
+      ms => {
+        if (
+          !Number.isFinite(
+            Number(ms)
+          )
+        ) {
+          return null;
+        }
+
+        return new Intl.DateTimeFormat(
+          'en-CA',
+          {
+            timeZone:
+              'Asia/Shanghai',
+            year:
+              'numeric',
+            month:
+              '2-digit',
+            day:
+              '2-digit'
+          }
+        ).format(
+          new Date(
+            Number(ms)
+          )
+        );
+      };
+
+    const existingDateKey =
+      toDateKey(
+        existingMs
       );
+
+    const newDateKey =
+      toDateKey(
+        postCreatedAtMs
+      );
+
+    let shouldReplace =
+      false;
+
+    if (
+      newDateKey
+      &&
+      existingDateKey
+      &&
+      newDateKey !== existingDateKey
+    ) {
+      shouldReplace =
+        newDateKey > existingDateKey;
+
+    } else if (
+      newDateKey
+      &&
+      existingDateKey
+      &&
+      newDateKey === existingDateKey
+    ) {
+      shouldReplace =
+        (
+          Number.isFinite(
+            commentsCount
+          )
+          &&
+          (
+            !Number.isFinite(
+              existingComments
+            )
+            ||
+            commentsCount
+            >
+            existingComments
+          )
+        )
+        ||
+        (
+          Number.isFinite(
+            commentsCount
+          )
+          &&
+          Number.isFinite(
+            existingComments
+          )
+          &&
+          commentsCount
+          === existingComments
+          &&
+          Number.isFinite(
+            postCreatedAtMs
+          )
+          &&
+          (
+            !Number.isFinite(
+              existingMs
+            )
+            ||
+            postCreatedAtMs
+            >
+            existingMs
+          )
+        );
+
+    } else {
+      /*
+       * 任一帖子时间无法解析时，退回旧规则，避免因为坏时间字段完全无法更新。
+       */
+      shouldReplace =
+        (
+          Number.isFinite(
+            commentsCount
+          )
+          &&
+          (
+            !Number.isFinite(
+              existingComments
+            )
+            ||
+            commentsCount
+            >
+            existingComments
+          )
+        )
+        ||
+        (
+          Number.isFinite(
+            commentsCount
+          )
+          &&
+          Number.isFinite(
+            existingComments
+          )
+          &&
+          commentsCount
+          === existingComments
+          &&
+          Number.isFinite(
+            postCreatedAtMs
+          )
+          &&
+          (
+            !Number.isFinite(
+              existingMs
+            )
+            ||
+            postCreatedAtMs
+            >
+            existingMs
+          )
+        );
+    }
 
     if (!shouldReplace) {
       if (
