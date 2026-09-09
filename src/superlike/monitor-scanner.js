@@ -1072,22 +1072,19 @@ async function scanOneSuperLikeMonitor(
     );
 
 
-    const directSectionWorker =
-      SCAN_WORKER_MODE === 'fresh'
-      &&
-      SCAN_WORKER_SOURCE.startsWith(
-        'section-'
-      );
-
     /*
-     * 三个专区 Fresh Worker 不再走：
-     *   一级“最新” -> _feed -> 总流“最新发帖” -> _sort_time
+     * 所有 Fresh / History Worker 共用同一套真实页面初始化：
+     *   打开超话首页
+     *   -> 点击一级“最新”
+     *   -> 捕获 _feed
+     *   -> 点击二级“最新发帖”
+     *   -> 捕获真实 sort_time 第一页
      *
-     * 它们只需要先打开真实超话首页建立 weibo.com 页面会话，
-     * 随后由 scanTagSection() 直接请求自己的 tag_status_sort 第一页。
-     *
-     * fresh-latest / history 仍保留原来的总流初始化流程。
+     * 三个专区不再“首页一打开就直打 tag_status_sort”。
+     * 完成共同初始化后，再由 scanTagSection() 进入各自专区。
      */
+    const directSectionWorker =
+      false;
     let feedResult = null;
     let sortTimeFlowId = null;
     let firstSortTimeResult = null;
@@ -1097,10 +1094,11 @@ async function scanOneSuperLikeMonitor(
     let logicalPageNumber = 1;
 
     if (directSectionWorker) {
-      console.log(
-        `[SuperLike][专区直达] Worker=${SCAN_WORKER_SOURCE} | 已打开超话首页；跳过 _feed / 总流最新发帖 _sort_time，直接进入当前专区“最新发帖”扫描。`
-      );
+      // 已禁用：保留分支仅为兼容旧结构。
     } else {
+      console.log(
+        `[SuperLike][共同初始化] Worker=${SCAN_WORKER_SOURCE || SCAN_WORKER_MODE} | 先走真实“最新 -> 最新发帖”页面路径，再进入目标来源。`
+      );
       /*
        * 只走微博真实前端路径：
        * 先监听 _feed，再点击一级“最新”。
