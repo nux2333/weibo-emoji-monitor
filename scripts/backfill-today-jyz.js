@@ -78,6 +78,12 @@ const REST_MS =
   )
   || 60 * 1000;
 
+const IDLE_WAIT_MS =
+  Number(
+    process.env.JYZ_BACKFILL_IDLE_WAIT_MS
+  )
+  || 60 * 1000;
+
 const REQUEST_DELAY_MS =
   Number(
     process.env.JYZ_BACKFILL_REQUEST_DELAY_MS
@@ -931,7 +937,7 @@ async function queryJyz(
     '=============================================='
   );
   console.log(
-    '# JYZ 全库空值补数'
+    '# JYZ 全库空值补数（24小时常驻）'
   );
   console.log(
     '# 筛选：全库 experience_7d IS NULL'
@@ -950,6 +956,13 @@ async function queryJyz(
         REST_MS / 1000
       )
     + ' 秒，然后重新查询最新数据'
+  );
+  console.log(
+    '# 当前无空值时：等待 '
+    + Math.round(
+        IDLE_WAIT_MS / 1000
+      )
+    + ' 秒后继续检查，不退出进程'
   );
   console.log(
     '# 规则：经验值 >= 80 -> 写入 superlike_users，并删除该UID全部 superlike_posts'
@@ -981,32 +994,36 @@ async function queryJyz(
     ) {
       console.log('');
       console.log(
-        '========== JYZ补数完成 =========='
+        '========== JYZ 当前无待补数据 =========='
       );
       console.log(
-        '全库已没有 experience_7d 为空的数据。'
+        '全库当前没有 experience_7d 为空的数据；常驻进程不会退出。'
       );
       console.log(
-        '总处理：'
+        '累计处理：'
         + totalProcessed
-      );
-      console.log(
-        '总更新：'
+        + ' | 更新：'
         + totalUpdated
-      );
-      console.log(
-        '总失败：'
+        + ' | >=80加入超LIKE：'
+        + totalPromoted
+        + ' | 删除帖子：'
+        + totalDeletedPosts
+        + ' | 失败：'
         + totalFailed
       );
       console.log(
-        '经验值>=80加入超LIKE：'
-        + totalPromoted
+        '[JYZ补数] '
+        + Math.round(
+            IDLE_WAIT_MS / 1000
+          )
+        + ' 秒后重新检查新入库数据。'
       );
-      console.log(
-        '因经验值>=80删除帖子：'
-        + totalDeletedPosts
+
+      await sleep(
+        IDLE_WAIT_MS
       );
-      break;
+
+      continue;
     }
 
     round++;
@@ -1094,7 +1111,7 @@ async function queryJyz(
           );
 
         /*
-         * 近7天经验值严格 > 80：
+         * 近7天经验值 >= 80：
          * 直接视为已达到超LIKE门槛，不再保留候选帖子。
          * 先写 superlike_users，再按UID删除全部 superlike_posts。
          */
@@ -1114,7 +1131,7 @@ async function queryJyz(
           const deletedPosts =
             deletePostsByUidWithLog(
               normalizedUid,
-              'EXPERIENCE_7D_GT_80'
+              'EXPERIENCE_7D_GTE_80'
             );
 
           promotedUids.add(
@@ -1210,7 +1227,7 @@ async function queryJyz(
       + rows.length
       + ' | 更新='
       + roundUpdated
-      + ' | >80加入超LIKE='
+      + ' | >=80加入超LIKE='
       + roundPromoted
       + ' | 删除帖子='
       + roundDeletedPosts
