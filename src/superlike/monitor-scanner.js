@@ -1920,7 +1920,15 @@ async function scanOneSuperLikeMonitor(
                 profileCache,
                 scanVisitorContext,
                 historyPosts,
-                historyCutoffMs
+                historyCutoffMs,
+                {
+                  mode:
+                    source.key === 'section-hot'
+                      ? 'hot'
+                      : 'default',
+                  source:
+                    source.key
+                }
               );
 
             for (
@@ -2113,9 +2121,6 @@ async function scanOneSuperLikeMonitor(
                 .slice(
                   freshProcessedIndex,
                   endIndex
-                )
-                .map(
-                  item => item.post
                 );
 
             const startIndex =
@@ -2176,7 +2181,7 @@ async function scanOneSuperLikeMonitor(
               const results =
                 await Promise.all(
                   chunk.map(
-                    post =>
+                    item =>
                       processPagePosts(
                         monitor.id,
                         null,
@@ -2188,7 +2193,16 @@ async function scanOneSuperLikeMonitor(
                         config,
                         profileCache,
                         scanVisitorContext,
-                        [post]
+                        [item.post],
+                        null,
+                        {
+                          mode:
+                            item.source === 'section-hot'
+                              ? 'hot'
+                              : 'default',
+                          source:
+                            item.source
+                        }
                       )
                   )
                 );
