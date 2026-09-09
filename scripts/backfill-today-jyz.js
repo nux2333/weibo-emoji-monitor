@@ -71,7 +71,7 @@ const REST_MS =
   Number(
     process.env.JYZ_BACKFILL_REST_MS
   )
-  || 5 * 60 * 1000;
+  || 60 * 1000;
 
 const REQUEST_DELAY_MS =
   Number(
@@ -89,96 +89,6 @@ function sleep(ms) {
         resolve,
         ms
       )
-  );
-}
-
-function getChinaDateString(
-  date = new Date()
-) {
-  const parts =
-    new Intl.DateTimeFormat(
-      'en-CA',
-      {
-        timeZone:
-          'Asia/Shanghai',
-        year:
-          'numeric',
-        month:
-          '2-digit',
-        day:
-          '2-digit'
-      }
-    )
-      .formatToParts(
-        date
-      );
-
-  const map = {};
-
-  for (
-    const part
-    of parts
-  ) {
-    if (
-      part.type !==
-      'literal'
-    ) {
-      map[part.type] =
-        part.value;
-    }
-  }
-
-  return (
-    map.year
-    + '-'
-    + map.month
-    + '-'
-    + map.day
-  );
-}
-
-function parsePostTimeMs(
-  value
-) {
-  if (!value) {
-    return null;
-  }
-
-  let date =
-    new Date(
-      value
-    );
-
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-    &&
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
-      String(value)
-    )
-  ) {
-    date =
-      new Date(
-        String(value)
-          .replace(
-            ' ',
-            'T'
-          )
-        + '+08:00'
-      );
-  }
-
-  return Number.isNaN(
-    date.getTime()
-  )
-    ? null
-    : date.getTime();
-}
-
-function chinaDateFromMs(ms) {
-  return getChinaDateString(
-    new Date(ms)
   );
 }
 
@@ -435,7 +345,6 @@ async function rotateBackfillProxy(
     null;
 }
 
-
 async function ensureLocalContext() {
   if (localContext) {
     return localContext;
@@ -485,7 +394,6 @@ async function ensureLocalContext() {
 
   return localContext;
 }
-
 
 async function queryJyzLocal(
   uid
@@ -827,10 +735,6 @@ async function queryJyzLocal(
 async function queryJyz(
   uid
 ) {
-  /*
-   * 默认补数全部走代理。
-   * 如需临时恢复旧行为，可设置 JYZ_BACKFILL_USE_PROXY=0。
-   */
   if (!USE_PROXY) {
     const serviceResult =
       await queryJyzService(
@@ -975,10 +879,15 @@ async function queryJyz(
 (async () => {
   initDatabase();
 
-  const today =
-    getChinaDateString();
+  const updateStmt =
+    db.prepare(`
+      UPDATE superlike_posts
+      SET experience_7d = ?
+      WHERE id = ?
+        AND experience_7d IS NULL
+    `);
 
-  const rows =
+  const selectBatchStmt =
     db.prepare(`
       SELECT
         id,
@@ -989,156 +898,47 @@ async function queryJyz(
         first_seen_at
       FROM superlike_posts
       WHERE experience_7d IS NULL
-      ORDER BY id DESC
-    `)
-      .all();
+      ORDER BY
+        CASE
+          WHEN post_created_at IS NULL
+            OR TRIM(post_created_at) = ''
+          THEN 1
+          ELSE 0
+        END ASC,
+        datetime(post_created_at) DESC,
+        id DESC
+      LIMIT ?
+    `);
 
-  /*
-   * “今天”的口径与页面“只看今天”保持一致：
-   * 按 first_seen_at（帖子首次入库时间）判断，
-   * 而不是按微博 post_created_at 判断。
-   *
-   * SQLite CURRENT_TIMESTAMP / first_seen_at 默认按 UTC 保存，
-   * 所以这里把无时区的 YYYY-MM-DD HH:mm:ss 按 UTC 解析，
-   * 再转换成中国日期。
-   */
-  const todayRows =
-    rows
-      .map(
-        row => {
-          const firstSeenText =
-            String(
-              row.first_seen_at
-              || ''
-            ).trim();
-
-          let firstSeenMs =
-            null;
-
-          if (
-            /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
-              firstSeenText
-            )
-          ) {
-            const date =
-              new Date(
-                firstSeenText
-                  .replace(
-                    ' ',
-                    'T'
-                  )
-                + 'Z'
-              );
-
-            firstSeenMs =
-              Number.isNaN(
-                date.getTime()
-              )
-                ? null
-                : date.getTime();
-          } else {
-            firstSeenMs =
-              parsePostTimeMs(
-                row.first_seen_at
-              );
-          }
-
-          return {
-            ...row,
-            first_seen_at_ms:
-              firstSeenMs,
-            post_created_at_ms:
-              parsePostTimeMs(
-                row.post_created_at
-              )
-          };
-        }
-      )
-      .filter(
-        row =>
-          Number.isFinite(
-            Number(
-              row.first_seen_at_ms
-            )
-          )
-          &&
-          chinaDateFromMs(
-            row.first_seen_at_ms
-          ) === today
-      )
-      .sort(
-        (a, b) => {
-          const aPostMs =
-            Number.isFinite(
-              Number(
-                a.post_created_at_ms
-              )
-            )
-              ? Number(
-                  a.post_created_at_ms
-                )
-              : Number.NEGATIVE_INFINITY;
-
-          const bPostMs =
-            Number.isFinite(
-              Number(
-                b.post_created_at_ms
-              )
-            )
-              ? Number(
-                  b.post_created_at_ms
-                )
-              : Number.NEGATIVE_INFINITY;
-
-          if (
-            bPostMs !==
-            aPostMs
-          ) {
-            return (
-              bPostMs
-              -
-              aPostMs
-            );
-          }
-
-          return (
-            Number(
-              b.first_seen_at_ms
-            )
-            -
-            Number(
-              a.first_seen_at_ms
-            )
-          );
-        }
-      );
+  let round = 0;
+  let totalProcessed = 0;
+  let totalUpdated = 0;
+  let totalFailed = 0;
 
   console.log('');
   console.log(
     '=============================================='
   );
   console.log(
-    '# JYZ 今日空值补数'
+    '# JYZ 全库空值补数'
   );
   console.log(
-    '# 中国日期：'
-    + today
+    '# 筛选：全库 experience_7d IS NULL'
   );
   console.log(
-    '# 待处理：'
-    + todayRows.length
+    '# 顺序：post_created_at 新 → 旧，时间为空时按 id DESC 兜底'
   );
   console.log(
-    '# 筛选：first_seen_at 今天 | 顺序：发帖时间 post_created_at 新 → 旧'
-  );
-  console.log(
-    '# 每成功更新 '
+    '# 每轮最多：'
     + BATCH_SIZE
-    + ' 个休息 '
+    + ' 条'
+  );
+  console.log(
+    '# 每轮结束休息：'
     + Math.round(
-        REST_MS / 60000
+        REST_MS / 1000
       )
-    + ' 分钟'
+    + ' 秒，然后重新查询最新数据'
   );
   console.log(
     '# 仅更新：experience_7d'
@@ -1156,154 +956,173 @@ async function queryJyz(
   );
   console.log('');
 
-  const updateStmt =
-    db.prepare(`
-      UPDATE superlike_posts
-      SET experience_7d = ?
-      WHERE id = ?
-        AND experience_7d IS NULL
-    `);
+  while (true) {
+    const rows =
+      selectBatchStmt.all(
+        BATCH_SIZE
+      );
 
-  let processed = 0;
-  let updated = 0;
-  let failed = 0;
+    if (
+      rows.length === 0
+    ) {
+      console.log('');
+      console.log(
+        '========== JYZ补数完成 =========='
+      );
+      console.log(
+        '全库已没有 experience_7d 为空的数据。'
+      );
+      console.log(
+        '总处理：'
+        + totalProcessed
+      );
+      console.log(
+        '总更新：'
+        + totalUpdated
+      );
+      console.log(
+        '总失败：'
+        + totalFailed
+      );
+      break;
+    }
 
-  for (
-    let i = 0;
-    i < todayRows.length;
-    i++
-  ) {
-    const row =
-      todayRows[i];
+    round++;
 
-    processed++;
-
+    console.log('');
     console.log(
-      '[JYZ补数] '
-      + processed
-      + '/'
-      + todayRows.length
-      + ' | UID='
-      + row.uid
-      + ' | Post='
-      + row.post_id
-      + ' | first_seen_at='
-      + row.first_seen_at
-      + ' | 发帖='
-      + row.post_created_at
+      '========== JYZ 第 '
+      + round
+      + ' 轮 =========='
+    );
+    console.log(
+      '[JYZ补数] 本轮取最新空值 '
+      + rows.length
+      + ' 条'
     );
 
-    const result =
-      await queryJyz(
-        row.uid
+    let roundUpdated = 0;
+    let roundFailed = 0;
+
+    for (
+      let i = 0;
+      i < rows.length;
+      i++
+    ) {
+      const row =
+        rows[i];
+
+      totalProcessed++;
+
+      console.log(
+        '[JYZ补数] '
+        + (i + 1)
+        + '/'
+        + rows.length
+        + ' | UID='
+        + row.uid
+        + ' | Post='
+        + row.post_id
+        + ' | 发帖='
+        + (row.post_created_at || '-')
+        + ' | first_seen_at='
+        + (row.first_seen_at || '-')
       );
 
-    if (
-      result.ok
-      &&
-      Number.isFinite(
-        Number(
-          result.experience7d
-        )
-      )
-    ) {
-      const changes =
-        updateStmt.run(
-          Number(
-            result.experience7d
-          ),
-          Number(
-            row.id
-          )
-        ).changes
-        || 0;
+      const result =
+        await queryJyz(
+          row.uid
+        );
 
       if (
-        changes > 0
+        result.ok
+        &&
+        Number.isFinite(
+          Number(
+            result.experience7d
+          )
+        )
       ) {
-        updated++;
+        const changes =
+          updateStmt.run(
+            Number(
+              result.experience7d
+            ),
+            Number(
+              row.id
+            )
+          ).changes
+          || 0;
+
+        if (
+          changes > 0
+        ) {
+          roundUpdated++;
+          totalUpdated++;
+
+          console.log(
+            '[JYZ补数][更新] UID='
+            + row.uid
+            + ' | jyz='
+            + result.experience7d
+            + ' | 来源='
+            + (result.source || '-')
+            + ' | 本轮更新='
+            + roundUpdated
+            + ' | 总更新='
+            + totalUpdated
+          );
+        } else {
+          console.log(
+            '[JYZ补数][跳过] UID='
+            + row.uid
+            + ' | 记录可能已被其他进程更新'
+          );
+        }
+      } else {
+        roundFailed++;
+        totalFailed++;
 
         console.log(
-          '[JYZ补数][更新] UID='
+          '[JYZ补数][失败] UID='
           + row.uid
-          + ' | jyz='
-          + result.experience7d
-          + ' | 来源='
-          + (result.source || '-')
-          + ' | 已更新='
-          + updated
-        );
-      } else {
-        console.log(
-          '[JYZ补数][跳过] UID='
-          + row.uid
-          + ' | 记录可能已被其他进程更新'
+          + ' | '
+          + (result.message || 'unknown')
         );
       }
-    } else {
-      failed++;
 
-      console.log(
-        '[JYZ补数][失败] UID='
-        + row.uid
-        + ' | '
-        + (result.message || 'unknown')
-      );
+      if (
+        REQUEST_DELAY_MS > 0
+        &&
+        i < rows.length - 1
+      ) {
+        await sleep(
+          REQUEST_DELAY_MS
+        );
+      }
     }
 
-    if (
-      updated > 0
-      &&
-      updated % BATCH_SIZE === 0
-      &&
-      i < todayRows.length - 1
-    ) {
-      console.log('');
-      console.log(
-        '[JYZ补数] 已成功更新 '
-        + updated
-        + ' 个，休息 '
-        + Math.round(
-            REST_MS / 60000
-          )
-        + ' 分钟...'
-      );
-      console.log('');
+    console.log(
+      '[JYZ补数][本轮完成] 处理='
+      + rows.length
+      + ' | 更新='
+      + roundUpdated
+      + ' | 失败='
+      + roundFailed
+    );
 
-      await sleep(
-        REST_MS
-      );
-    } else if (
-      REQUEST_DELAY_MS > 0
-      &&
-      i < todayRows.length - 1
-    ) {
-      await sleep(
-        REQUEST_DELAY_MS
-      );
-    }
+    console.log(
+      '[JYZ补数] 休息 '
+      + Math.round(
+          REST_MS / 1000
+        )
+      + ' 秒；之后重新查询全库，并再次从最新发帖开始。'
+    );
+
+    await sleep(
+      REST_MS
+    );
   }
-
-  console.log('');
-  console.log(
-    '========== JYZ补数完成 =========='
-  );
-  console.log(
-    '待处理：'
-    + todayRows.length
-  );
-  console.log(
-    '实际处理：'
-    + processed
-  );
-  console.log(
-    '成功更新：'
-    + updated
-  );
-  console.log(
-    '失败：'
-    + failed
-  );
 
   await closeLocalContext();
 })()
