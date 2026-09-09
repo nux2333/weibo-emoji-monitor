@@ -483,10 +483,84 @@ async function runMonitor(
       if (
         !profileResult?.ok
       ) {
+        const failureText =
+          String(
+            profileResult?.message
+            || profileResult?.error
+            || ''
+          );
+
+        /*
+         * Profile helper 很多网络错误会包装成 ok=false 返回，
+         * 不一定 throw。这里再次识别代理/网络类错误：
+         * 命中后淘汰当前代理、重建浏览器，并重试当前 UID。
+         */
+        if (
+          state.assignment?.raw
+          &&
+          (
+            isProxyConnectionError(
+              new Error(
+                failureText
+              )
+            )
+            ||
+            /ERR_CERT_AUTHORITY_INVALID/i.test(
+              failureText
+            )
+            ||
+            /ERR_SOCKS_CONNECTION_FAILED/i.test(
+              failureText
+            )
+            ||
+            /ERR_EMPTY_RESPONSE/i.test(
+              failureText
+            )
+            ||
+            /Failed to fetch/i.test(
+              failureText
+            )
+            ||
+            /timed?\s*out/i.test(
+              failureText
+            )
+          )
+        ) {
+          console.log(
+            `[OldRefresh][代理失败] UID=${uid} | ${failureText || '-'} | 淘汰当前代理并换代理后重试当前UID`
+          );
+
+          try {
+            SCAN_PROXY_POOL.remove(
+              state.assignment.raw
+            );
+          } catch {
+            // ignore
+          }
+
+          try {
+            await state.context.close();
+          } catch {
+            // ignore
+          }
+
+          try {
+            await state.browser.close();
+          } catch {
+            // ignore
+          }
+
+          state =
+            await openBrowser();
+
+          index--;
+          continue;
+        }
+
         summary.failed++;
 
         console.log(
-          `[OldRefresh][Profile失败] UID=${uid} | ${profileResult?.message || '-'} | 今天不标记已检查，下次可重试`
+          `[OldRefresh][Profile失败] UID=${uid} | ${failureText || '-'} | 今天不标记已检查，下次可重试`
         );
 
         if (
