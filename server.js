@@ -1,4 +1,5 @@
 const express = require('express');
+const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
 const { execFile } = require('child_process');
@@ -34,12 +35,133 @@ const {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const ADMIN_TOKEN = process.env.ADMIN_TOKEN || 'change-me';
+/*
+ * 默认只监听本机回环地址。
+ * Cloudflare Tunnel 应连接 http://127.0.0.1:PORT，
+ * 不要把 Node 端口直接暴露到公网。
+ */
+const HOST = String(process.env.HOST || '127.0.0.1').trim();
+
+const ADMIN_TOKEN = String(process.env.ADMIN_TOKEN || '').trim();
+if (!ADMIN_TOKEN || ADMIN_TOKEN === 'change-me') {
+  throw new Error(
+    'ADMIN_TOKEN 未配置或仍为 change-me。请先设置一个随机长 Token，再启动服务器。'
+  );
+}
+
 const APP_ENV = String(process.env.APP_ENV || process.env.NODE_ENV || 'production')
   .trim()
   .toLowerCase();
 
+/*
+ * Helmet 安全响应头。
+ * 现有页面包含 inline script/style，因此暂时关闭 CSP，避免直接把现有管理页面打坏；
+ * 其余常用安全 Header 继续启用。
+ */
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    strictTransportSecurity:
+      APP_ENV === 'production'
+        ? {
+            maxAge: 31536000,
+            includeSubDomains: true
+          }
+        : false
+  })
+);
+
+app.disable('x-powered-by');
 app.use(express.json({ limit: '2mb' }));
+
+/*
+ * 公开访问轻量限流。
+ * - 按 Cloudflare 真实客户端 IP（cf-connecting-ip）计数；
+ * - 每个 IP 每分钟最多 120 个请求；
+ * - 只限制经 Cloudflare 进入的公网流量，本机管理不受影响。
+ *
+ * 这不是 Cloudflare WAF/Rate Limiting 的替代品，而是源站最后一道保护。
+ */
+const PUBLIC_RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const PUBLIC_RATE_LIMIT_MAX = 120;
+const publicRateBuckets = new Map();
+
+function getPublicClientIp(req) {
+  return String(
+    req.headers['cf-connecting-ip']
+    || req.socket?.remoteAddress
+    || 'unknown'
+  ).trim();
+}
+
+function publicRateLimit(req, res, next) {
+  const isCloudflareRequest =
+    Boolean(
+      req.headers['cf-ray']
+      || req.headers['cf-connecting-ip']
+    );
+
+  if (!isCloudflareRequest) {
+    return next();
+  }
+
+  const now = Date.now();
+  const key = getPublicClientIp(req);
+  const current = publicRateBuckets.get(key);
+
+  if (
+    !current
+    || now - current.startedAt >= PUBLIC_RATE_LIMIT_WINDOW_MS
+  ) {
+    publicRateBuckets.set(key, {
+      startedAt: now,
+      count: 1
+    });
+    res.setHeader('X-RateLimit-Limit', String(PUBLIC_RATE_LIMIT_MAX));
+    res.setHeader('X-RateLimit-Remaining', String(PUBLIC_RATE_LIMIT_MAX - 1));
+    return next();
+  }
+
+  current.count += 1;
+  const remaining =
+    Math.max(0, PUBLIC_RATE_LIMIT_MAX - current.count);
+
+  res.setHeader('X-RateLimit-Limit', String(PUBLIC_RATE_LIMIT_MAX));
+  res.setHeader('X-RateLimit-Remaining', String(remaining));
+
+  if (current.count > PUBLIC_RATE_LIMIT_MAX) {
+    const retryAfterSeconds =
+      Math.max(
+        1,
+        Math.ceil(
+          (
+            PUBLIC_RATE_LIMIT_WINDOW_MS
+            - (now - current.startedAt)
+          ) / 1000
+        )
+      );
+
+    res.setHeader('Retry-After', String(retryAfterSeconds));
+    return res.status(429).json({
+      success: false,
+      message: '请求过于频繁，请稍后再试'
+    });
+  }
+
+  return next();
+}
+
+setInterval(() => {
+  const cutoff = Date.now() - PUBLIC_RATE_LIMIT_WINDOW_MS * 2;
+  for (const [key, value] of publicRateBuckets) {
+    if (value.startedAt < cutoff) {
+      publicRateBuckets.delete(key);
+    }
+  }
+}, PUBLIC_RATE_LIMIT_WINDOW_MS).unref?.();
+
+app.use(publicRateLimit);
 
 /*
  * ============================================================
@@ -984,6 +1106,22 @@ app.get('/api/environment', (req, res) => {
 
 /* SuperLike 候选页面 API */
 app.get('/api/superlike-posts', (req, res) => {
+  /*
+   * 公开页面 30 秒自动刷新，但数据无需每个访客都直打 SQLite。
+   * 浏览器不长期缓存；Cloudflare 边缘缓存 5 秒，并允许 10 秒 stale。
+   *
+   * Cloudflare 控制台仍建议为此 URL 配置 Cache Rule，
+   * 让动态 /api 路径明确进入缓存。
+   */
+  res.setHeader(
+    'Cache-Control',
+    'public, max-age=0, s-maxage=5, stale-while-revalidate=10'
+  );
+  res.setHeader(
+    'Cloudflare-CDN-Cache-Control',
+    'public, max-age=5, stale-while-revalidate=10'
+  );
+
   try {
     const keyword = String(req.query.keyword || '').trim();
     const monitorId = req.query.monitorId
@@ -2004,10 +2142,11 @@ async function start() {
   initDatabase();
   syncMonitorsFromConfig();
 
-  app.listen(PORT, () => {
+  app.listen(PORT, HOST, () => {
     console.log('====================================');
     console.log('Weibo Emoji Monitor');
     console.log(`Environment: ${APP_ENV.toUpperCase()}`);
+    console.log(`Listen: ${HOST}:${PORT}`);
     console.log(`http://localhost:${PORT}`);
     console.log(`http://localhost:${PORT}/admin`);
     console.log(`http://localhost:${PORT}/api-responses`);
