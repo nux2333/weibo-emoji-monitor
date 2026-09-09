@@ -226,7 +226,16 @@ app.use((req, res, next) => {
     '/favicon.ico'
   ]);
 
-  if (allowedPaths.has(req.path)) {
+  /*
+   * 管理 API 允许经过 Cloudflare 到达 Express，
+   * 但后续路由仍必须通过 checkAdmin(ADMIN_TOKEN)。
+   * 这里只放行路径，不等于取消鉴权。
+   */
+  if (
+    allowedPaths.has(req.path)
+    ||
+    req.path.startsWith('/api/admin/')
+  ) {
     return next();
   }
 
