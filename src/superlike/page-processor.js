@@ -313,6 +313,31 @@ async function processPagePosts(
     if (hotMode) {
       /*
        * 热门专用逻辑：
+       * - Feed 评论 > 50 直接跳过，不查主页；
+       * - 其余 Feed 只看超LIKE icon，不按评论数筛选；
+       * - 同一 UID 本轮只查一次主页；
+       * - 主页第一页里选“发帖时间最新 + 评论<21”的帖子；
+       * - 第一页没有符合条件的帖子就跳过该 UID；
+       * - Profile 请求失败不拿 feed 帖子兜底，避免热门误入库。
+       */
+      const hotFeedComments =
+        getCommentsCount(
+          post
+        );
+
+      if (
+        hotFeedComments !== null
+        &&
+        hotFeedComments > 50
+      ) {
+        console.log(
+          `[SuperLike][热门跳过] UID=${uid || '-'} FeedPost=${postId} 评论=${hotFeedComments} > 50，不查主页`
+        );
+        continue;
+      }
+
+      /*
+       * 热门专用逻辑：
        * - feed 只看超LIKE icon，不看 feed 评论数；
        * - 同一 UID 本轮只查一次主页；
        * - 主页第一页里选“发帖时间最新 + 评论<21”的帖子；
