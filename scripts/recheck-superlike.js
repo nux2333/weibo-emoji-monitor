@@ -3243,13 +3243,22 @@ async function runLightSuperLikeRecheck(signal = null) {
       config,
       probeUid
     ) {
-      const maxProxyTries = 8;
+      // Mode3 健康检查：不再限制固定尝试次数。
+      // 持续切换当前健康代理池中的可用代理，直到成功或代理池耗尽。
+      let tryNo = 0;
 
-      for (let tryNo = 1; tryNo <= maxProxyTries; tryNo++) {
+      while (true) {
+        tryNo++;
+
+        const maxProxyTries =
+          Math.max(
+            tryNo,
+            Number(MODE3_PROXY_POOL?.items?.length || 0) + tryNo
+          );
         throwIfAborted(signal);
 
         console.log(
-          `[模式3][Profile健康检查] ${tryNo}/${maxProxyTries} | ${proxyAssignment?.masked || 'LOCAL'} | UID=${probeUid}`
+          `[模式3][Profile健康检查] 第${tryNo}个可用代理 | ${proxyAssignment?.masked || 'LOCAL'} | UID=${probeUid}`
         );
 
         const probe =
@@ -3301,8 +3310,17 @@ async function runLightSuperLikeRecheck(signal = null) {
           console.log(
             proxy
               ? `[模式3][Profile健康检查] 切换代理：${proxyAssignment.masked}`
-              : '[模式3][Profile健康检查] 代理池为空，切本地IP测试。'
+              : '[模式3][Profile健康检查] 可用代理已全部尝试，最后切本地IP测试。'
           );
+
+          if (!proxy) {
+            proxyAssignment = {
+              configured: false,
+              raw: null,
+              proxy: null,
+              masked: 'LOCAL'
+            };
+          }
 
           await relaunchContext(
             proxy
@@ -3320,7 +3338,7 @@ async function runLightSuperLikeRecheck(signal = null) {
       return {
         ok: false,
         status: null,
-        message: 'Mode3 Profile health check exhausted'
+        message: 'Mode3 可用代理已全部尝试'
       };
     }
 
