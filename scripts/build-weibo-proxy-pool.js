@@ -78,7 +78,7 @@ const TARGET_GOOD_COUNT =
   Number(
     process.env.WEIBO_GOOD_PROXY_TARGET
   )
-  || 100;
+  || 500;
 
 const MAX_CANDIDATES_PER_SOURCE =
   Number(
