@@ -216,6 +216,8 @@ app.use((req, res, next) => {
     '/scripts.html',
     '/logs-live',
     '/logs-live.html',
+    '/monitors-admin',
+    '/monitors-admin.html',
 
     '/api/superlike-posts',
     '/api/superlike-mark-user',
@@ -285,6 +287,10 @@ app.get('/', (req, res) =>
 
 app.get('/admin', (req, res) =>
   res.sendFile(path.join(__dirname, 'public', 'admin.html'))
+);
+
+app.get('/monitors-admin', (req, res) =>
+  res.sendFile(path.join(__dirname, 'public', 'monitors-admin.html'))
 );
 
 app.get('/api-responses', (req, res) =>
