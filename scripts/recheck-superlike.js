@@ -5573,10 +5573,10 @@ async function runMode4Forever() {
           /*
            * Mode4 作为24小时常驻任务默认后台运行。
            * Persistent Profile 仍保留，因此不会影响现有 visitor/session。
-           * 如需临时观察窗口，可设置 SUPERLIKE_RECHECK_HEADLESS=0。
+           * Mode4 固定后台运行，不再读取旧的可见窗口环境变量。
            */
           headless:
-            process.env.SUPERLIKE_RECHECK_HEADLESS !== '0',
+            true,
           ...(proxy ? { proxy } : {}),
           viewport: {
             width: 1280,
