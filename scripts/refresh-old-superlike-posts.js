@@ -27,6 +27,10 @@ const {
 } = require('../src/superlike/profile');
 
 const {
+  checkSuperLikeByBrowser
+} = require('../src/superlike/mode3-profile');
+
+const {
   getPostId,
   getCommentsCount,
   getPostCreatedAt,
@@ -332,7 +336,12 @@ async function openBrowser() {
 
   const browser =
     await chromium.launch({
-      headless: true,
+      channel:
+        'chromium',
+      headless:
+        true,
+      ignoreHTTPSErrors:
+        true,
       ...(proxy
         ? {
             proxy
@@ -342,11 +351,17 @@ async function openBrowser() {
 
   const context =
     await browser.newContext({
+      ignoreHTTPSErrors:
+        true,
       viewport: {
         width: 1280,
         height: 900
       }
     });
+
+  console.log(
+    '[OldRefresh] 已创建与Mode3一致的Visitor Context：ignoreHTTPSErrors=true，复用游客Cookie/会话。'
+  );
 
   return {
     browser,
@@ -431,12 +446,62 @@ async function runMonitor(
       let profileResult;
 
       try {
-        profileResult =
-          await checkUserSuperLikeByProfile(
+        /*
+         * 先完全复用 Mode3 的 profile_allbadge 游客链路：
+         * - visitor.passport 初始化
+         * - 同一 Visitor Context 复用游客 Cookie
+         * - ignoreHTTPSErrors=true
+         *
+         * allbadge 只负责确认当前是否已经是超LIKE。
+         */
+        const allbadgeResult =
+          await checkSuperLikeByBrowser(
             state.context,
             config,
-            uid
+            uid,
+            null,
+            'OldRefresh'
           );
+
+        if (
+          !allbadgeResult?.ok
+        ) {
+          profileResult = {
+            ok: false,
+            hasSuperLike:
+              null,
+            status:
+              allbadgeResult?.status
+              ?? null,
+            message:
+              allbadgeResult?.message
+              || 'profile_allbadge失败'
+          };
+
+        } else if (
+          allbadgeResult.hasSuperLike
+        ) {
+          profileResult = {
+            ok: true,
+            hasSuperLike:
+              true,
+            profilePosts:
+              []
+          };
+
+        } else {
+          /*
+           * allbadge 已确认“未超LIKE”后，再用同一个 Visitor Context
+           * 打开 profile_inpage，只为取得主页第一页帖子。
+           */
+          profileResult =
+            await checkUserSuperLikeByProfile(
+              state.context,
+              config,
+              uid,
+              state.context
+            );
+        }
 
       } catch (error) {
         if (
