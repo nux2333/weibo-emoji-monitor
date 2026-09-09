@@ -104,6 +104,12 @@ const SCAN_WORKER_SOURCE =
     || ''
   ).trim();
 
+const SCAN_FORCE_LOCAL =
+  String(
+    process.env.SUPERLIKE_SCAN_FORCE_LOCAL
+    || ''
+  ).trim() === '1';
+
 const WEIBO_LOGIN_STATE_FILE =
   process.env.WEIBO_LOGIN_STATE_FILE
     ? path.resolve(
@@ -925,7 +931,11 @@ async function scanOneSuperLikeMonitor(
 
 
     proxyAssignment =
-      forceLocal
+      (
+        forceLocal
+        ||
+        SCAN_FORCE_LOCAL
+      )
         ? {
             configured: false,
             raw: null,
@@ -940,7 +950,11 @@ async function scanOneSuperLikeMonitor(
     console.log(
       proxy
         ? `[SuperLike] 本轮优先使用健康代理：${proxyAssignment.masked}`
-        : '[SuperLike] 当前轮使用本地IP'
+        : (
+            SCAN_FORCE_LOCAL
+              ? '[SuperLike] 当前Worker已配置强制本地IP'
+              : '[SuperLike] 当前轮使用本地IP'
+          )
     );
 
     browser =
