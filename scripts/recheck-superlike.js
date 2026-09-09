@@ -2739,7 +2739,7 @@ async function getCommentsCountByHttp(post, signal = null) {
  * 模式3：轻量 SuperLike Profile 复检
  * 不启动 Playwright / Chrome。
  *
- * 按 Monitor + UID 轮询 profile_inpage：
+ * 按 Monitor + UID 轮询 profile_allbadge：
  * - 命中 SuperLike -> 立即删除该 UID 在当前 Monitor 的全部数据
  * - 未命中 -> 保留
  * - HTTP 418 -> 立即停止本轮，避免继续请求
@@ -2831,7 +2831,7 @@ function buildLightProfileApiUrl(
 
   url.searchParams.set(
     'containerid',
-    config.profileContainerId
+    `${config.profileContainerId.replace(/_-_profile_inpage$/, '')}_-_profile_allbadge`
   );
 
   // URLSearchParams 会再次编码 %，最终得到 target_uid%2523{uid}
@@ -2847,7 +2847,7 @@ function buildLightProfileApiUrl(
 
   url.searchParams.set(
     'lfid',
-    config.chaoLikeListContainerId
+    config.profileContainerId
   );
 
   url.searchParams.set(
@@ -2934,7 +2934,7 @@ async function checkSuperLikeByBrowser(
         status,
         url: apiUrl,
         message:
-          'profile_inpage HTTP 418'
+          'profile_allbadge HTTP 418'
       };
     }
 
@@ -2950,7 +2950,7 @@ async function checkSuperLikeByBrowser(
         status,
         url: apiUrl,
         message:
-          `profile_inpage HTTP ${status} | ${body.slice(0, 500)}`
+          `profile_allbadge HTTP ${status} | ${body.slice(0, 500)}`
       };
     }
 
@@ -2970,7 +2970,7 @@ async function checkSuperLikeByBrowser(
         status,
         url: apiUrl,
         message:
-          `profile_inpage 返回的不是 JSON | ${body.slice(0, 500)}`
+          `profile_allbadge 返回的不是 JSON | ${body.slice(0, 500)}`
       };
     }
 
@@ -2988,7 +2988,7 @@ async function checkSuperLikeByBrowser(
         status,
         url: apiUrl,
         message:
-          `profile_inpage API ok=${json?.ok} | ${body.slice(0, 500)}`
+          `profile_allbadge API ok=${json?.ok} | ${body.slice(0, 500)}`
       };
     }
 
@@ -3047,8 +3047,8 @@ async function runLightSuperLikeRecheck(signal = null) {
 
   console.log('');
   console.log('########################################');
-  console.log('# SuperLike Recheck - 模式3 BrowserContext Profile 模式');
-  console.log('# 复用 superlike-scanner 的 checkUserSuperLikeByProfile；本轮30个UID共享一个游客Context');
+  console.log('# SuperLike Recheck - 模式3 profile_allbadge 模式');
+  console.log('# Mode3 使用 profile_allbadge 接口检查徽章；本轮30个UID共享一个游客Context');
   console.log('# headless，不显示 Chrome 窗口');
   console.log('# 发现 SuperLike -> 立即删除该 UID 全部数据');
   console.log('# 只检查 experience_7d >= 70；按数据库经验值从高到低，不读取/更新经验值');
