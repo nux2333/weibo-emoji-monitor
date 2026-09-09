@@ -185,6 +185,26 @@ const TAG_SECTION_PAGES =
   )
   || 30;
 
+function getTagSectionMaxPages(
+  source
+) {
+  if (
+    String(source?.key || '')
+    === 'section-yishanshui'
+  ) {
+    return Math.max(
+      1,
+      Number(
+        process.env.SUPERLIKE_YISHANSHUI_PAGES
+      )
+      || 100
+    );
+  }
+
+  return TAG_SECTION_PAGES;
+}
+
+
 const TAG_SECTION_CONCURRENCY =
   Math.max(
     1,
@@ -2609,9 +2629,18 @@ async function scanOneSuperLikeMonitor(
           let phase =
             'fresh';
 
+          const sectionMaxPages =
+            getTagSectionMaxPages(
+              source
+            );
+
+          console.log(
+            `[SuperLike][分区页数上限] ${source.name} = ${sectionMaxPages}页`
+          );
+
           for (
             let sectionPageIndex = 1;
-            sectionPageIndex <= TAG_SECTION_PAGES;
+            sectionPageIndex <= sectionMaxPages;
             sectionPageIndex++
           ) {
             pagesScanned++;
@@ -2817,7 +2846,7 @@ async function scanOneSuperLikeMonitor(
 
             if (
               sectionPageIndex >=
-              TAG_SECTION_PAGES
+              sectionMaxPages
             ) {
               saveScanSourceResume(
                 monitor.id,
@@ -2827,7 +2856,7 @@ async function scanOneSuperLikeMonitor(
               );
 
               console.log(
-                `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${TAG_SECTION_PAGES} 页仍未安全跨过旧时间checkpoint；旧边界不推进，保存cursor后下轮继续。`
+                `[SuperLike][分区Checkpoint] ${source.name} 扫到 ${sectionMaxPages} 页仍未安全跨过旧时间checkpoint；旧边界不推进，保存cursor后下轮继续。`
               );
 
               break;
