@@ -129,8 +129,7 @@ module.exports = {
         'recheck-superlike.js'
       ),
       env: {
-        SUPERLIKE_RECHECK_MODE: '4',
-        SUPERLIKE_RECHECK_HEADLESS: '1'
+        SUPERLIKE_RECHECK_MODE: '4'
       }
     },
     {
