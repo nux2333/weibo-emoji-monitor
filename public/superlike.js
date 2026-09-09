@@ -1225,129 +1225,350 @@ async function markBlackFan(button) {
 }
 
 
+const movedWriteQueue =
+  new Map();
+
+let movedWriteTimer =
+  null;
+
+let movedWriteFlushing =
+  false;
+
+
+function showCopyToast(
+  cell,
+  text = '已复制'
+) {
+  const oldBubble =
+    document.querySelector(
+      '.copy-toast'
+    );
+
+  if (oldBubble) {
+    oldBubble.remove();
+  }
+
+  const bubble =
+    document.createElement(
+      'div'
+    );
+
+  bubble.className =
+    'copy-toast';
+
+  bubble.textContent =
+    text;
+
+  const rect =
+    cell.getBoundingClientRect();
+
+  bubble.style.left =
+    Math.min(
+      window.innerWidth - 90,
+      Math.max(
+        8,
+        rect.left
+          + rect.width / 2
+          - 36
+      )
+    )
+    + 'px';
+
+  bubble.style.top =
+    Math.max(
+      8,
+      rect.top - 34
+    )
+    + 'px';
+
+  document.body.appendChild(
+    bubble
+  );
+
+  requestAnimationFrame(
+    () => {
+      bubble.classList.add(
+        'show'
+      );
+    }
+  );
+
+  setTimeout(
+    () => {
+      bubble.classList.remove(
+        'show'
+      );
+
+      setTimeout(
+        () => bubble.remove(),
+        180
+      );
+    },
+    700
+  );
+}
+
+
+function queueMovedWrite(
+  tr,
+  id
+) {
+  if (
+    !tr
+    ||
+    !Number.isFinite(id)
+    ||
+    id <= 0
+  ) {
+    return;
+  }
+
+  /*
+   * UI 先立即变成“已搬运”，数据库异步批量写。
+   * Map 用 id 去重；同一帖子连续点击不会重复入队。
+   */
+  tr.dataset.moved =
+    '1';
+
+  tr.classList.add(
+    'is-moved'
+  );
+
+  const row =
+    allRows.find(
+      item =>
+        Number(item.id)
+        === id
+    );
+
+  if (row) {
+    row.moved_flag = 1;
+  }
+
+  movedWriteQueue.set(
+    id,
+    tr
+  );
+
+  if (movedWriteTimer) {
+    return;
+  }
+
+  movedWriteTimer =
+    setTimeout(
+      flushMovedWriteQueue,
+      300
+    );
+}
+
+
+async function flushMovedWriteQueue() {
+  movedWriteTimer =
+    null;
+
+  if (
+    movedWriteFlushing
+    ||
+    movedWriteQueue.size === 0
+  ) {
+    return;
+  }
+
+  movedWriteFlushing =
+    true;
+
+  const batch =
+    Array.from(
+      movedWriteQueue.entries()
+    );
+
+  movedWriteQueue.clear();
+
+  const ids =
+    batch.map(
+      ([id]) => id
+    );
+
+  try {
+    const response =
+      await fetch(
+        '/api/superlike-posts-moved',
+        {
+          method:
+            'POST',
+          headers: {
+            'Content-Type':
+              'application/json'
+          },
+          body:
+            JSON.stringify({
+              ids
+            })
+        }
+      );
+
+    const json =
+      await response.json();
+
+    if (
+      !response.ok
+      ||
+      !json.success
+    ) {
+      throw new Error(
+        json.message
+        || '批量标记已搬运失败'
+      );
+    }
+
+  } catch (error) {
+    console.error(
+      '[SuperLike] 已复制，但批量标记已搬运失败：',
+      error
+    );
+
+    /*
+     * 写库失败时重新放回队列，1秒后再试。
+     * 不影响已经完成的剪贴板复制。
+     */
+    for (
+      const [id, tr]
+      of batch
+    ) {
+      movedWriteQueue.set(
+        id,
+        tr
+      );
+    }
+
+    if (!movedWriteTimer) {
+      movedWriteTimer =
+        setTimeout(
+          flushMovedWriteQueue,
+          1000
+        );
+    }
+
+  } finally {
+    movedWriteFlushing =
+      false;
+
+    /*
+     * flush期间如果又有人点击，
+     * 继续把后来的记录批量写掉。
+     */
+    if (
+      movedWriteQueue.size > 0
+      &&
+      !movedWriteTimer
+    ) {
+      movedWriteTimer =
+        setTimeout(
+          flushMovedWriteQueue,
+          300
+        );
+    }
+  }
+}
+
+
 async function copyPostLink(cell) {
-  const link = cell?.dataset?.postLink || '';
+  const link =
+    cell?.dataset?.postLink
+    || '';
 
   if (!link) {
     return;
   }
 
+  let copied =
+    false;
+
   try {
-    await navigator.clipboard.writeText(link);
+    await navigator.clipboard.writeText(
+      link
+    );
+
+    copied =
+      true;
+
   } catch {
-    const textarea = document.createElement('textarea');
-    textarea.value = link;
-    textarea.style.position = 'fixed';
-    textarea.style.opacity = '0';
-    document.body.appendChild(textarea);
-    textarea.select();
-    document.execCommand('copy');
-    textarea.remove();
+    try {
+      const textarea =
+        document.createElement(
+          'textarea'
+        );
+
+      textarea.value =
+        link;
+
+      textarea.style.position =
+        'fixed';
+
+      textarea.style.opacity =
+        '0';
+
+      document.body.appendChild(
+        textarea
+      );
+
+      textarea.focus();
+      textarea.select();
+
+      copied =
+        document.execCommand(
+          'copy'
+        );
+
+      textarea.remove();
+
+    } catch {
+      copied =
+        false;
+    }
   }
 
   /*
-   * 复制成功后，同时把当前帖子标记为“已搬运”。
-   * 如果本来已经是已搬运，不反向取消。
+   * Copy 成功与数据库写入彻底解耦。
+   * 用户点击后立即得到反馈，不等SQLite。
    */
-  const tr = cell.closest('tr');
+  if (!copied) {
+    showCopyToast(
+      cell,
+      '复制失败，请重试'
+    );
+
+    return;
+  }
+
+  showCopyToast(
+    cell,
+    '已复制'
+  );
+
+  const tr =
+    cell.closest(
+      'tr'
+    );
 
   if (
     tr
     &&
     tr.dataset.moved !== '1'
-    &&
-    tr.dataset.movedBusy !== '1'
   ) {
     const id =
-      Number(tr.dataset.postRowId);
+      Number(
+        tr.dataset.postRowId
+      );
 
     if (id) {
-      tr.dataset.movedBusy = '1';
-
-      try {
-        const response =
-          await fetch(
-            '/api/superlike-post-moved',
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type':
-                  'application/json'
-              },
-              body:
-                JSON.stringify({
-                  id,
-                  moved: true
-                })
-            }
-          );
-
-        const json =
-          await response.json();
-
-        if (
-          !response.ok
-          || !json.success
-        ) {
-          throw new Error(
-            json.message
-            || '标记已搬运失败'
-          );
-        }
-
-        const row =
-          allRows.find(
-            item =>
-              Number(item.id)
-              === id
-          );
-
-        if (row) {
-          row.moved_flag = 1;
-        }
-
-        tr.dataset.moved = '1';
-        tr.classList.add('is-moved');
-      } catch (error) {
-        console.error(
-          '[SuperLike] 复制成功，但标记已搬运失败：',
-          error
-        );
-      } finally {
-        tr.dataset.movedBusy = '0';
-      }
+      queueMovedWrite(
+        tr,
+        id
+      );
     }
   }
-
-  // 点击位置附近显示一个短暂的 Copied! 小气泡。
-  const oldBubble = document.querySelector('.copy-toast');
-  if (oldBubble) {
-    oldBubble.remove();
-  }
-
-  const bubble = document.createElement('div');
-  bubble.className = 'copy-toast';
-  bubble.textContent = '已复制 · 已搬运';
-
-  const rect = cell.getBoundingClientRect();
-  bubble.style.left = Math.min(
-    window.innerWidth - 90,
-    Math.max(8, rect.left + rect.width / 2 - 36)
-  ) + 'px';
-  bubble.style.top = Math.max(8, rect.top - 34) + 'px';
-
-  document.body.appendChild(bubble);
-
-  requestAnimationFrame(() => {
-    bubble.classList.add('show');
-  });
-
-  setTimeout(() => {
-    bubble.classList.remove('show');
-    setTimeout(() => bubble.remove(), 180);
-  }, 700);
 }
-
 
 function initCellLongPress(tr) {
   const usernameCell = tr.querySelector('.username-cell');
