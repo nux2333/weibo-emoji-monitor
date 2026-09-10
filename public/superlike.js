@@ -1024,9 +1024,9 @@ function renderTable() {
             data-uid="${escapeHtml(row.uid || '')}"
             data-username="${escapeHtml(row.username || '')}"
             title="把该用户加入黑粉名单"
-            ${Number(row.is_black_fan) === 1 ? 'disabled' : ''}
+            ${Number(row.black_fan_flg) === 1 ? 'disabled' : ''}
           >
-            ${Number(row.is_black_fan) === 1 ? '已发现🐷' : '发现🐷'}
+            ${Number(row.black_fan_flg) === 1 ? '已发现🐷' : '发现🐷'}
           </button>
         </div>
       </td>
@@ -2639,7 +2639,7 @@ function applyRemoteBlackFan(
       )
       === targetUid
     ) {
-      row.is_black_fan = 1;
+      row.black_fan_flg = 1;
     }
   }
 
