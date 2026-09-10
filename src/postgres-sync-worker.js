@@ -3,10 +3,9 @@
 const { parentPort } = require('worker_threads');
 const { Client, types } = require('pg');
 
-// Keep the old SQLite-facing code semantics: date/timestamp values are strings.
-types.setTypeParser(1082, value => value); // date
-types.setTypeParser(1114, value => value); // timestamp without time zone
-types.setTypeParser(1184, value => value); // timestamp with time zone
+types.setTypeParser(1082, value => value);
+types.setTypeParser(1114, value => value);
+types.setTypeParser(1184, value => value);
 
 const DATABASE_URL = String(process.env.DATABASE_URL || '').trim();
 if (!DATABASE_URL) {
@@ -48,7 +47,6 @@ function splitSqlStatements(sql) {
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
     const next = sql[i + 1];
-
     if (lineComment) {
       buf += ch;
       if (ch === '\n') lineComment = false;
@@ -85,7 +83,6 @@ function splitSqlStatements(sql) {
       }
       continue;
     }
-
     if (ch === '-' && next === '-') {
       buf += ch + next;
       i++;
@@ -119,7 +116,6 @@ function splitSqlStatements(sql) {
     }
     buf += ch;
   }
-
   if (buf.trim()) out.push(buf.trim());
   return out;
 }
@@ -130,11 +126,9 @@ function convertQuestionPlaceholders(sql) {
   let lineComment = false;
   let blockComment = false;
   let index = 1;
-
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
     const next = sql[i + 1];
-
     if (lineComment) {
       out += ch;
       if (ch === '\n') lineComment = false;
@@ -161,7 +155,6 @@ function convertQuestionPlaceholders(sql) {
       }
       continue;
     }
-
     if (ch === '-' && next === '-') {
       out += ch + next;
       i++;
@@ -183,10 +176,8 @@ function convertQuestionPlaceholders(sql) {
       out += `$${index++}`;
       continue;
     }
-
     out += ch;
   }
-
   return out;
 }
 
@@ -196,37 +187,58 @@ function stripSqlitePragmas(sql) {
     .join(';\n');
 }
 
+function chinaNowTimestampText() {
+  return "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')";
+}
+
+function chinaNowDateText() {
+  return "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')";
+}
+
 function translateDateTime(sql) {
   let s = sql;
 
+  // Nested SQLite pattern used by the web filter.
   s = s.replace(
-    /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-7 days'\s*\)/gi,
-    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '7 days', 'YYYY-MM-DD HH24:MI:SS')"
+    /date\(\s*datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)\s*\)/gi,
+    "(($1)::timestamp + INTERVAL '8 hours')::date"
+  );
+
+  // SQLite: datetime('now','+8 hours','start of day','-N day')
+  s = s.replace(
+    /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'start of day'\s*,\s*'-(\d+)\s+days?'\s*\)/gi,
+    (_, days) =>
+      `date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '${Number(days)} days'`
+  );
+
+  // SQLite: date/datetime('now','+8 hours','-N day[s]')
+  s = s.replace(
+    /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-(\d+)\s+days?'\s*\)/gi,
+    (_, days) =>
+      `to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '${Number(days)} days', 'YYYY-MM-DD HH24:MI:SS')`
   );
   s = s.replace(
-    /date\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-7 days'\s*\)/gi,
-    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '7 days', 'YYYY-MM-DD')"
+    /date\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-(\d+)\s+days?'\s*\)/gi,
+    (_, days) =>
+      `to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '${Number(days)} days', 'YYYY-MM-DD')`
   );
-  s = s.replace(
-    /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-1 day'\s*\)/gi,
-    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '1 day', 'YYYY-MM-DD HH24:MI:SS')"
-  );
-  s = s.replace(
-    /date\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-1 day'\s*\)/gi,
-    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '1 day', 'YYYY-MM-DD')"
-  );
+
   s = s.replace(
     /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*\)/gi,
-    "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')"
+    chinaNowTimestampText()
   );
   s = s.replace(
     /date\(\s*'now'\s*,\s*'\+8 hours'\s*\)/gi,
-    "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')"
+    chinaNowDateText()
   );
+
+  // Dynamic cache window in getRecentSuperLikeProfileStatus().
   s = s.replace(
     /datetime\(\s*'now'\s*,\s*'-'\s*\|\|\s*\?\s*\|\|\s*'\s*minutes'\s*\)/gi,
     "(CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))"
   );
+
+  // Legacy migration expressions.
   s = s.replace(
     /datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)/gi,
     "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD HH24:MI:SS')"
@@ -235,14 +247,11 @@ function translateDateTime(sql) {
     /date\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)/gi,
     "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD')"
   );
-  s = s.replace(
-    /datetime\(\s*'now'\s*\)/gi,
-    'CURRENT_TIMESTAMP'
-  );
-  s = s.replace(
-    /date\(\s*'now'\s*\)/gi,
-    'CURRENT_DATE'
-  );
+
+  s = s.replace(/datetime\(\s*'now'\s*\)/gi, 'CURRENT_TIMESTAMP');
+  s = s.replace(/date\(\s*'now'\s*\)/gi, 'CURRENT_DATE');
+
+  // Common simple columns/qualified columns.
   s = s.replace(
     /datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)/gi,
     '($1)::timestamp'
@@ -252,36 +261,43 @@ function translateDateTime(sql) {
     '($1)::date'
   );
 
+  // Aggregates used by JYZ / OldRefresh ordering.
+  s = s.replace(
+    /datetime\(\s*(MAX|MIN)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
+    '($1($2))::timestamp'
+  );
+  s = s.replace(
+    /date\(\s*(MAX|MIN)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
+    '($1($2))::date'
+  );
+
   return s;
 }
 
-function translateSqliteCatalog(sql) {
+function translateSqliteCatalog(sql, params = []) {
   const normalized = sql.replace(/\s+/g, ' ').trim();
-
   const pragmaTableInfo = normalized.match(/^PRAGMA\s+table_info\(([^)]+)\)$/i);
   if (pragmaTableInfo) {
     const tableName = pragmaTableInfo[1].replace(/["'`]/g, '').trim();
     return {
       sql: `
-        SELECT
-          ordinal_position - 1 AS cid,
-          column_name AS name,
-          data_type AS type,
-          CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
-          column_default AS dflt_value,
-          CASE WHEN column_name IN (
-            SELECT kcu.column_name
-            FROM information_schema.table_constraints tc
-            JOIN information_schema.key_column_usage kcu
-              ON tc.constraint_name = kcu.constraint_name
-             AND tc.table_schema = kcu.table_schema
-            WHERE tc.constraint_type = 'PRIMARY KEY'
-              AND tc.table_schema = 'public'
-              AND tc.table_name = $1
-          ) THEN 1 ELSE 0 END AS pk
+        SELECT ordinal_position - 1 AS cid,
+               column_name AS name,
+               data_type AS type,
+               CASE WHEN is_nullable = 'NO' THEN 1 ELSE 0 END AS notnull,
+               column_default AS dflt_value,
+               CASE WHEN column_name IN (
+                 SELECT kcu.column_name
+                 FROM information_schema.table_constraints tc
+                 JOIN information_schema.key_column_usage kcu
+                   ON tc.constraint_name = kcu.constraint_name
+                  AND tc.table_schema = kcu.table_schema
+                 WHERE tc.constraint_type = 'PRIMARY KEY'
+                   AND tc.table_schema = 'public'
+                   AND tc.table_name = $1
+               ) THEN 1 ELSE 0 END AS pk
         FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = $1
+        WHERE table_schema = 'public' AND table_name = $1
         ORDER BY ordinal_position
       `,
       params: [tableName]
@@ -293,36 +309,27 @@ function translateSqliteCatalog(sql) {
       const literal = normalized.match(/name\s*=\s*'([^']+)'/i);
       if (literal) {
         return {
-          sql: `SELECT NULL::text AS sql FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1`,
+          sql: "SELECT NULL::text AS sql FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1",
           params: [literal[1]]
         };
       }
     }
-
     return {
-      sql: `SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1`,
+      sql: "SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1",
       params
     };
   }
-
   return null;
 }
 
 function translateStatement(sql, params = []) {
-  const catalog = translateSqliteCatalog(sql);
-  if (catalog) {
-    return {
-      sql: catalog.sql,
-      params: catalog.params || params
-    };
-  }
+  const catalog = translateSqliteCatalog(sql, params);
+  if (catalog) return catalog;
 
   let s = String(sql || '').trim();
-
   if (!s) return { sql: '', params };
   if (/^PRAGMA\b/i.test(s)) return { sql: '', params };
 
-  // Old SQLite-only duplicate cleanup is unnecessary because uid is a PG primary key.
   if (/DELETE\s+FROM\s+superlike_users[\s\S]*\browid\b/i.test(s)) {
     return { sql: '', params: [] };
   }
@@ -350,27 +357,18 @@ function translateStatement(sql, params = []) {
   }
 
   s = convertQuestionPlaceholders(s);
-
   return { sql: s, params };
 }
 
 function maybeAddReturningId(sql) {
   if (/\bRETURNING\b/i.test(sql)) return sql;
-
   const m = sql.match(/^\s*INSERT\s+INTO\s+([A-Za-z_][A-Za-z0-9_]*)/i);
   if (!m) return sql;
-
   const idTables = new Set([
-    'monitors',
-    'comments',
-    'api_responses',
-    'daily_stats',
-    'superlike_posts',
-    'superlike_black_keywords',
-    'black_fan_users',
+    'monitors', 'comments', 'api_responses', 'daily_stats',
+    'superlike_posts', 'superlike_black_keywords', 'black_fan_users',
     'superlike_pool_exit_events'
   ]);
-
   return idTables.has(m[1].toLowerCase()) ? `${sql} RETURNING id` : sql;
 }
 
@@ -382,13 +380,10 @@ async function runOne(sql, params, mode) {
     if (mode === 'run') return { changes: 0, lastInsertRowid: 0 };
     return null;
   }
-
   const querySql = mode === 'run'
     ? maybeAddReturningId(translated.sql)
     : translated.sql;
-
   const result = await client.query(querySql, translated.params);
-
   if (mode === 'all') return result.rows || [];
   if (mode === 'get') return result.rows?.[0] || null;
   if (mode === 'run') {
@@ -397,29 +392,24 @@ async function runOne(sql, params, mode) {
       lastInsertRowid: Number(result.rows?.[0]?.id || 0)
     };
   }
-
   return null;
 }
 
 async function runExec(sql) {
   const stripped = stripSqlitePragmas(String(sql || ''));
   const statements = splitSqlStatements(stripped);
-
   for (const statement of statements) {
     const translated = translateStatement(statement, []);
     if (!translated.sql.trim()) continue;
     await client.query(translated.sql, translated.params);
   }
-
   return null;
 }
 
 function writeResponse(sharedBuffer, payload, isError = false) {
   const control = new Int32Array(sharedBuffer, 0, 4);
   const bytes = new Uint8Array(sharedBuffer, 16);
-  const json = JSON.stringify(payload);
-  const encoded = new TextEncoder().encode(json);
-
+  const encoded = new TextEncoder().encode(JSON.stringify(payload));
   if (encoded.length > bytes.length) {
     const fallback = new TextEncoder().encode(JSON.stringify({
       name: 'PostgresBridgeBufferError',
@@ -431,7 +421,6 @@ function writeResponse(sharedBuffer, payload, isError = false) {
     Atomics.notify(control, 0, 1);
     return;
   }
-
   bytes.set(encoded);
   Atomics.store(control, 1, encoded.length);
   Atomics.store(control, 0, isError ? -1 : 1);
@@ -440,12 +429,9 @@ function writeResponse(sharedBuffer, payload, isError = false) {
 
 parentPort.on('message', async message => {
   const { sharedBuffer, sql, params = [], mode = 'all', exec = false } = message;
-
   try {
     await ensureConnected();
-    const value = exec
-      ? await runExec(sql)
-      : await runOne(sql, params, mode);
+    const value = exec ? await runExec(sql) : await runOne(sql, params, mode);
     writeResponse(sharedBuffer, { value }, false);
   } catch (error) {
     writeResponse(sharedBuffer, {
@@ -460,7 +446,5 @@ parentPort.on('message', async message => {
 });
 
 process.on('exit', () => {
-  if (connected) {
-    client.end().catch(() => {});
-  }
+  if (connected) client.end().catch(() => {});
 });
