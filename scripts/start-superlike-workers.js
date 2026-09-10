@@ -16,6 +16,13 @@ const SCANNER =
     'superlike-scanner.js'
   );
 
+const PLAYWRIGHT_GUARD =
+  path.join(
+    ROOT,
+    'src',
+    'playwright-hardening.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -122,7 +129,11 @@ function startWorker(
   const child =
     spawn(
       process.execPath,
-      [SCANNER],
+      [
+        '--require',
+        PLAYWRIGHT_GUARD,
+        SCANNER
+      ],
       {
         cwd:
           ROOT,
@@ -257,6 +268,9 @@ console.log(
 );
 console.log(
   '# Browser profile: 每个 worker 独立'
+);
+console.log(
+  '# Playwright: 每个子worker启用共通防卡watchdog'
 );
 console.log(
   '# Windows: child console hidden'
