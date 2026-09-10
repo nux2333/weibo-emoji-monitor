@@ -299,7 +299,7 @@ const MODE3_ROUND_INTERVAL_MS =
  * 只检查数据库 experience_7d >= 70 的 UID。
  * 按数据库现有 experience_7d 从高到低扫描；不读取、不更新经验值。
  * 同分数再按最久未检查排序。
- * 19:00 后暂停，Mode4 优先。
+ * Mode3 全天运行，不再在 19:00 后暂停。
  */
 const PROFILE_VERIFY_BATCH_SIZE =
   Number(process.env.SUPERLIKE_PROFILE_VERIFY_BATCH_SIZE)
@@ -5534,7 +5534,7 @@ async function runLightModeForever(mode) {
   console.log(
     mode === '2'
       ? `[Recheck] 模式2：每 ${roundIntervalMs / 1000} 秒为最短间隔，检查全部已到期帖子；不再限制60条。`
-      : `[Recheck] 模式3：每 ${roundIntervalMs / 60000} 分钟一轮，每轮最多${PROFILE_VERIFY_BATCH_SIZE}个UID，只查jyz>=70，按jyz从高到低；19点后暂停。`
+      : `[Recheck] 模式3：每 ${roundIntervalMs / 60000} 分钟一轮，每轮最多${PROFILE_VERIFY_BATCH_SIZE}个UID，只查jyz>=70，按jyz从高到低；全天运行。`
   );
 
   while (true) {
@@ -5551,30 +5551,11 @@ async function runLightModeForever(mode) {
     const startedAt =
       Date.now();
 
-    const chinaHour =
-      getChinaHour();
-
-    /*
-     * 19:00-23:59 的晚高峰：
-     * Profile 请求收益低、418 风险高，Mode3 直接让路给 Scan/Mode4/评论 Hot Queue。
-     */
-    const skipNightProfile =
-      mode === '3'
-      && chinaHour >= LIST_NIGHT_START_HOUR
-      && chinaHour <= 23;
-
     const roundPromise =
       (
-        skipNightProfile
-          ? (
-              console.log(
-                '[Recheck] 晚高峰暂停 Mode3 Profile；优先保障 Mode4 和评论 Hot Queue。'
-              ),
-              Promise.resolve()
-            )
-          : mode === '2'
-            ? runLightCommentRecheck(controller.signal)
-            : runLightSuperLikeRecheck(controller.signal)
+        mode === '2'
+          ? runLightCommentRecheck(controller.signal)
+          : runLightSuperLikeRecheck(controller.signal)
       )
         .then(() => ({ type: 'done' }))
         .catch(error => ({ type: 'error', error }));
@@ -5723,7 +5704,7 @@ function askRecheckMode() {
     console.log('请选择 Recheck 模式：');
     console.log('1 = 原来的完整逻辑（SuperLike + 评论检查）');
     console.log('2 = 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）');
-    console.log('3 = Profile高分UID复检（只查今天入库且jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多300个；晚19点后暂停）');
+    console.log('3 = Profile高分UID复检（只查今天入库且jyz>=70；按jyz从高到低；不读取/更新jyz；每2分钟最多300个；全天运行）');
     console.log('4 = 超LIKE List UID模式（首次50页；后续一直扫到上次last_uid边界；白天20分钟，19点后5分钟）');
 
     rl.question('请输入 1、2、3 或 4：', answer => {
