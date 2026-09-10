@@ -626,10 +626,21 @@ async function runMonitor(
           continue;
         }
 
+        /*
+         * 每天整批跑完模式下，最终仍失败的 UID 今天先记为 PROFILE_FAILED，
+         * 避免下一批立刻再次取到同一个 UID 造成死循环。
+         * 明天 checked_date 改变后会自动重新进入待检查范围。
+         */
+        markChecked(
+          monitor.id,
+          uid,
+          'PROFILE_FAILED'
+        );
+
         summary.failed++;
 
         console.log(
-          `[OldRefresh][Profile失败] UID=${uid} | ${failureText || '-'} | 今天不标记已检查，下次可重试`
+          `[OldRefresh][Profile失败] UID=${uid} | ${failureText || '-'} | 今天标记PROFILE_FAILED，明天自动重试`
         );
 
         if (
@@ -848,7 +859,7 @@ async function main() {
     '# Old SuperLike Candidate Refresh'
   );
   console.log(
-    `# 每个Monitor本轮最多 ${LIMIT} UID`
+    `# 每批最多 ${LIMIT} UID；自动连续处理直到今天的老UID全部跑完`
   );
   console.log(
     '# 老数据边界：first_seen_at < 中国时间昨天00:00'
@@ -880,22 +891,57 @@ async function main() {
     const monitor
     of monitors
   ) {
-    const result =
-      await runMonitor(
-        monitor
+    let batchNo =
+      0;
+
+    while (true) {
+      const pending =
+        getOldUsers(
+          monitor.id,
+          LIMIT
+        );
+
+      if (
+        pending.length === 0
+      ) {
+        console.log('');
+        console.log(
+          `[OldRefresh] Monitor=${monitor.name} | 今日老UID已全部处理完 | 批次数=${batchNo}`
+        );
+        break;
+      }
+
+      batchNo++;
+
+      console.log('');
+      console.log(
+        `[OldRefresh] Monitor=${monitor.name} | 开始第${batchNo}批 | 待处理=${pending.length} | 每批上限=${LIMIT}`
       );
 
-    for (
-      const key
-      of Object.keys(
-        total
-      )
-    ) {
-      total[key] +=
-        Number(
-          result[key]
-          || 0
+      const result =
+        await runMonitor(
+          monitor
         );
+
+      for (
+        const key
+        of Object.keys(
+          total
+        )
+      ) {
+        total[key] +=
+          Number(
+            result[key]
+            || 0
+          );
+      }
+
+      /*
+       * 每批之间稍停一下，让 Scanner / JYZ 等其他写库进程有机会抢到锁。
+       */
+      await sleep(
+        1000
+      );
     }
   }
 
