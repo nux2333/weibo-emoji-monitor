@@ -1462,19 +1462,21 @@ app.get('/api/environment', (req, res) => {
 /* SuperLike 候选页面 API */
 app.get('/api/superlike-posts', (req, res) => {
   /*
-   * 公开页面 30 秒自动刷新，但数据无需每个访客都直打 SQLite。
-   * 浏览器不长期缓存；Cloudflare 边缘缓存 5 秒，并允许 10 秒 stale。
-   *
-   * Cloudflare 控制台仍建议为此 URL 配置 Cache Rule，
-   * 让动态 /api 路径明确进入缓存。
+   * SuperLike 页面包含 moved / black_fan 等多人实时状态。
+   * 这里禁止浏览器和 Cloudflare 缓存，避免自动刷新拿到旧状态，
+   * 把 SSE 已经更新的画面重新覆盖回去。
    */
   res.setHeader(
     'Cache-Control',
-    'public, max-age=0, s-maxage=5, stale-while-revalidate=10'
+    'no-store, no-cache, must-revalidate, max-age=0'
   );
   res.setHeader(
     'Cloudflare-CDN-Cache-Control',
-    'public, max-age=5, stale-while-revalidate=10'
+    'no-store'
+  );
+  res.setHeader(
+    'CDN-Cache-Control',
+    'no-store'
   );
 
   try {
