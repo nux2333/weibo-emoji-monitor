@@ -676,16 +676,21 @@ function compareRows(
         return 0;
       }
 
+      /*
+       * compareRows 的结果之后还会由 applyCurrentSort
+       * 根据 asc/desc 再统一翻转，所以这里必须反向返回，
+       * 才能让空经验值无论升序/降序都固定在最后。
+       */
       if (aMissing) {
         return sortDirection === 'asc'
-          ? -1
-          : 1;
+          ? 1
+          : -1;
       }
 
       if (bMissing) {
         return sortDirection === 'asc'
-          ? 1
-          : -1;
+          ? -1
+          : 1;
       }
     }
 
