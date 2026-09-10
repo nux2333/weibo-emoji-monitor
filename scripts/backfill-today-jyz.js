@@ -991,6 +991,8 @@ async function queryJyz(
       UPDATE superlike_posts
       SET
         experience_7d = ?,
+        initial_experience_7d =
+          COALESCE(initial_experience_7d, ?),
         profile_status =
           CASE
             WHEN profile_status = 'PROFILE_FAILED'
@@ -1534,6 +1536,7 @@ async function queryJyz(
 
         const changes =
           updateStmt.run(
+            experience7d,
             experience7d,
             Number(
               row.id
