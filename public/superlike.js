@@ -2569,6 +2569,94 @@ function applyRemoteMovedState(
 }
 
 
+function removeRowsByUid(
+  uid
+) {
+  const targetUid =
+    String(
+      uid
+      || ''
+    );
+
+  if (!targetUid) {
+    return;
+  }
+
+  allRows =
+    allRows.filter(
+      row =>
+        String(
+          row?.uid
+          || ''
+        )
+        !== targetUid
+    );
+
+  document
+    .querySelectorAll(
+      'tr[data-uid]'
+    )
+    .forEach(
+      tr => {
+        if (
+          String(
+            tr.dataset.uid
+            || ''
+          )
+          === targetUid
+        ) {
+          tr.remove();
+        }
+      }
+    );
+
+  renderPagination();
+}
+
+
+function applyRemoteBlackFan(
+  uid
+) {
+  const targetUid =
+    String(
+      uid
+      || ''
+    );
+
+  if (!targetUid) {
+    return;
+  }
+
+  const hideBlack =
+    document
+      .getElementById(
+        'hideBlack'
+      )
+      ?.checked !== false;
+
+  if (hideBlack) {
+    removeRowsByUid(
+      targetUid
+    );
+    return;
+  }
+
+  document
+    .querySelectorAll(
+      `.black-fan-button[data-uid="${CSS.escape(targetUid)}"]`
+    )
+    .forEach(
+      button => {
+        button.textContent =
+          '已发现🐷';
+
+        button.disabled =
+          true;
+      }
+    );
+}
+
+
 function initSuperLikeRealtime() {
   if (
     !window.EventSource
@@ -2622,6 +2710,52 @@ function initSuperLikeRealtime() {
       } catch (error) {
         console.warn(
           '[SuperLike] 实时搬运状态解析失败：',
+          error
+        );
+      }
+    }
+  );
+
+  source.addEventListener(
+    'black_fan',
+    event => {
+      try {
+        const data =
+          JSON.parse(
+            event.data
+            || '{}'
+          );
+
+        applyRemoteBlackFan(
+          data.uid
+        );
+
+      } catch (error) {
+        console.warn(
+          '[SuperLike] 实时黑粉状态解析失败：',
+          error
+        );
+      }
+    }
+  );
+
+  source.addEventListener(
+    'user_removed',
+    event => {
+      try {
+        const data =
+          JSON.parse(
+            event.data
+            || '{}'
+          );
+
+        removeRowsByUid(
+          data.uid
+        );
+
+      } catch (error) {
+        console.warn(
+          '[SuperLike] 实时删除候选解析失败：',
           error
         );
       }
