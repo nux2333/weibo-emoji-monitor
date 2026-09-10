@@ -53,7 +53,13 @@ function positiveEnv(name, fallback) {
 
 class PlaywrightHardTimeoutError extends Error {
   constructor(label, timeoutMs) {
-    super(`PLAYWRIGHT_HARD_TIMEOUT: ${label} 超过 ${timeoutMs}ms`);
+    /*
+     * 带上 ERR_TIMED_OUT，让业务层现有的网络错误判断可以把这个
+     * watchdog 超时当成可重试网络故障处理，而不是把整个 Batch 弄死。
+     */
+    super(
+      `PLAYWRIGHT_HARD_TIMEOUT ERR_TIMED_OUT: ${label} 超过 ${timeoutMs}ms`
+    );
     this.name = 'PlaywrightHardTimeoutError';
     this.code = 'PLAYWRIGHT_HARD_TIMEOUT';
     this.operation = label;
