@@ -602,21 +602,16 @@ function initDatabase() {
   ensureColumn('superlike_posts', 'initial_experience_7d', 'INTEGER');
 
   /*
-   * 历史数据没有“初始值”时，只能以当前值回填一次。
-   * 新数据以后由 INSERT 写入，Mode2/Mode3 永不更新这两个字段。
+   * initial_comments_count 保留兼容回填。
+   * initial_experience_7d 不再由 initDatabase() 自动补；
+   * 只在补经验值脚本第一次取得经验值时写入。
    */
   db.exec(`
     UPDATE superlike_posts
     SET
       initial_comments_count =
-        COALESCE(initial_comments_count, comments_count),
-      initial_experience_7d =
-        COALESCE(initial_experience_7d, experience_7d)
+        COALESCE(initial_comments_count, comments_count)
     WHERE initial_comments_count IS NULL
-       OR (
-         initial_experience_7d IS NULL
-         AND experience_7d IS NOT NULL
-       )
   `);
 
   /*
