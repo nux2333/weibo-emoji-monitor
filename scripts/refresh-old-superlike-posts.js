@@ -582,6 +582,10 @@ async function runMonitor(
               failureText
             )
             ||
+            /ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(
+              failureText
+            )
+            ||
             /Failed to fetch/i.test(
               failureText
             )
