@@ -44,6 +44,48 @@ const PORT = process.env.PORT || 3000;
 const superLikeEventClients =
   new Set();
 
+function broadcastSuperLikeEvent(
+  eventName,
+  data = {}
+) {
+  const safeEventName =
+    String(eventName || '')
+      .trim()
+      .replace(
+        /[^a-z0-9_-]/gi,
+        ''
+      );
+
+  if (!safeEventName) {
+    return;
+  }
+
+  const payload =
+    JSON.stringify({
+      type:
+        safeEventName,
+      ...data,
+      ts:
+        Date.now()
+    });
+
+  for (
+    const res
+    of superLikeEventClients
+  ) {
+    try {
+      res.write(
+        `event: ${safeEventName}\ndata: ${payload}\n\n`
+      );
+    } catch {
+      superLikeEventClients.delete(
+        res
+      );
+    }
+  }
+}
+
+
 function broadcastSuperLikeMoved(
   ids,
   moved = true
@@ -68,32 +110,15 @@ function broadcastSuperLikeMoved(
     return;
   }
 
-  const payload =
-    JSON.stringify({
-      type:
-        'moved',
+  broadcastSuperLikeEvent(
+    'moved',
+    {
       ids:
         normalizedIds,
       moved:
-        moved === true,
-      ts:
-        Date.now()
-    });
-
-  for (
-    const res
-    of superLikeEventClients
-  ) {
-    try {
-      res.write(
-        `event: moved\ndata: ${payload}\n\n`
-      );
-    } catch {
-      superLikeEventClients.delete(
-        res
-      );
+        moved === true
     }
-  }
+  );
 }
 
 /*
@@ -1822,6 +1847,15 @@ app.post('/api/superlike-mark-user', (req, res) => {
       `${inserted ? '新增用户' : '用户已存在'} | 删除候选=${deleted} | 今日毕业+${deleted > 0 ? 1 : 0}`
     );
 
+    broadcastSuperLikeEvent(
+      'user_removed',
+      {
+        uid,
+        reason:
+          'SUPERLIKE'
+      }
+    );
+
     res.json({
       success: true,
       uid,
@@ -1892,6 +1926,15 @@ app.post('/api/black-fan-user', (req, res) => {
 
     console.log(
       `[BlackFan][人工标记] UID=${uid} | 用户=${username || '-'}`
+    );
+
+    broadcastSuperLikeEvent(
+      'black_fan',
+      {
+        uid,
+        username:
+          username || ''
+      }
     );
 
     res.json({
