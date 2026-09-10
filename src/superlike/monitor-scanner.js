@@ -254,7 +254,7 @@ const TAG_SECTION_SOURCES =
   SCAN_WORKER_MODE === 'history'
     ? ALL_TAG_SECTION_SOURCES.filter(
         source =>
-          source.key !== 'section-hot'
+          source.key === 'section-yishanshui'
       )
     : SCAN_WORKER_MODE === 'fresh'
       ? ALL_TAG_SECTION_SOURCES.filter(
@@ -1687,14 +1687,6 @@ async function scanOneSuperLikeMonitor(
           continue;
         }
 
-        /*
-         * Fresh Pool 前置过滤：
-         * 1. feed 已明确带 chao_like -> 不进入 Fresh Pool；
-         * 2. UID 已经在 superlike_users -> 不进入 Fresh Pool。
-         *
-         * 注意：checkpoint / 时间边界统计在上面的原始 posts 循环中完成，
-         * 所以前置过滤不会影响 Fresh 是否已经跨过上一轮边界的判断。
-         */
         if (hasSuperLike(post)) {
           const uid =
             getUid(post);
@@ -2085,10 +2077,6 @@ async function scanOneSuperLikeMonitor(
       trigger,
       force = false
     ) {
-      /*
-       * 串行化多个来源几乎同时触发的 flush，
-       * 防止同一批 Fresh Post 被重复处理。
-       */
       freshBatchProcessing =
         freshBatchProcessing.then(
           async () => {
@@ -2133,11 +2121,6 @@ async function scanOneSuperLikeMonitor(
             const startIndex =
               freshProcessedIndex;
 
-            /*
-             * 先锁定本批边界。
-             * 其它采集协程可以继续向 freshCollectedPosts 尾部追加，
-             * 新追加的数据留给下一批，不会和本批重复。
-             */
             freshProcessedIndex =
               endIndex;
 
@@ -2274,10 +2257,6 @@ async function scanOneSuperLikeMonitor(
         return;
       }
 
-      /*
-       * 最终 flush 才等待所有分区结束。
-       * 中途的 10页屏障不会再等 30 页全部采集完。
-       */
       if (
         tagSectionPromises.size > 0
       ) {
@@ -2805,7 +2784,7 @@ async function scanOneSuperLikeMonitor(
                 `池内重复=${sectionStats.duplicateInPool}`,
                 `过滤超LIKE=${sectionStats.filteredSuperLike}`,
                 `过滤已知UID=${sectionStats.filteredKnownSuperLike}`,
-                `fresh池=${freshCollectedPosts.length}`
+                `fresh池=${freshCollectedPosts.length`
               ].join(' | ')
             );
 
@@ -2843,10 +2822,6 @@ async function scanOneSuperLikeMonitor(
               break;
             }
 
-            /*
-             * 每成功处理一页，都先保存“下一页” cursor。
-             * 这样下一页网络失败/超时后，换代理可以准确从未处理页继续。
-             */
             saveScanSourceResume(
               monitor.id,
               source.key,
@@ -2854,10 +2829,6 @@ async function scanOneSuperLikeMonitor(
               nextParams
             );
 
-            /*
-             * 首次运行没有旧 checkpoint，无法判断“新增区间”边界。
-             * 只扫原 freshFirstPages 建立起点；以后都改为追到 checkpoint。
-             */
             if (
               source.key !== 'section-hot'
               &&
@@ -2971,10 +2942,6 @@ async function scanOneSuperLikeMonitor(
                 `[SuperLike][分区采集失败] ${source.name} | HTTP=${currentResult.httpStatus ?? '-'} | ${fetchError} | Resume已保存到第${sectionPageIndex + 1}页 | 切换代理继续`
               );
 
-              /*
-               * 统一包装成代理连接类错误，让外层淘汰当前代理并重启当前
-               * source worker。因为上一页已经保存 next cursor，不会丢进度。
-               */
               throw new Error(
                 `ERR_PROXY_CONNECTION_FAILED 分区=${source.name} page=${sectionPageIndex + 1} ${fetchError}`
               );
@@ -3215,22 +3182,10 @@ async function scanOneSuperLikeMonitor(
       return latestCommentsPromise;
     }
 
-    /*
-     * 与最新发帖 fresh 同时启动最新评论分页。
-     * 两边都只做列表采集，不在翻页途中查 Profile。
-     */
-    /*
-     * 最新评论不再作为 Scan 数据源。
-     * feedResult 仍保留给页面初始化/现有上下文使用，但不采集 _feed 帖子。
-     */
     console.log(
       '[SuperLike][最新评论] 已禁用，不参与帖子采集。'
     );
 
-    /*
-     * 分区不再全部同时打到同一个 Page/代理。
-     * 默认最多 2 个分区并发；总最新仍独立同时运行。
-     */
     if (SCAN_WORKER_MODE === 'history') {
       console.log('[SuperLike][History Worker] 只处理 Resume，不扫描 Fresh。');
       await scanLatestHistoryBudget();
@@ -3330,8 +3285,6 @@ async function scanOneSuperLikeMonitor(
       return;
     }
 
-    // Fresh 以发帖时间为主边界：连续4个完整旧页即可认为已跨过上一轮时间checkpoint。
-    // post_id 仍作为更快的辅助命中；不要求微博必须再次返回同一个 post_id。
     const CHECKPOINT_OLD_PAGE_THRESHOLD = 4;
     let consecutiveOldCheckpointPages = 0;
 
@@ -3522,29 +3475,15 @@ async function scanOneSuperLikeMonitor(
         stopReason =
           `第三重兜底：达到最大 ${MAX_PAGES} 页`;
 
-        /*
-         * 首次运行没有旧 checkpoint，达到配置上限后可以建立新的 checkpoint。
-         * 已有旧 checkpoint 时，如果只是撞到最大页数但仍没追到旧边界，
-         * 说明中间可能还有未扫描数据，因此绝不能推进 checkpoint。
-         */
         checkpointSafeToAdvance =
           !checkpoint;
 
-        /*
-         * 已有 checkpoint 时达到单批50页，不丢进度。
-         * 下面会在拿到 nextParams 后保存 Resume；
-         * 因此这里不能提前 break。
-         */
         if (!checkpoint) {
           break;
         }
       }
 
 
-      /*
-       * Fresh-first 阶段结束后，再跳回旧 Resume 继续补历史。
-       * 只切一次；Resume 阶段继续受本轮 MAX_PAGES 总上限约束。
-       */
       if (
         false
         &&
@@ -3663,10 +3602,6 @@ async function scanOneSuperLikeMonitor(
       }
 
 
-      /*
-       * 没有历史 Resume 时，也在 fresh 区段完成后先插入最新评论，
-       * 然后再继续 sort_time 后续页。
-       */
       if (
         false
         &&
@@ -3683,15 +3618,6 @@ async function scanOneSuperLikeMonitor(
       }
 
 
-      /*
-       * 下一页改为直接 AJAX：
-       *
-       * 从当前 sort_time JSON 的 moreInfo.params 读取
-       * page / since_id / max_id，
-       * 然后在已经打开的 weibo.com 页面上下文里直接 fetch。
-       *
-       * 不再滚动页面，不再触发图片/推荐/埋点等额外请求。
-       */
       const nextParams =
         extractNextPageParams(
           current.json
@@ -3717,10 +3643,6 @@ async function scanOneSuperLikeMonitor(
       }
 
 
-      /*
-       * 当前页已经完整处理成功，此时才把“下一页 cursor”落库。
-       * 所以即使下一页请求失败/进程退出，重启后也从未处理页继续。
-       */
       if (
         checkpoint
         &&
@@ -3799,13 +3721,6 @@ async function scanOneSuperLikeMonitor(
         );
 
 
-      /*
-       * 页面内 fetch 连续3次都没有拿到 HTTP Response 时，
-       * 不立即结束整段扫描。
-       *
-       * 常见原因是代理瞬时抖动 / fetch Abort / 临时网络失败。
-       * 先额外等待5秒，再做最后一次慢重试。
-       */
       if (
         !nextResult.ok
         &&
@@ -3906,10 +3821,6 @@ async function scanOneSuperLikeMonitor(
     }
 
 
-    /*
-     * 如果 sort_time 因 checkpoint / 无下一页等原因提前结束，
-     * 仍保证最新评论在本轮至少扫描一次。
-     */
     freshSourceDone['latest-posts'] =
       true;
 
@@ -4082,14 +3993,6 @@ async function scanOneSuperLikeMonitor(
     }
 
 
-    /*
-     * checkpoint 只在“本轮边界完整且安全”时推进。
-     *
-     * 特别注意：
-     * 如果第N+1页418/失败，本轮前N页的数据仍然保留，
-     * 但 checkpoint 不动；下一轮会从最新位置重新扫，
-     * 直到重新追到旧 checkpoint，确保中间区间不会漏掉。
-     */
     if (
       checkpointSafeToAdvance
       &&
