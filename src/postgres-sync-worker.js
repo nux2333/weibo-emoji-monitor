@@ -64,11 +64,12 @@ function splitSqlStatements(sql) {
       continue;
     }
     if (dollarTag) {
-      buf += ch;
       if (sql.startsWith(dollarTag, i)) {
-        buf += dollarTag.slice(1);
+        buf += dollarTag;
         i += dollarTag.length - 1;
         dollarTag = null;
+      } else {
+        buf += ch;
       }
       continue;
     }
@@ -126,12 +127,28 @@ function splitSqlStatements(sql) {
 function convertQuestionPlaceholders(sql) {
   let out = '';
   let quote = null;
+  let lineComment = false;
+  let blockComment = false;
   let index = 1;
 
   for (let i = 0; i < sql.length; i++) {
     const ch = sql[i];
     const next = sql[i + 1];
 
+    if (lineComment) {
+      out += ch;
+      if (ch === '\n') lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      out += ch;
+      if (ch === '*' && next === '/') {
+        out += next;
+        i++;
+        blockComment = false;
+      }
+      continue;
+    }
     if (quote) {
       out += ch;
       if (ch === quote) {
@@ -145,12 +162,23 @@ function convertQuestionPlaceholders(sql) {
       continue;
     }
 
+    if (ch === '-' && next === '-') {
+      out += ch + next;
+      i++;
+      lineComment = true;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      out += ch + next;
+      i++;
+      blockComment = true;
+      continue;
+    }
     if (ch === '\'' || ch === '"') {
       quote = ch;
       out += ch;
       continue;
     }
-
     if (ch === '?') {
       out += `$${index++}`;
       continue;
@@ -180,6 +208,14 @@ function translateDateTime(sql) {
     "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '7 days', 'YYYY-MM-DD')"
   );
   s = s.replace(
+    /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-1 day'\s*\)/gi,
+    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '1 day', 'YYYY-MM-DD HH24:MI:SS')"
+  );
+  s = s.replace(
+    /date\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'-1 day'\s*\)/gi,
+    "to_char((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '1 day', 'YYYY-MM-DD')"
+  );
+  s = s.replace(
     /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*\)/gi,
     "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD HH24:MI:SS')"
   );
@@ -188,16 +224,24 @@ function translateDateTime(sql) {
     "to_char(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD')"
   );
   s = s.replace(
+    /datetime\(\s*'now'\s*,\s*'-'\s*\|\|\s*\?\s*\|\|\s*'\s*minutes'\s*\)/gi,
+    "(CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))"
+  );
+  s = s.replace(
+    /datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)/gi,
+    "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD HH24:MI:SS')"
+  );
+  s = s.replace(
+    /date\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)/gi,
+    "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD')"
+  );
+  s = s.replace(
     /datetime\(\s*'now'\s*\)/gi,
     'CURRENT_TIMESTAMP'
   );
   s = s.replace(
     /date\(\s*'now'\s*\)/gi,
     'CURRENT_DATE'
-  );
-  s = s.replace(
-    /datetime\(\s*'now'\s*,\s*'-'\s*\|\|\s*\?\s*\|\|\s*'\s*minutes'\s*\)/gi,
-    "(CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))"
   );
   s = s.replace(
     /datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)/gi,
@@ -257,7 +301,7 @@ function translateSqliteCatalog(sql) {
 
     return {
       sql: `SELECT 1 FROM information_schema.tables WHERE table_schema='public' AND table_name=$1 LIMIT 1`,
-      passthroughParams: true
+      params
     };
   }
 
@@ -283,6 +327,8 @@ function translateStatement(sql, params = []) {
     return { sql: '', params: [] };
   }
 
+  s = s.replace(/^BEGIN\s+IMMEDIATE\b/i, 'BEGIN');
+
   let insertOrIgnore = false;
   if (/^INSERT\s+OR\s+IGNORE\s+INTO/i.test(s)) {
     insertOrIgnore = true;
@@ -294,6 +340,10 @@ function translateStatement(sql, params = []) {
   s = s.replace(/\bAUTOINCREMENT\b/gi, '');
   s = s.replace(/\bIFNULL\s*\(/gi, 'COALESCE(');
   s = s.replace(/\bCOLLATE\s+NOCASE\b/gi, '');
+  s = s.replace(
+    /([A-Za-z_][A-Za-z0-9_.]*)\s+GLOB\s+'\[0-9\]\*'/gi,
+    "$1 ~ '^[0-9]'"
+  );
 
   if (insertOrIgnore && !/\bON\s+CONFLICT\b/i.test(s)) {
     s += ' ON CONFLICT DO NOTHING';
