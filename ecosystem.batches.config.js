@@ -157,7 +157,18 @@ module.exports = {
         __dirname,
         'scripts',
         'backfill-today-jyz.js'
-      )
+      ),
+      env: {
+        /*
+         * JYZ 专用收紧 watchdog：
+         * 单次 goto 最多10秒、evaluate 最多12秒，最多2轮代理尝试。
+         * 即使页面执行上下文彻底失效，也会在约45秒内退出当前UID链路，
+         * 触发换代理/重建 Context，不再无限卡死。
+         */
+        PLAYWRIGHT_GOTO_HARD_TIMEOUT_MS: '10000',
+        PLAYWRIGHT_EVALUATE_HARD_TIMEOUT_MS: '12000',
+        JYZ_BACKFILL_PROXY_RETRIES: '2'
+      }
     },
     {
       ...common,
