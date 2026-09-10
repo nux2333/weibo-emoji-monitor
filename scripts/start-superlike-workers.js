@@ -122,6 +122,15 @@ function startWorker(
     env.SUPERLIKE_HOT_PAGES = '20';
   }
 
+  /*
+   * 超like专区的高价值数据主要集中在前10页。
+   * 单独给这个worker覆盖通用分区页数，
+   * QA/一善水区等其他分区仍保持原配置。
+   */
+  if (spec.source === 'section-superlike') {
+    env.SUPERLIKE_TAG_SECTION_PAGES = '10';
+  }
+
   console.log(
     `[SuperLikeWorkers] 启动 ${spec.label} | mode=${spec.mode} | source=${spec.source || '-'}`
   );
