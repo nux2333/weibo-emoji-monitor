@@ -1142,8 +1142,6 @@ async function scanOneSuperLikeMonitor(
         .launchPersistentContext(
           profileDir,
           {
-            // 默认无窗口运行。
-            // 如需临时显示浏览器窗口，可设置 SUPERLIKE_HEADLESS=0
             headless:
               process.env.SUPERLIKE_HEADLESS !== '0',
 
@@ -1156,11 +1154,6 @@ async function scanOneSuperLikeMonitor(
           }
         );
 
-    /*
-     * Scan 本 Monitor 全程共享一个匿名游客 Context：
-     * 第一个 UID 建立 Visitor/H5 会话后，后续 UID 直接复用，
-     * 避免每个 UID 都重新初始化无痕浏览器环境。
-     */
     const parentBrowser =
       browser.browser();
 
@@ -1188,10 +1181,6 @@ async function scanOneSuperLikeMonitor(
     }
 
 
-    /*
-     * Scanner 只需要 HTML / JS / XHR / fetch。
-     * 图片、视频、字体都不参与帖子解析，直接拦截，减少网络请求和内存占用。
-     */
     await browser.route(
       '**/*',
       async route => {
@@ -1252,17 +1241,6 @@ async function scanOneSuperLikeMonitor(
     );
 
 
-    /*
-     * 所有 Fresh / History Worker 共用同一套真实页面初始化：
-     *   打开超话首页
-     *   -> 点击一级“最新”
-     *   -> 捕获 _feed
-     *   -> 点击二级“最新发帖”
-     *   -> 捕获真实 sort_time 第一页
-     *
-     * 三个专区不再“首页一打开就直打 tag_status_sort”。
-     * 完成共同初始化后，再由 scanTagSection() 进入各自专区。
-     */
     const directSectionWorker =
       false;
     let feedResult = null;
@@ -1279,15 +1257,6 @@ async function scanOneSuperLikeMonitor(
       console.log(
         `[SuperLike][共同初始化] Worker=${SCAN_WORKER_SOURCE || SCAN_WORKER_MODE} | 先走真实“最新 -> 最新发帖”页面路径，再进入目标来源。`
       );
-      /*
-       * 只走微博真实前端路径：
-       * 先监听 _feed，再点击一级“最新”。
-       *
-       * 已确认：找不到一级“最新”时，直接请求 _feed 没有救援价值。
-       * 因此不再做 _feed fallback：
-       * - 代理环境：直接判定当前代理页面不可用，淘汰并换代理；
-       * - 本地IP：直接结束当前 Monitor，等待下一轮。
-       */
       const feedWaiter =
         waitForChaohuaResponse(
           page,
@@ -1367,9 +1336,6 @@ async function scanOneSuperLikeMonitor(
       );
   
   
-      /*
-       * 从 _feed Response 获取“最新发帖” flowId
-       */
       sortTimeFlowId =
         extractLatestPostFlowId(
           feedResult.json
@@ -1393,12 +1359,6 @@ async function scanOneSuperLikeMonitor(
       );
   
   
-      /*
-       * 最新发帖初始化允许最多3次重试：
-       * - 每次都先挂监听，再点击 DOM；
-       * - 明确区分“根本没点到”与“点到了但未捕获XHR”；
-       * - 页面偶发慢/Tab状态异常时，不直接结束整轮。
-       */
       const latestPostInitMaxAttempts =
         3;
 
@@ -1485,9 +1445,6 @@ async function scanOneSuperLikeMonitor(
       );
   
   
-      /*
-       * 后续分页始终以微博前端真实发出的第一页 sort_time 请求为模板。
-       */
       sortTimeRequestTemplateUrl =
         firstSortTimeResult.url;
   
@@ -1505,12 +1462,6 @@ async function scanOneSuperLikeMonitor(
   
     }
 
-    /*
-     * Fresh-first：
-     * 先扫“最新发帖”的 fresh 区段，再立即扫“最新评论”，
-     * 最后才允许切到旧 Resume 补历史。
-     * 这样两条最新数据源都不会被几千页历史 Resume 卡住。
-     */
     let switchedToResume =
       false;
 
@@ -1558,13 +1509,6 @@ async function scanOneSuperLikeMonitor(
     const tagSectionPromises =
       new Map();
 
-    /*
-     * Fresh Pool 分批即时处理：
-     * 最新发帖每10页 + 三个专区各10页视为一个批次。
-     * 达到 10/20/30... 页屏障时，立即处理截至当时尚未处理的 Fresh Pool。
-     * 某来源若因 checkpoint / 无下一页提前结束，则视为该来源已就绪，
-     * 避免其它来源永远等不到屏障。
-     */
     const FRESH_BATCH_PAGES = 10;
 
     const freshSourcePages = {
@@ -2784,7 +2728,7 @@ async function scanOneSuperLikeMonitor(
                 `池内重复=${sectionStats.duplicateInPool}`,
                 `过滤超LIKE=${sectionStats.filteredSuperLike}`,
                 `过滤已知UID=${sectionStats.filteredKnownSuperLike}`,
-                `fresh池=${freshCollectedPosts.length`
+                `fresh池=${freshCollectedPosts.length}`
               ].join(' | ')
             );
 
