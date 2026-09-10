@@ -34,6 +34,30 @@ if errorlevel 1 (
 echo [INFO] PM2 processes restored.
 call pm2.cmd list
 
+echo.
+echo [INFO] Starting Cloudflare Tunnel...
+
+where cloudflared.exe >nul 2>nul
+if errorlevel 1 (
+  where cloudflared >nul 2>nul
+  if errorlevel 1 (
+    echo [WARN] cloudflared was not found in PATH.
+    echo [WARN] PM2 processes are already restored, but the public tunnel was not started.
+    goto :done
+  )
+)
+
+REM
+REM Use Quick Tunnel because this project exposes the local SuperLike page
+REM directly with: cloudflared tunnel --url http://localhost:3000
+REM "start" keeps this restore script from being blocked by cloudflared.
+REM
+start "Weibo Cloudflare Tunnel" /min cloudflared tunnel --url http://localhost:3000
+
+echo [INFO] Cloudflare Tunnel start command sent.
+echo [INFO] Public route points to http://localhost:3000
+
+:done
 echo ==============================================
 echo Auto restore completed.
 echo ==============================================
