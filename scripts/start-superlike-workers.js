@@ -23,11 +23,11 @@ const PLAYWRIGHT_GUARD =
     'playwright-hardening.js'
   );
 
-const SQLITE_GUARD =
+const POSTGRES_PRELOAD =
   path.join(
     ROOT,
     'src',
-    'sqlite-hardening.js'
+    'postgres-preload.js'
   );
 
 const WORKER_STAGGER_MS =
@@ -147,7 +147,7 @@ function startWorker(
       process.execPath,
       [
         '--require',
-        SQLITE_GUARD,
+        POSTGRES_PRELOAD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -282,7 +282,7 @@ console.log(
   '# JYZ: disabled'
 );
 console.log(
-  '# SQLite: 共用同一个 WAL DB + BUSY/LOCKED 自动退避重试'
+  '# Database: PostgreSQL (DATABASE_URL)'
 );
 console.log(
   '# Browser profile: 每个 worker 独立'
