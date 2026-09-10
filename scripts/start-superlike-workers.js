@@ -23,6 +23,13 @@ const PLAYWRIGHT_GUARD =
     'playwright-hardening.js'
   );
 
+const SQLITE_GUARD =
+  path.join(
+    ROOT,
+    'src',
+    'sqlite-hardening.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -139,6 +146,8 @@ function startWorker(
     spawn(
       process.execPath,
       [
+        '--require',
+        SQLITE_GUARD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -273,7 +282,7 @@ console.log(
   '# JYZ: disabled'
 );
 console.log(
-  '# SQLite: 共用同一个 WAL DB'
+  '# SQLite: 共用同一个 WAL DB + BUSY/LOCKED 自动退避重试'
 );
 console.log(
   '# Browser profile: 每个 worker 独立'
