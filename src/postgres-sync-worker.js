@@ -199,6 +199,15 @@ function translateDateTime(sql) {
   let s = sql;
 
   /*
+   * SQLite CURRENT_TIMESTAMP 的结果本质上是 TEXT（YYYY-MM-DD HH:MM:SS）。
+   * 先把业务 SQL 里原生出现的 CURRENT_TIMESTAMP 暂存成 token，避免 PostgreSQL
+   * 在 CASE / COALESCE 中把它推断成 timestamptz，和历史 TEXT 字段发生类型冲突。
+   * 后续翻译产生的 CURRENT_TIMESTAMP 则继续保留为 PostgreSQL 时间表达式。
+   */
+  const sqliteCurrentTimestampToken = '__SQLITE_CURRENT_TIMESTAMP_TEXT__';
+  s = s.replace(/\bCURRENT_TIMESTAMP\b/gi, sqliteCurrentTimestampToken);
+
+  /*
    * SQLite date()/datetime() 返回文本。业务 SQL 里的日期字段也大多按 TEXT 保存，
    * 所以 PostgreSQL 兼容层必须继续保持该语义，避免 DATE = TEXT 类型冲突。
    */
@@ -278,6 +287,11 @@ function translateDateTime(sql) {
   s = s.replace(
     /date\(\s*(MAX|MIN)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
     "to_char(($1($2))::timestamp, 'YYYY-MM-DD')"
+  );
+
+  s = s.replace(
+    new RegExp(sqliteCurrentTimestampToken, 'g'),
+    chinaNowTimestampText()
   );
 
   return s;
