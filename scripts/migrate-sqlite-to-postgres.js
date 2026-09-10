@@ -65,16 +65,28 @@ function sourceColumns(sqlite, tableName) {
     .map(row => String(row.name));
 }
 
-async function targetColumns(client, tableName) {
+async function targetColumnMetadata(client, tableName) {
   const result = await client.query(
-    `SELECT column_name
-       FROM information_schema.columns
-      WHERE table_schema = 'public'
-        AND table_name = $1
-      ORDER BY ordinal_position`,
+    `SELECT
+       column_name,
+       is_nullable,
+       column_default
+     FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = $1
+     ORDER BY ordinal_position`,
     [tableName]
   );
-  return result.rows.map(row => String(row.column_name));
+
+  return new Map(
+    result.rows.map(row => [
+      String(row.column_name),
+      {
+        nullable: String(row.is_nullable) === 'YES',
+        defaultValue: row.column_default
+      }
+    ])
+  );
 }
 
 async function targetCount(client, tableName) {
@@ -90,16 +102,41 @@ function normalizeValue(value) {
   return value;
 }
 
-async function insertChunk(client, tableName, columns, rows) {
+async function insertChunk(client, tableName, columns, columnMetadata, rows) {
   if (!rows.length) return;
 
   const values = [];
   let paramIndex = 1;
+  let defaultedValues = 0;
+
   const rowSql = rows.map(row => {
     const placeholders = columns.map(column => {
-      values.push(normalizeValue(row[column]));
+      const value = normalizeValue(row[column]);
+      const metadata = columnMetadata.get(column);
+
+      /*
+       * SQLite 旧库里部分历史行可能保存了 NULL，
+       * 但 PostgreSQL 新 schema 已把该列收紧为 NOT NULL + DEFAULT。
+       * 这种情况下不要显式插入 NULL，而是让 PostgreSQL 使用该列默认值。
+       *
+       * 例：daily_stats.updated_at 旧数据为 NULL，PG 中为
+       * NOT NULL DEFAULT CURRENT_TIMESTAMP。
+       */
+      if (
+        value === null
+        && metadata
+        && metadata.nullable === false
+        && metadata.defaultValue !== null
+        && metadata.defaultValue !== undefined
+      ) {
+        defaultedValues++;
+        return 'DEFAULT';
+      }
+
+      values.push(value);
       return `$${paramIndex++}`;
     });
+
     return `(${placeholders.join(',')})`;
   });
 
@@ -112,6 +149,12 @@ async function insertChunk(client, tableName, columns, rows) {
   `;
 
   await client.query(sql, values);
+
+  if (defaultedValues > 0) {
+    console.log(
+      `[迁移] ${tableName}: ${defaultedValues} 个旧 NULL 已改用 PostgreSQL DEFAULT`
+    );
+  }
 }
 
 async function resetIdentity(client, tableName) {
@@ -193,8 +236,8 @@ async function main() {
 
     for (const tableName of existingTables) {
       const srcColumns = sourceColumns(sqlite, tableName);
-      const dstColumns = await targetColumns(pg, tableName);
-      const columns = srcColumns.filter(column => dstColumns.includes(column));
+      const columnMetadata = await targetColumnMetadata(pg, tableName);
+      const columns = srcColumns.filter(column => columnMetadata.has(column));
 
       if (!columns.length) {
         console.log(`[迁移] ${tableName}: 没有公共字段，跳过`);
@@ -214,6 +257,7 @@ async function main() {
           pg,
           tableName,
           columns,
+          columnMetadata,
           rows.slice(i, i + CHUNK_SIZE)
         );
       }
