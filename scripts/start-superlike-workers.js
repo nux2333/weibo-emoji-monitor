@@ -106,6 +106,15 @@ function startWorker(
     delete env.SUPERLIKE_SCAN_WORKER_SOURCE;
   }
 
+  /*
+   * 热门分区只保留前20页作为补漏来源。
+   * 避免每轮重复扫描80-100页的大量旧帖/重复UID，
+   * 同时减少Profile请求与代理消耗。
+   */
+  if (spec.source === 'section-hot') {
+    env.SUPERLIKE_HOT_PAGES = '20';
+  }
+
   console.log(
     `[SuperLikeWorkers] 启动 ${spec.label} | mode=${spec.mode} | source=${spec.source || '-'}`
   );
