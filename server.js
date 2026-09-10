@@ -1653,7 +1653,16 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.inserted_at,
         sp.first_seen_at,
         sp.last_seen_at,
-        sp.profile_status
+        sp.profile_status,
+        CASE
+          WHEN EXISTS (
+            SELECT 1
+            FROM black_fan_users bfu_state
+            WHERE CAST(bfu_state.uid AS TEXT) = CAST(sp.uid AS TEXT)
+          )
+          THEN 1
+          ELSE 0
+        END AS is_black_fan
       FROM superlike_posts sp
       LEFT JOIN monitors m ON m.id=sp.monitor_id
       ${whereSql}
