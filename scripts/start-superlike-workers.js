@@ -157,14 +157,19 @@ function startWorker(
           ROOT,
         env,
         /*
-         * 子 worker 自己通过 batch-logger 写入 logs/。
-         * Launcher 不需要继承子进程 stdout/stderr。
+         * 正常运行日志仍由子 worker 的 batch-logger 写入 logs/，
+         * 所以 stdout 继续忽略，避免 PM2 日志重复刷屏。
          *
-         * Windows 下 windowsHide=true 可以避免每个 worker
-         * 弹出独立的黑色命令行窗口。
+         * stderr 必须继承给 Launcher/PM2：这样即使 PostgreSQL preload、
+         * Playwright preload、模块加载等在 batch-logger 初始化前失败，
+         * 也能直接从 pm2 logs 看到真实错误。
          */
         stdio:
-          'ignore',
+          [
+            'ignore',
+            'ignore',
+            'inherit'
+          ],
         windowsHide:
           true
       }
@@ -173,6 +178,15 @@ function startWorker(
   children.set(
     spec.label,
     child
+  );
+
+  child.once(
+    'error',
+    error => {
+      console.error(
+        `[SuperLikeWorkers] ${spec.label} 子进程启动失败：${error?.stack || error}`
+      );
+    }
   );
 
   child.once(
