@@ -6,16 +6,23 @@ const PLAYWRIGHT_GUARD = path.join(
   'src',
   'playwright-hardening.js'
 );
+const SQLITE_GUARD = path.join(
+  __dirname,
+  'src',
+  'sqlite-hardening.js'
+);
 
 const common = {
   cwd: __dirname,
   interpreter: NODE_EXE,
   /*
-   * 所有 PM2 Batch 共用 Playwright 防卡 watchdog。
-   * 即使业务代码自己的 goto/fetch timeout 没有正常收尾，
-   * page.evaluate/newPage/close/launch 等外围操作也不会无限挂住。
+   * 所有 PM2 进程共用两层保护：
+   * - Playwright 防卡 watchdog
+   * - SQLite BUSY/LOCKED 统一退避重试
    */
   node_args: [
+    '--require',
+    SQLITE_GUARD,
     '--require',
     PLAYWRIGHT_GUARD
   ],
