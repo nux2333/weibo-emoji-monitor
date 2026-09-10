@@ -6,23 +6,23 @@ const PLAYWRIGHT_GUARD = path.join(
   'src',
   'playwright-hardening.js'
 );
-const SQLITE_GUARD = path.join(
+const POSTGRES_PRELOAD = path.join(
   __dirname,
   'src',
-  'sqlite-hardening.js'
+  'postgres-preload.js'
 );
 
 const common = {
   cwd: __dirname,
   interpreter: NODE_EXE,
   /*
-   * 所有 PM2 进程共用两层保护：
+   * test/PG 版统一启用：
+   * - PostgreSQL DatabaseSync 兼容层
    * - Playwright 防卡 watchdog
-   * - SQLite BUSY/LOCKED 统一退避重试
    */
   node_args: [
     '--require',
-    SQLITE_GUARD,
+    POSTGRES_PRELOAD,
     '--require',
     PLAYWRIGHT_GUARD
   ],
@@ -169,8 +169,6 @@ module.exports = {
         /*
          * JYZ 专用收紧 watchdog：
          * 单次 goto 最多10秒、evaluate 最多12秒，最多2轮代理尝试。
-         * 即使页面执行上下文彻底失效，也会在约45秒内退出当前UID链路，
-         * 触发换代理/重建 Context，不再无限卡死。
          */
         PLAYWRIGHT_GOTO_HARD_TIMEOUT_MS: '10000',
         PLAYWRIGHT_EVALUATE_HARD_TIMEOUT_MS: '12000',
