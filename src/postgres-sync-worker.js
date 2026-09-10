@@ -198,17 +198,20 @@ function chinaNowDateText() {
 function translateDateTime(sql) {
   let s = sql;
 
-  // Nested SQLite pattern used by the web filter.
+  /*
+   * SQLite date()/datetime() 返回文本。业务 SQL 里的日期字段也大多按 TEXT 保存，
+   * 所以 PostgreSQL 兼容层必须继续保持该语义，避免 DATE = TEXT 类型冲突。
+   */
   s = s.replace(
     /date\(\s*datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*,\s*'\+8 hours'\s*\)\s*\)/gi,
-    "(($1)::timestamp + INTERVAL '8 hours')::date"
+    "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD')"
   );
 
   // SQLite: datetime('now','+8 hours','start of day','-N day')
   s = s.replace(
     /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'start of day'\s*,\s*'-(\d+)\s+days?'\s*\)/gi,
     (_, days) =>
-      `date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '${Number(days)} days'`
+      `to_char(date_trunc('day', CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai') - INTERVAL '${Number(days)} days', 'YYYY-MM-DD HH24:MI:SS')`
   );
 
   // SQLite: date/datetime('now','+8 hours','-N day[s]')
@@ -235,7 +238,7 @@ function translateDateTime(sql) {
   // Dynamic cache window in getRecentSuperLikeProfileStatus().
   s = s.replace(
     /datetime\(\s*'now'\s*,\s*'-'\s*\|\|\s*\?\s*\|\|\s*'\s*minutes'\s*\)/gi,
-    "(CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'))"
+    "to_char(CURRENT_TIMESTAMP - (? * INTERVAL '1 minute'), 'YYYY-MM-DD HH24:MI:SS')"
   );
 
   // Legacy migration expressions.
@@ -248,27 +251,33 @@ function translateDateTime(sql) {
     "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD')"
   );
 
-  s = s.replace(/datetime\(\s*'now'\s*\)/gi, 'CURRENT_TIMESTAMP');
-  s = s.replace(/date\(\s*'now'\s*\)/gi, 'CURRENT_DATE');
+  s = s.replace(
+    /datetime\(\s*'now'\s*\)/gi,
+    "to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD HH24:MI:SS')"
+  );
+  s = s.replace(
+    /date\(\s*'now'\s*\)/gi,
+    "to_char(CURRENT_TIMESTAMP, 'YYYY-MM-DD')"
+  );
 
-  // Common simple columns/qualified columns.
+  // Common simple columns/qualified columns: preserve SQLite TEXT return type.
   s = s.replace(
     /datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)/gi,
-    '($1)::timestamp'
+    "to_char(($1)::timestamp, 'YYYY-MM-DD HH24:MI:SS')"
   );
   s = s.replace(
     /date\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)/gi,
-    '($1)::date'
+    "to_char(($1)::timestamp, 'YYYY-MM-DD')"
   );
 
   // Aggregates used by JYZ / OldRefresh ordering.
   s = s.replace(
     /datetime\(\s*(MAX|MIN)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
-    '($1($2))::timestamp'
+    "to_char(($1($2))::timestamp, 'YYYY-MM-DD HH24:MI:SS')"
   );
   s = s.replace(
     /date\(\s*(MAX|MIN)\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
-    '($1($2))::date'
+    "to_char(($1($2))::timestamp, 'YYYY-MM-DD')"
   );
 
   return s;
