@@ -779,8 +779,59 @@ async function runMonitor(
   return summary;
 }
 
+async function initDatabaseWithRetry() {
+  const maxAttempts =
+    12;
+
+  for (
+    let attempt = 1;
+    attempt <= maxAttempts;
+    attempt++
+  ) {
+    try {
+      initDatabase();
+      return;
+
+    } catch (error) {
+      const locked =
+        error?.errcode === 5
+        ||
+        error?.code === 'SQLITE_BUSY'
+        ||
+        error?.code === 'ERR_SQLITE_ERROR'
+        &&
+        /database is locked/i.test(
+          String(
+            error?.message
+            || ''
+          )
+        );
+
+      if (
+        !locked
+        ||
+        attempt >= maxAttempts
+      ) {
+        throw error;
+      }
+
+      const waitMs =
+        5000;
+
+      console.log(
+        `[OldRefresh][DB锁等待] initDatabase 被其他进程占用 | 第${attempt}/${maxAttempts}次 | ${waitMs / 1000}秒后重试`
+      );
+
+      await sleep(
+        waitMs
+      );
+    }
+  }
+}
+
+
 async function main() {
-  initDatabase();
+  await initDatabaseWithRetry();
 
   const monitors =
     getSuperLikeMonitors();
