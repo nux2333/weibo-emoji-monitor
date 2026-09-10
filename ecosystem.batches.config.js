@@ -1,10 +1,24 @@
 const path = require('path');
 
 const NODE_EXE = process.execPath;
+const PLAYWRIGHT_GUARD = path.join(
+  __dirname,
+  'src',
+  'playwright-hardening.js'
+);
 
 const common = {
   cwd: __dirname,
   interpreter: NODE_EXE,
+  /*
+   * 所有 PM2 Batch 共用 Playwright 防卡 watchdog。
+   * 即使业务代码自己的 goto/fetch timeout 没有正常收尾，
+   * page.evaluate/newPage/close/launch 等外围操作也不会无限挂住。
+   */
+  node_args: [
+    '--require',
+    PLAYWRIGHT_GUARD
+  ],
   windowsHide: true,
   autorestart: true,
   restart_delay: 10000,
