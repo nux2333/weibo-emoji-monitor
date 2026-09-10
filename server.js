@@ -1593,7 +1593,7 @@ app.get('/api/superlike-posts', (req, res) => {
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
-    const data = db.prepare(`
+    let data = db.prepare(`
       SELECT
         sp.id,
         sp.monitor_id,
@@ -1742,6 +1742,51 @@ app.get('/api/superlike-posts', (req, res) => {
         sp.id DESC
       LIMIT 2000
     `).all(...params);
+
+    /*
+     * black_fan_users 作为唯一事实来源。
+     * 不依赖前端临时状态，也不依赖 SELECT 里的计算列；
+     * 每次 /api/superlike-posts 返回前，都按当前 black_fan_users
+     * 全表重新标记 is_black_fan。
+     */
+    const blackFanUidSet =
+      new Set(
+        db.prepare(`
+          SELECT uid
+          FROM black_fan_users
+          WHERE TRIM(
+                  CAST(
+                    COALESCE(uid, '')
+                    AS TEXT
+                  )
+                ) <> ''
+        `)
+          .all()
+          .map(
+            row =>
+              String(
+                row.uid
+                ?? ''
+              ).trim()
+          )
+          .filter(Boolean)
+      );
+
+    data =
+      data.map(
+        row => ({
+          ...row,
+          is_black_fan:
+            blackFanUidSet.has(
+              String(
+                row.uid
+                ?? ''
+              ).trim()
+            )
+              ? 1
+              : 0
+        })
+      );
 
     /*
      * 顶部统计与当前页面过滤条件保持一致。
