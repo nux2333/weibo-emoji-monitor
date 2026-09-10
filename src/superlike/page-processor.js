@@ -2,10 +2,9 @@ const {
   markDailyExcludedUser,
   isDailyExcludedUser,
   isSuperLikeUser,
-  getRecentSuperLikeProfileStatus,
-  markSuperLikeProfileChecked,
   saveSuperLikeUser
 } = require('../db');
+
 const {
   getPostId,
   getUid,
@@ -14,22 +13,16 @@ const {
   getPostCreatedAt,
   parsePostCreatedAtMs,
   getNewestPostInfo,
-  shouldStopAtCheckpoint
+  shouldStopAtCheckpoint,
+  findPosts
 } = require('./post-utils');
-const {
-  checkUserSuperLikeByProfile,
-  pickProfileReplacementPost,
-  pickHotProfileCandidatePost
-} = require('./profile');
+
 const {
   saveTargetPost,
   deletePostsByUidWithLog
 } = require('./post-save');
 
 const MAX_COMMENTS = 21;
-const SCAN_PROFILE_CACHE_MINUTES =
-  Number(process.env.SUPERLIKE_SCAN_PROFILE_CACHE_MINUTES)
-  || 15;
 
 async function processPagePosts(
   monitorId,
@@ -55,7 +48,6 @@ async function processPagePosts(
   const hotMode =
     processingMode === 'hot';
 
-
   const stats = {
     found: 0,
     duplicateInRun: 0,
@@ -79,7 +71,6 @@ async function processPagePosts(
     newestSeen: null
   };
 
-
   const posts =
     Array.isArray(
       preExtractedPosts
@@ -89,7 +80,6 @@ async function processPagePosts(
           json
         );
 
-
   stats.newestSeen =
     getNewestPostInfo(
       posts
@@ -98,33 +88,50 @@ async function processPagePosts(
   stats.pageHasNoPosts =
     posts.length === 0;
 
-
   /*
-   * 第二重 checkpoint 时间兜底：
-   * 只有“整页所有可识别帖子都有有效时间，并且全部 <= checkpoint 时间”
-   * 才把本页视为旧页。任何一条时间缺失/解析失败/晚于 checkpoint，
-   * 本页都不计入连续旧页，避免误停。
+   * checkpoint 时间兜底：只有整页所有可识别帖子都有有效时间，
+   * 并且全部 <= checkpoint 时间，才把本页视为旧页。
    */
   if (
     checkpoint
-    && Number.isFinite(Number(checkpoint.latest_created_at_ms))
+    && Number.isFinite(
+      Number(
+        checkpoint.latest_created_at_ms
+      )
+    )
     && posts.length > 0
   ) {
-    const checkpointMs = Number(checkpoint.latest_created_at_ms);
+    const checkpointMs =
+      Number(
+        checkpoint.latest_created_at_ms
+      );
+
     let comparablePosts = 0;
     let allComparable = true;
     let allAtOrBefore = true;
 
     for (const post of posts) {
-      const postId = getPostId(post);
+      const postId =
+        getPostId(
+          post
+        );
 
       if (!postId) {
         continue;
       }
 
-      const createdAtMs = parsePostCreatedAtMs(post);
+      const createdAtMs =
+        parsePostCreatedAtMs(
+          post
+        );
 
-      if (!Number.isFinite(Number(createdAtMs))) {
+      if (
+        !Number.isFinite(
+          Number(
+            createdAtMs
+          )
+        )
+      ) {
         allComparable = false;
         allAtOrBefore = false;
         break;
@@ -132,7 +139,11 @@ async function processPagePosts(
 
       comparablePosts++;
 
-      if (Number(createdAtMs) > checkpointMs) {
+      if (
+        Number(
+          createdAtMs
+        ) > checkpointMs
+      ) {
         allAtOrBefore = false;
         break;
       }
@@ -144,46 +155,49 @@ async function processPagePosts(
       && allAtOrBefore;
   }
 
-
-  for (
-    const post
-    of posts
-  ) {
+  for (const post of posts) {
     const postId =
       getPostId(
         post
       );
 
-
     if (!postId) {
       continue;
     }
 
-
     /*
      * History 可传入最早允许时间。
-     * 明确早于该时间的帖子直接跳过，不做评论/Profile/入库；
-     * 时间缺失时 fail-open，仍按原逻辑处理，避免误漏。
+     * 明确早于该时间的帖子直接跳过。
      */
     const minCreatedAt =
-      Number(minCreatedAtMs);
+      Number(
+        minCreatedAtMs
+      );
 
     if (
-      Number.isFinite(minCreatedAt)
+      Number.isFinite(
+        minCreatedAt
+      )
     ) {
       const createdAtMs =
-        parsePostCreatedAtMs(post);
+        parsePostCreatedAtMs(
+          post
+        );
 
       if (
-        Number.isFinite(Number(createdAtMs))
-        &&
-        Number(createdAtMs) < minCreatedAt
+        Number.isFinite(
+          Number(
+            createdAtMs
+          )
+        )
+        && Number(
+          createdAtMs
+        ) < minCreatedAt
       ) {
         stats.olderThanMinCreatedAt++;
         continue;
       }
     }
-
 
     if (
       seenThisRun.has(
@@ -194,19 +208,12 @@ async function processPagePosts(
       continue;
     }
 
-
     seenThisRun.add(
       postId
     );
 
     stats.found++;
 
-
-    /*
-     * 命中上一轮 checkpoint 时只做标记，不中断当前页。
-     * 当前页剩余帖子仍全部处理，页处理完成后由外层停止翻页，
-     * 防止同一页内部时间顺序不严格导致漏帖。
-     */
     if (
       shouldStopAtCheckpoint(
         post,
@@ -222,24 +229,18 @@ async function processPagePosts(
       stats.checkpointReached = true;
     }
 
-
     const uid =
       getUid(
         post
       );
 
-
     /*
-     * 当天排除：
-     * 某 UID 今天任意候选帖已经达到 21 评论后，
-     * 今天剩余时间 scanner 不再抓取该 UID 的任何帖子。
+     * 非热门来源继续沿用当天排除。
      */
     if (
       !hotMode
-      &&
-      uid
-      &&
-      isDailyExcludedUser(
+      && uid
+      && isDailyExcludedUser(
         monitorId,
         uid
       )
@@ -250,15 +251,12 @@ async function processPagePosts(
       continue;
     }
 
-
     /*
-     * 第一层：superlike_users 是最高优先级本地黑名单。
-     * 已确认 SuperLike 的 UID 不需要再看 feed icon / Profile。
+     * 已知 SuperLike 用户直接过滤，不再查主页。
      */
     if (
       uid
-      &&
-      isSuperLikeUser(
+      && isSuperLikeUser(
         uid
       )
     ) {
@@ -277,7 +275,9 @@ async function processPagePosts(
       continue;
     }
 
-
+    /*
+     * Feed 本身已经带 chao_like 时，直接确认并过滤。
+     */
     if (
       hasSuperLike(
         post
@@ -293,7 +293,10 @@ async function processPagePosts(
         deleteUidSet.add(uid);
 
         const userInserted =
-          saveSuperLikeUser(monitorId, uid);
+          saveSuperLikeUser(
+            monitorId,
+            uid
+          );
 
         console.log(
           userInserted
@@ -309,207 +312,10 @@ async function processPagePosts(
       continue;
     }
 
-
-    if (hotMode) {
-      /*
-       * 热门专用逻辑：
-       * - Feed 评论 > 50 直接跳过，不查主页；
-       * - 其余 Feed 只看超LIKE icon，不按评论数筛选；
-       * - 同一 UID 本轮只查一次主页；
-       * - 主页第一页里选“发帖时间最新 + 评论<21”的帖子；
-       * - 第一页没有符合条件的帖子就跳过该 UID；
-       * - Profile 请求失败不拿 feed 帖子兜底，避免热门误入库。
-       */
-      const hotFeedComments =
-        getCommentsCount(
-          post
-        );
-
-      if (
-        hotFeedComments !== null
-        &&
-        hotFeedComments > 50
-      ) {
-        console.log(
-          `[SuperLike][热门跳过] UID=${uid || '-'} FeedPost=${postId} 评论=${hotFeedComments} > 50，不查主页`
-        );
-        continue;
-      }
-
-      /*
-       * 热门专用逻辑：
-       * - feed 只看超LIKE icon，不看 feed 评论数；
-       * - 同一 UID 本轮只查一次主页；
-       * - 主页第一页里选“发帖时间最新 + 评论<21”的帖子；
-       * - 第一页没有符合条件的帖子就跳过该 UID；
-       * - Profile 请求失败不拿 feed 帖子兜底，避免热门误入库。
-       */
-      if (
-        uid
-        &&
-        seenUidThisRun.has(uid)
-      ) {
-        stats.duplicateUidInRun++;
-        continue;
-      }
-
-      if (!uid) {
-        console.log(
-          `[SuperLike][热门跳过] Post=${postId} 没有UID`
-        );
-        continue;
-      }
-
-      seenUidThisRun.add(uid);
-
-      let profileResult =
-        profileCache.get(uid)
-        || null;
-
-      if (!profileResult) {
-        stats.profileChecked++;
-
-        console.log(
-          `[SuperLike][热门Profile] UID=${uid} feed无超LIKE；忽略feed评论数，检查主页第一页`
-        );
-
-        profileResult =
-          await checkUserSuperLikeByProfile(
-            context,
-            config,
-            uid,
-            reusableProfileContext
-          );
-
-        profileCache.set(
-          uid,
-          profileResult
-        );
-      }
-
-      if (
-        profileResult?.ok
-        &&
-        profileResult.hasSuperLike
-      ) {
-        stats.hasSuperLike++;
-        stats.profileSuperLike++;
-
-        const userInserted =
-          saveSuperLikeUser(
-            monitorId,
-            uid
-          );
-
-        if (!deleteUidSet.has(uid)) {
-          stats.deleteQueued++;
-        }
-
-        deleteUidSet.add(uid);
-
-        console.log(
-          `[SuperLike][热门跳过] UID=${uid} 主页确认SuperLike | ${userInserted ? '写入' : '已存在'} superlike_users`
-        );
-
-        continue;
-      }
-
-      if (
-        !profileResult?.ok
-        ||
-        !Array.isArray(
-          profileResult.profilePosts
-        )
-      ) {
-        stats.profileFailed++;
-
-        console.log(
-          `[SuperLike][热门跳过] UID=${uid} 主页第一页获取失败，不使用feed帖子兜底 | ${profileResult?.message || '-'}`
-        );
-
-        continue;
-      }
-
-      const targetPost =
-        pickHotProfileCandidatePost(
-          profileResult.profilePosts
-        );
-
-      if (!targetPost) {
-        console.log(
-          `[SuperLike][热门跳过] UID=${uid} 主页第一页没有评论<21的帖子`
-        );
-
-        continue;
-      }
-
-      stats.target++;
-
-      console.log(
-        `[SuperLike][热门主页候选] UID=${uid} | Post=${getPostId(targetPost)} | 评论=${getCommentsCount(targetPost)} | 时间=${getPostCreatedAt(targetPost) || '-'}`
-      );
-
-      try {
-        const saved =
-          saveTargetPost(
-            monitorId,
-            targetPost,
-            'NO_SUPERLIKE'
-          );
-
-        if (
-          saved.status ===
-          'inserted'
-        ) {
-          stats.inserted++;
-        } else if (
-          saved.status ===
-          'replaced'
-        ) {
-          stats.replaced++;
-        } else if (
-          saved.status ===
-          'kept_existing'
-        ) {
-          stats.existingInDb++;
-        }
-
-        markSuperLikeProfileChecked(
-          monitorId,
-          uid,
-          'NO_SUPERLIKE'
-        );
-
-      } catch (error) {
-        if (
-          String(error.message)
-            .toLowerCase()
-            .includes('unique')
-        ) {
-          stats.existingInDb++;
-          continue;
-        }
-
-        throw error;
-      }
-
-      continue;
-    }
-
-
-    /*
-     * 先检查评论数，再做“同 UID 本轮只保留一条”的去重。
-     *
-     * 原因：
-     * 即使这个 UID 较新的帖子已经被处理过，
-     * 后面又遇到他的另一条帖子只要评论 >=21，
-     * 也必须立刻把该 UID 加入当天排除并删除已有候选。
-     */
     const commentsCount =
       getCommentsCount(
         post
       );
-
 
     if (
       commentsCount === null
@@ -517,7 +323,6 @@ async function processPagePosts(
       stats.unknownComments++;
       continue;
     }
-
 
     if (
       commentsCount >=
@@ -546,15 +351,12 @@ async function processPagePosts(
       continue;
     }
 
-
     /*
-     * 每个用户只处理这一轮里遇到的第一条“未满21评论”的帖子。
-     * 但其它帖子仍会经过上面的 >=21 检查，确保不会漏掉当天排除条件。
+     * 同一轮同一 UID 只保留第一条未满21评论的 Feed 帖子。
      */
     if (
       uid
-      &&
-      seenUidThisRun.has(
+      && seenUidThisRun.has(
         uid
       )
     ) {
@@ -562,218 +364,36 @@ async function processPagePosts(
       continue;
     }
 
-
     if (uid) {
-      seenUidThisRun.add(uid);
+      seenUidThisRun.add(
+        uid
+      );
     }
-
 
     if (!uid) {
       console.log(
         `[SuperLike][跳过] Post=${postId} 没有UID，不入库`
       );
-
       continue;
     }
 
-
     /*
-     * feed 没有超LIKE icon，且 UID 也不在 superlike_users：
-     * 先做 Profile 二次校验。
+     * Scanner 不再执行主页/Profile 二次确认。
+     * 是否已经成为 SuperLike 交给：
+     * 1. JYZ 补数（experience_7d >= 80 直接清理）
+     * 2. Mode3 profile_allbadge 最终兜底
      *
-     * 1) 同一轮同 UID 只请求一次。
-     * 2) DB 最近15分钟已经确认 NO_SUPERLIKE 时直接复用。
-     * 3) Profile 确认 SuperLike -> 立刻入 superlike_users 并清旧候选。
-     * 4) Profile 请求失败时 fail-open：仍允许候选入库，避免漏掉真正目标。
+     * 因此这里直接使用 Feed 帖子入库，状态记为 UNKNOWN。
      */
-    let profileResult =
-      profileCache.get(uid)
-      || null;
-
-    if (!profileResult) {
-      const recent =
-        getRecentSuperLikeProfileStatus(
-          monitorId,
-          uid,
-          SCAN_PROFILE_CACHE_MINUTES
-        );
-
-      if (
-        recent
-        &&
-        String(recent.status).toUpperCase()
-          === 'NO_SUPERLIKE'
-      ) {
-        /*
-         * 以前这里会直接复用 NO_SUPERLIKE 缓存。
-         * 现在还需要核对“原 post 是否仍在用户超话主页”并寻找替代帖，
-         * 所以 scanner 必须拿到本轮真实 profile JSON，不能只靠状态缓存。
-         */
-        console.log(
-          `[SuperLike][Profile缓存仅状态] UID=${uid} 最近已确认非SuperLike，但本轮仍请求主页用于帖子核对`
-        );
-      }
-    }
-
-    if (!profileResult) {
-      stats.profileChecked++;
-
-      console.log(
-        `[SuperLike][Profile校验] UID=${uid} feed无超LIKE，开始二次确认...`
-      );
-
-      profileResult =
-        await checkUserSuperLikeByProfile(
-          context,
-          config,
-          uid,
-          reusableProfileContext
-        );
-
-      profileCache.set(
-        uid,
-        profileResult
-      );
-    }
-
-    if (
-      profileResult?.ok
-      &&
-      profileResult.hasSuperLike
-    ) {
-      stats.hasSuperLike++;
-      stats.profileSuperLike++;
-
-      const userInserted =
-        saveSuperLikeUser(
-          monitorId,
-          uid
-        );
-
-      const deletedNow =
-        deletePostsByUidWithLog(
-          uid,
-          'SUPERLIKE_PROFILE_CONFIRMED'
-        );
-
-      if (!deleteUidSet.has(uid)) {
-        stats.deleteQueued++;
-      }
-
-      deleteUidSet.add(uid);
-
-      console.log(
-        `[SuperLike][Profile命中] UID=${uid} 已确认SuperLike | ` +
-        `${userInserted ? '写入' : '已存在'} superlike_users | 清理旧候选=${deletedNow}`
-      );
-
-      continue;
-    }
-
-
-
-    if (
-      profileResult
-      &&
-      !profileResult.ok
-    ) {
-      stats.profileFailed++;
-
-      console.log(
-        `[SuperLike][Profile失败] UID=${uid} | ${profileResult.message || 'unknown'} | Profile最多2次、单次5秒，整体最多15秒；失败后fail-open入库，后续交给Mode3/删除Batch清理`
-      );
-    }
-
-
-    /*
-     * 新逻辑：候选必须在该用户当前超话主页里有可用落点。
-     *
-     * - 原 post_id 仍在主页：保留原帖。
-     * - 原 post_id 不在主页：换成主页从上往下第一条“30天内 + 评论0~3”的帖子。
-     * - 主页请求成功，但两者都没有：这个 UID 不保留候选，并删除 DB 中该 UID 旧候选。
-     * - Profile 请求失败：仍 fail-open，保留原帖，避免网络失败误删用户。
-     */
-    let targetPost = post;
-
-    if (
-      profileResult?.ok
-      &&
-      Array.isArray(profileResult.profilePosts)
-    ) {
-      const profilePosts =
-        profileResult.profilePosts;
-
-      const originalOnProfile =
-        profilePosts.some(
-          profilePost =>
-            String(
-              getPostId(
-                profilePost
-              )
-            )
-            ===
-            String(
-              postId
-            )
-        );
-
-      console.log(
-        `[SuperLike][Profile原帖检查] UID=${uid} FeedPost=${postId} | ${originalOnProfile ? 'FOUND' : 'NOT_FOUND'}`
-      );
-
-      if (!originalOnProfile) {
-        const replacementPost =
-          pickProfileReplacementPost(
-            profilePosts
-          );
-
-        if (replacementPost) {
-          targetPost =
-            replacementPost;
-
-          console.log(
-            `[SuperLike][主页替换] UID=${uid} 原Post=${postId} 不在主页 -> 替换为 Post=${getPostId(replacementPost)} 评论=${getCommentsCount(replacementPost)} 时间=${getPostCreatedAt(replacementPost) || '-'}`
-          );
-        } else {
-          const deletedNow =
-            deletePostsByUidWithLog(
-              uid,
-              'PROFILE_NO_USABLE_POST'
-            );
-
-          console.log(
-            `[SuperLike][PROFILE_NO_USABLE_POST][本来应该入库→被扔掉] UID=${uid} | FeedPost=${postId} | Feed评论=${commentsCount} | 原帖不在Profile主页 | 30天内无评论1~4替代帖 | 原逻辑保持：不入库并清理旧候选=${deletedNow}`
-          );
-
-          continue;
-        }
-      } else {
-        console.log(
-          `[SuperLike][主页命中原帖] UID=${uid} Post=${postId} 仍在超话主页，保持原帖`
-        );
-      }
-    }
-
     stats.target++;
-
 
     try {
       const saved =
         saveTargetPost(
           monitorId,
-          targetPost,
-          profileResult
-          && !profileResult.ok
-          && Number(profileResult.status) !== 403
-            ? 'PROFILE_FAILED'
-            : (
-                profileResult?.ok
-                && profileResult.hasSuperLike === false
-                  ? 'NO_SUPERLIKE'
-                  : 'UNKNOWN'
-              )
+          post,
+          'UNKNOWN'
         );
-
 
       if (
         saved.status ===
@@ -791,7 +411,6 @@ async function processPagePosts(
             saved.postLink || '-'
           ].join(' | ')
         );
-
       } else if (
         saved.status ===
         'replaced'
@@ -807,26 +426,12 @@ async function processPagePosts(
             saved.postLink || '-'
           ].join(' | ')
         );
-
       } else if (
         saved.status ===
         'kept_existing'
       ) {
         stats.existingInDb++;
       }
-
-      if (
-        profileResult?.ok
-        &&
-        profileResult.hasSuperLike === false
-      ) {
-        markSuperLikeProfileChecked(
-          monitorId,
-          uid,
-          'NO_SUPERLIKE'
-        );
-      }
-
     } catch (error) {
       if (
         String(
@@ -845,8 +450,9 @@ async function processPagePosts(
     }
   }
 
-
   return stats;
 }
 
-module.exports = { processPagePosts };
+module.exports = {
+  processPagePosts
+};
