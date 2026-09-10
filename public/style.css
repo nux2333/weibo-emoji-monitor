@@ -77,6 +77,17 @@
   text-align: center;
 }
 
+/* PROFILE_FAILED 仅保留状态，不再在候选池页面显示粉红/红字。 */
+tr.profile-failed:not(.is-moved) td {
+  background: inherit !important;
+}
+
+tr.profile-failed:not(.is-moved) .username-cell,
+tr.profile-failed:not(.is-moved) .uid {
+  color: inherit !important;
+  font-weight: inherit !important;
+}
+
 /* ===== 实时日志 ===== */
 .live-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#9ca3af;margin-right:7px}
 .live-dot.ok{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.12)}
