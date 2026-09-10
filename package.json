@@ -14,7 +14,7 @@
     "test-mode4-no-login": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/test-mode4-no-login.js",
     "start:prod": "node -r ./src/postgres-preload.js server.js",
     "start:test": "node -r ./src/postgres-preload.js scripts/start-test.js",
-    "test-db:refresh": "node scripts/refresh-test-db.js",
+    "test-db:refresh": "node scripts/migrate-sqlite-to-postgres.js",
     "scan-superlike:test": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/run-test-scan.js",
     "scan-superlike:legacy": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js src/superlike-scanner.js",
     "export-weibo-login": "node -r ./src/playwright-hardening.js scripts/export-weibo-login-state.js",
@@ -28,7 +28,7 @@
   "dependencies": {
     "express": "^5.1.0",
     "helmet": "^8.3.0",
-    "pg": "^8.16.3",
+    "pg": "^8.23.0",
     "playwright": "^1.55.0"
   },
   "devDependencies": {
