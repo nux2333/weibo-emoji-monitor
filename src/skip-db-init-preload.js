@@ -1,11 +1,11 @@
 'use strict';
 
 /*
- * 临时启动保护：在 initDatabase 正式拆分完成前，禁止 weibo-server
- * 执行历史的重型初始化 / migration。
+ * 全局启动保护：所有正常服务/批处理默认禁止执行历史重型 initDatabase。
  *
- * 只对当前 Node 进程加载的 src/db.js 生效，不修改 db.js 文件本身。
- * 后续 initDatabase 整理完成后删除本 preload 即可。
+ * 只有显式设置 ALLOW_DB_INIT=1 时才允许 initDatabase 真正执行。
+ * 日常脚本通过 --require 加载本 preload，因此即使脚本内部调用
+ * initDatabase()，也只会直接返回，不做 DDL / migration / 全表回填。
  */
 const fs = require('fs');
 const Module = require('module');
@@ -26,7 +26,7 @@ Module._extensions['.js'] = function skipDbInitLoader(module, filename) {
       throw new Error('[DB启动保护] 找不到 initDatabase，拒绝静默启动');
     }
 
-    const replacement = `${marker}\n  if (process.env.SKIP_DB_INIT === '1') {\n    if (!databaseInitialized) {\n      console.log('[DB启动保护] SKIP_DB_INIT=1，已跳过 initDatabase');\n      databaseInitialized = true;\n    }\n    return;\n  }`;
+    const replacement = `${marker}\n  if (process.env.ALLOW_DB_INIT !== '1') {\n    if (!databaseInitialized) {\n      console.log('[DB启动保护] 默认跳过 initDatabase；仅 ALLOW_DB_INIT=1 时允许执行');\n      databaseInitialized = true;\n    }\n    return;\n  }`;
 
     const patchedSource = originalSource.replace(marker, replacement);
     module._compile(patchedSource, filename);
@@ -36,4 +36,4 @@ Module._extensions['.js'] = function skipDbInitLoader(module, filename) {
   return originalJsLoader(module, filename);
 };
 
-console.log('[DB启动保护] preload 已启用');
+console.log('[DB启动保护] preload 已启用：initDatabase 默认禁用');
