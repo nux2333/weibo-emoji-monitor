@@ -22,6 +22,7 @@
     "jyz-service": "node -r ./src/playwright-hardening.js scripts/jyz-service.js",
     "backfill-today-jyz": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/backfill-today-jyz.js",
     "refresh-old-superlike": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/refresh-old-superlike-posts.js",
+    "comment-assistant": "node -r ./src/postgres-preload.js ./scripts/comment-assistant/index.js",
     "db:pg:init": "node -r ./src/postgres-preload.js scripts/init-postgres.js",
     "db:pg:migrate": "node scripts/migrate-sqlite-to-postgres.js"
   },
