@@ -16,6 +16,11 @@ const SKIP_DB_INIT_PRELOAD = path.join(
   'src',
   'skip-db-init-preload.js'
 );
+const SUPERLIKE_ASYNC_WRITE_PRELOAD = path.join(
+  __dirname,
+  'src',
+  'superlike-async-write-preload.js'
+);
 const SUPERLIKE_ASYNC_API_PRELOAD = path.join(
   __dirname,
   'src',
@@ -28,9 +33,9 @@ const SUPERLIKE_ASYNC_API_PRELOAD = path.join(
  * 与扫描/复检 Batch 完全分离，避免以后调整 Mode1~4、Fresh、History 的
  * restart/preload/watchdog 参数时顺带影响 HTTP Server。
  *
- * 高频 GET /api/superlike-posts 已经通过 SUPERLIKE_ASYNC_API_PRELOAD
- * 切到原生 async pg.Pool；其他历史 API 仍暂时保留 PostgreSQL compatibility
- * preload，等逐步迁完后再从 Server 完全删除 POSTGRES_PRELOAD。
+ * SuperLike 页面高频 GET / 写接口 / SSE 已切到原生 async pg.Pool；
+ * 其他历史管理 API 暂时仍保留 PostgreSQL compatibility preload，等逐步
+ * 迁完后再从 Server 完全删除 POSTGRES_PRELOAD。
  */
 module.exports = {
   apps: [
@@ -43,6 +48,8 @@ module.exports = {
         '--require',
         SKIP_DB_INIT_PRELOAD,
         '--require',
+        SUPERLIKE_ASYNC_WRITE_PRELOAD,
+        '--require',
         SUPERLIKE_ASYNC_API_PRELOAD,
         '--require',
         POSTGRES_PRELOAD,
@@ -52,13 +59,14 @@ module.exports = {
       env: {
         SKIP_DB_INIT: '1',
 
-        /* Web API 原生 PostgreSQL 连接池。 */
+        /* SuperLike Web API 原生 PostgreSQL 连接池。 */
         PG_WEB_POOL_MAX: '20',
+        PG_WEB_WRITE_POOL_MAX: '10',
         PG_WEB_CONNECT_TIMEOUT_MS: '5000',
         PG_WEB_IDLE_TIMEOUT_MS: '30000',
 
         /*
-         * 旧 API 暂时仍使用的 PostgreSQL Bridge 参数。
+         * 旧管理 API 暂时仍使用的 PostgreSQL Bridge 参数。
          * 全部 Web API async 化后删除。
          */
         PG_SYNC_CALL_TIMEOUT_MS: '30000',
