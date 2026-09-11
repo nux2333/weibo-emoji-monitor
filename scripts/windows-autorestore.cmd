@@ -97,6 +97,11 @@ if not exist "%PM2_HOME%\dump.pm2" (
     exit /b 15
 )
 
+if not exist "%PROJECT_DIR%\ecosystem.batches.config.js" (
+    echo [ERROR] PM2 ecosystem file was not found: "%PROJECT_DIR%\ecosystem.batches.config.js"
+    exit /b 16
+)
+
 for %%F in ("%PM2_HOME%\dump.pm2") do echo [INFO] PM2 dump: %%~fF ^(%%~zF bytes^)
 
 for /f "delims=" %%V in ('call "%PM2_CMD%" --version 2^>nul') do echo [INFO] PM2: %%V
@@ -127,7 +132,32 @@ goto resurrect_retry
 :resurrect_ok
 echo [INFO] PM2 resurrect command succeeded.
 
-rem Give restored processes a moment to initialize.
+rem ============================================================
+rem Required boot services: force-start from ecosystem.
+rem This layer does NOT trust dump.pm2's saved online/stopped state.
+rem Mode1/Mode2/Mode3/JYZ remain manual and are intentionally excluded.
+rem ============================================================
+echo.
+echo [INFO] Force-starting required apps from ecosystem.batches.config.js ...
+set "BOOT_APPS=weibo-server weibo-proxy-pool scan-fresh-latest scan-fresh-hot scan-fresh-superlike scan-fresh-yishanshui scan-fresh-qa scan-history superlike-mode4"
+set "BOOT_START_FAILED=0"
+
+for %%A in (%BOOT_APPS%) do (
+    echo [INFO] Ensuring %%A is online ...
+    call "%PM2_CMD%" start "%PROJECT_DIR%\ecosystem.batches.config.js" --only "%%A" --update-env
+    if errorlevel 1 (
+        echo [ERROR] Failed to start %%A from ecosystem.
+        set "BOOT_START_FAILED=1"
+    )
+)
+
+if "!BOOT_START_FAILED!"=="1" (
+    echo [ERROR] One or more required boot apps failed to start.
+    call "%PM2_CMD%" list
+    exit /b 23
+)
+
+rem Give restored/forced-start processes a moment to initialize.
 timeout /t 8 /nobreak >nul
 
 echo.
@@ -135,7 +165,7 @@ echo [INFO] Current PM2 status:
 call "%PM2_CMD%" list
 set "LIST_RC=!ERRORLEVEL!"
 if not "!LIST_RC!"=="0" (
-    echo [ERROR] Could not read PM2 process list after resurrect. ExitCode=!LIST_RC!
+    echo [ERROR] Could not read PM2 process list after restore. ExitCode=!LIST_RC!
     exit /b 21
 )
 
