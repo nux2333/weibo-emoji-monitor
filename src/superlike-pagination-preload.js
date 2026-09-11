@@ -44,6 +44,35 @@ const COMMENTS_NEEDED_EXPR = `
   END
 `;
 
+function getShanghaiDateParts() {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
+
+  const values = Object.fromEntries(
+    parts
+      .filter(part => part.type !== 'literal')
+      .map(part => [part.type, part.value])
+  );
+
+  const year = values.year;
+  const month = values.month;
+  const day = values.day;
+  const monthNames = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+  ];
+
+  return {
+    iso: `${year}-${month}-${day}`,
+    weiboPattern: `% ${monthNames[Number(month) - 1]} ${Number(day)} % ${year}`,
+    weiboPatternZeroPadded: `% ${monthNames[Number(month) - 1]} ${day} % ${year}`
+  };
+}
+
 function getOrderBy(sortKey, sortDirection) {
   const direction = sortDirection === 'asc' ? 'ASC' : 'DESC';
 
@@ -113,10 +142,24 @@ function superLikePostsHandler(req, res) {
 
     if (todayOnly) {
       /*
-       * first_seen_at 已经按北京时间(+08:00)落库，不能再 +8 小时。
-       * 旧逻辑在 16:00 之后会把当天记录推到“次日”，导致新帖被误过滤。
+       * post_created_at 本身已经保存北京时间，例如：
+       * Fri Sep 11 17:58:32 +0800 2026
+       * 或 YYYY-MM-DD HH:mm:ss。
+       *
+       * “只看当天”直接匹配数据库里已经保存的北京时间日期，
+       * 不再使用 +8 hours / UTC 转换 / DB 时区换算。
        */
-      where.push("date(sp.first_seen_at) = date('now', '+8 hours')");
+      const today = getShanghaiDateParts();
+      where.push(`(
+        SUBSTR(CAST(sp.post_created_at AS TEXT), 1, 10) = ?
+        OR CAST(sp.post_created_at AS TEXT) LIKE ?
+        OR CAST(sp.post_created_at AS TEXT) LIKE ?
+      )`);
+      params.push(
+        today.iso,
+        today.weiboPattern,
+        today.weiboPatternZeroPadded
+      );
     }
 
     if (movedFilter === 'moved') {
