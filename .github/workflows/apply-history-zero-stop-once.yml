@@ -1,0 +1,159 @@
+name: Apply History zero-post stop once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/apply-history-zero-stop-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch latest-posts History stop condition
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('src/superlike/monitor-scanner.js')
+          s = path.read_text(encoding='utf-8')
+
+          marker = 'HISTORY_ZERO_POST_THRESHOLD'
+          if marker in s:
+              print('History zero-post stop already present; nothing to do.')
+              raise SystemExit(0)
+
+          old = """const HISTORY_OLD_PAGE_THRESHOLD =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_HISTORY_OLD_PAGE_THRESHOLD
+    )
+    || 1
+  );
+"""
+          new = old + """
+
+/*
+ * latest-posts History 防空扫：连续多页最终可处理 Post=0 时停止，
+ * 避免日期解析异常/重复数据导致旧 Resume 无限往后翻页。
+ */
+const HISTORY_ZERO_POST_THRESHOLD =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_HISTORY_ZERO_POST_THRESHOLD
+    )
+    || 3
+  );
+"""
+          if old not in s:
+              raise SystemExit('anchor 1 not found')
+          s = s.replace(old, new, 1)
+
+          old = """      const historyCutoffMs =
+        getChinaYesterdayStartMs();
+
+      let consecutiveOldPages = 0;
+
+      console.log(
+"""
+          new = """      const historyCutoffMs =
+        getChinaYesterdayStartMs();
+
+      let consecutiveOldPages = 0;
+      let consecutiveZeroPostPages = 0;
+
+      console.log(
+"""
+          if old not in s:
+              raise SystemExit('anchor 2 not found')
+          s = s.replace(old, new, 1)
+
+          old = """        console.log(
+          [
+            `[History latest-posts #${historyPage}]`,
+            `page=${params.page}`,
+            `Post=${pageStats.found}`,
+            `Profile查=${pageStats.profileChecked}`,
+            `新增=${pageStats.inserted}`,
+            `更新UID=${pageStats.replaced}`,
+            `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`
+          ].join(' | ')
+        );
+
+        if (ageState.fullyOlder) {
+"""
+          new = """        console.log(
+          [
+            `[History latest-posts #${historyPage}]`,
+            `page=${params.page}`,
+            `Post=${pageStats.found}`,
+            `Profile查=${pageStats.profileChecked}`,
+            `新增=${pageStats.inserted}`,
+            `更新UID=${pageStats.replaced}`,
+            `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`
+          ].join(' | ')
+        );
+
+        if (Number(pageStats.found || 0) === 0) {
+          consecutiveZeroPostPages++;
+
+          console.log(
+            `[SuperLike][History][空页] page=${params.page} | Post=0 | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD}`
+          );
+        } else {
+          if (consecutiveZeroPostPages > 0) {
+            console.log(
+              `[SuperLike][History][空页] page=${params.page} 恢复有效Post；连续空页 ${consecutiveZeroPostPages} -> 0`
+            );
+          }
+
+          consecutiveZeroPostPages = 0;
+        }
+
+        if (
+          consecutiveZeroPostPages
+          >= HISTORY_ZERO_POST_THRESHOLD
+        ) {
+          clearScanResume(
+            monitor.id
+          );
+
+          console.log(
+            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，清除 latest-posts Resume 并结束 History。`
+          );
+
+          break;
+        }
+
+        if (ageState.fullyOlder) {
+"""
+          if old not in s:
+              raise SystemExit('anchor 3 not found')
+          s = s.replace(old, new, 1)
+
+          path.write_text(s, encoding='utf-8')
+          print('Patched', path)
+          PY
+
+      - name: Commit patched scanner
+        shell: bash
+        run: |
+          if git diff --quiet -- src/superlike/monitor-scanner.js; then
+            echo 'No scanner changes to commit.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src/superlike/monitor-scanner.js
+          git commit -m 'fix: stop History after 3 zero-post pages'
+          git push
