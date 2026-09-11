@@ -173,21 +173,18 @@ async function interactiveLogin(oldContext, clearCookies, reason) {
   const page = context.pages()[0] || await context.newPage();
   await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
-  while (true) {
-    if (await hasWeiboLogin(context)) {
-      await page.waitForTimeout(1200);
-      if (await checkWeiboSession(context)) break;
-    }
+  while (!(await hasWeiboLogin(context))) {
     await page.waitForTimeout(1000);
   }
 
-  console.log('[登录] 登录成功，已保存登录信息；关闭可见 Chrome，切回后台运行。');
+  await page.waitForTimeout(1500);
+  console.log('[登录] 已检测到新的登录 Cookie，保存登录信息并切回后台运行。');
   await context.close();
   context = await launchBrowser(true);
 
-  if (!(await checkWeiboSession(context))) {
+  if (!(await hasWeiboLogin(context))) {
     await context.close();
-    throw new Error('登录信息保存后仍未通过服务端校验，请重新运行后再次登录');
+    throw new Error('登录信息保存失败，请重新运行后再次登录');
   }
 
   console.log(`[登录] ${ACCOUNT} 登录信息确认完成。`);
@@ -196,18 +193,11 @@ async function interactiveLogin(oldContext, clearCookies, reason) {
 
 async function ensureLoggedIn() {
   console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
-  let context = await launchBrowser(true);
+  const context = await launchBrowser(true);
 
   if (await hasWeiboLogin(context)) {
-    if (await checkWeiboSession(context)) {
-      console.log('[登录] 已检测到有效登录信息，Chrome 后台运行。');
-      return context;
-    }
-    return interactiveLogin(
-      context,
-      true,
-      '[登录] 检测到旧登录信息已失效，正在打开 Chrome，请重新登录微博。'
-    );
+    console.log('[登录] 已检测到登录 Cookie，Chrome 后台运行。');
+    return context;
   }
 
   return interactiveLogin(
