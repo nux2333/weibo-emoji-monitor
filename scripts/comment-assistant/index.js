@@ -110,32 +110,56 @@ async function hasWeiboLogin(context) {
 async function checkWeiboSession(context) {
   if (!(await hasWeiboLogin(context))) return false;
   try {
-    const response = await context.request.get('https://weibo.com/ajax/config/getConfig', {
-      timeout: 10000,
-      failOnStatusCode: false,
-      headers: {
-        Accept: 'application/json, text/plain, */*',
-        'X-Requested-With': 'XMLHttpRequest'
+    const page = context.pages()[0] || await context.newPage();
+    if (!/^https:\/\/weibo\.com\//i.test(page.url())) {
+      await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    }
+
+    const result = await page.evaluate(async () => {
+      try {
+        const response = await fetch('/ajax/config/getConfig', {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        });
+        const text = await response.text();
+        let json = null;
+        try { json = JSON.parse(text); } catch {}
+        return {
+          ok: response.ok,
+          status: response.status,
+          url: response.url,
+          json,
+          text: text.slice(0, 500)
+        };
+      } catch (error) {
+        return { ok: false, status: 0, url: '', json: null, text: '', error: error.message };
       }
     });
-    const finalUrl = String(response.url() || '');
-    const text = await response.text();
-    let json = null;
-    try { json = JSON.parse(text); } catch {}
 
-    const code = Number(json?.ok ?? json?.code ?? json?.error_code);
-    const redirectUrl = String(json?.url || json?.redirect || '');
-    if (code === -100 || /newlogin|passport\.weibo|\/login/i.test(`${finalUrl} ${redirectUrl}`)) return false;
+    if (result.error) {
+      console.warn(`[登录] 页面登录态检查失败：${result.error}`);
+      return false;
+    }
 
-    const config = json?.data || json || {};
+    const json = result.json || {};
+    const code = Number(json.ok ?? json.code ?? json.error_code);
+    const redirectUrl = String(json.url || json.redirect || '');
+    const combinedUrl = `${result.url || ''} ${redirectUrl}`;
+    if (code === -100 || /newlogin|passport\.weibo|\/login/i.test(combinedUrl)) return false;
+
+    const config = json.data || json;
     if (config.login === false) return false;
     if (config.login === true) return true;
     if (config.uid !== undefined && String(config.uid || '').trim()) return true;
 
-    return response.ok();
+    return result.ok && result.status === 200;
   } catch (error) {
-    console.warn(`[登录] 服务端登录态检查失败，暂按现有登录继续：${error.message}`);
-    return true;
+    console.warn(`[登录] 页面登录态检查异常：${error.message}`);
+    return false;
   }
 }
 
