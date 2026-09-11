@@ -81,6 +81,47 @@ function getTargets() {
   return todayRows.slice(0, LIMIT);
 }
 
+async function launchBrowser(headless) {
+  return chromium.launchPersistentContext(PROFILE_DIR, {
+    headless,
+    viewport: { width: 1280, height: 900 }
+  });
+}
+
+async function hasWeiboLogin(context) {
+  const cookies = await context.cookies('https://weibo.com');
+  return cookies.some(cookie => cookie.name === 'SUB' && cookie.value);
+}
+
+async function ensureLoggedIn() {
+  let context = await launchBrowser(true);
+  if (await hasWeiboLogin(context)) {
+    console.log('[登录] 已检测到有效登录信息，Chrome 后台运行。');
+    return context;
+  }
+
+  await context.close();
+  console.log('[登录] 未检测到登录信息，正在打开 Chrome，请手动登录微博。');
+  context = await launchBrowser(false);
+  const page = context.pages()[0] || await context.newPage();
+  await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+
+  while (!(await hasWeiboLogin(context))) {
+    await page.waitForTimeout(1000);
+  }
+
+  console.log('[登录] 登录成功，已保存登录信息；关闭可见 Chrome，切回后台运行。');
+  await context.close();
+  context = await launchBrowser(true);
+
+  if (!(await hasWeiboLogin(context))) {
+    await context.close();
+    throw new Error('登录信息保存失败，请重新运行后再次登录');
+  }
+
+  return context;
+}
+
 async function getCurrentCommentCountFromApi(page, postId, uid) {
   return page.evaluate(async ({ postId, uid }) => {
     const url = new URL('/ajax/statuses/buildComments', location.origin);
@@ -120,7 +161,7 @@ async function main() {
   if(!COMMENT_FP) console.log('COMMENT_FP 未设置：先尝试不传 fp；如果微博返回参数错误，再设置抓包里的 fp。');
   const selectedProxy=pickRandomHealthyProxy(); let readOnlyProxyContext=null;
   if(selectedProxy){console.log(`[只读代理] 健康池=${GOOD_PROXY_FILE}`);console.log(`[只读代理] 本轮固定使用：${maskProxy(selectedProxy)}`);try{readOnlyProxyContext=await createReadOnlyProxyContext(selectedProxy);}catch(error){console.warn(`[只读代理] 创建失败：${error.message}`);}}else console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
-  const context=await chromium.launchPersistentContext(PROFILE_DIR,{headless:false,viewport:{width:1280,height:900}}); const page=context.pages()[0]||await context.newPage(); const rl=readline.createInterface({input,output});
+  const context=await ensureLoggedIn(); const page=context.pages()[0]||await context.newPage(); const rl=readline.createInterface({input,output});
   try {
     for(let i=0;i<targets.length;i+=1){const row=targets[i];console.log('\n==============================================');console.log(`[${i+1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count??'-'}`);console.log(`UID=${row.uid||'-'} | ${row.username||'-'}`);console.log(`Post=${row.post_id}`);console.log(`Link=${row.post_link}`);if(row.post_text)console.log(`文案=${String(row.post_text).replace(/\s+/g,' ').slice(0,160)}`);
       if(readOnlyProxyContext){const pr=await readPostViaProxy(readOnlyProxyContext,row.post_link);if(pr?.ok)console.log(`[只读代理] GET ${pr.status} OK`);else if(pr?.status)console.log(`[只读代理] GET HTTP ${pr.status}`);else if(pr?.error)console.log(`[只读代理] GET失败：${pr.error}`);}
