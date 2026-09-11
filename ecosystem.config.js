@@ -9,7 +9,9 @@ module.exports = {
       interpreter: process.execPath,
       node_args: [
         '--require',
-        path.join(__dirname, 'src', 'postgres-preload.js')
+        path.join(__dirname, 'src', 'postgres-preload.js'),
+        '--require',
+        path.join(__dirname, 'src', 'superlike-pagination-preload.js')
       ],
       autorestart: true,
       restart_delay: 3000
