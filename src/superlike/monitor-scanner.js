@@ -311,6 +311,20 @@ const HISTORY_OLD_PAGE_THRESHOLD =
     || 1
   );
 
+
+/*
+ * latest-posts History 防空扫：连续多页最终可处理 Post=0 时停止，
+ * 避免日期解析异常/重复数据导致旧 Resume 无限往后翻页。
+ */
+const HISTORY_ZERO_POST_THRESHOLD =
+  Math.max(
+    1,
+    Number(
+      process.env.SUPERLIKE_HISTORY_ZERO_POST_THRESHOLD
+    )
+    || 3
+  );
+
 function getChinaYesterdayStartMs() {
   const parts =
     new Intl.DateTimeFormat(
@@ -2255,6 +2269,7 @@ async function scanOneSuperLikeMonitor(
         getChinaYesterdayStartMs();
 
       let consecutiveOldPages = 0;
+      let consecutiveZeroPostPages = 0;
 
       console.log(
         HISTORY_CONTINUOUS
@@ -2379,6 +2394,37 @@ async function scanOneSuperLikeMonitor(
             `过期跳过=${pageStats.olderThanMinCreatedAt || 0}`
           ].join(' | ')
         );
+
+        if (Number(pageStats.found || 0) === 0) {
+          consecutiveZeroPostPages++;
+
+          console.log(
+            `[SuperLike][History][空页] page=${params.page} | Post=0 | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD}`
+          );
+        } else {
+          if (consecutiveZeroPostPages > 0) {
+            console.log(
+              `[SuperLike][History][空页] page=${params.page} 恢复有效Post；连续空页 ${consecutiveZeroPostPages} -> 0`
+            );
+          }
+
+          consecutiveZeroPostPages = 0;
+        }
+
+        if (
+          consecutiveZeroPostPages
+          >= HISTORY_ZERO_POST_THRESHOLD
+        ) {
+          clearScanResume(
+            monitor.id
+          );
+
+          console.log(
+            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，清除 latest-posts Resume 并结束 History。`
+          );
+
+          break;
+        }
 
         if (ageState.fullyOlder) {
           consecutiveOldPages++;
