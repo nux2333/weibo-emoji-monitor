@@ -9,8 +9,10 @@ const {
 } = require('./db');
 
 const PUBLIC_DIR = path.join(__dirname, '..', 'public');
+const SUPERLIKE_HTML = path.join(PUBLIC_DIR, 'superlike.html');
 const SUPERLIKE_JS = path.join(PUBLIC_DIR, 'superlike.js');
 const PAGINATION_OVERRIDE_JS = path.join(PUBLIC_DIR, 'superlike-pagination.js');
+const SUPERLIKE_ASSET_VERSION = '20260911-1';
 
 /*
  * post_created_at 已经按北京时间文本保存。
@@ -164,9 +166,6 @@ function superLikePostsHandler(req, res) {
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
-    /*
-     * 统计单独聚合，不再把所有候选帖子拉回 Node。
-     */
     const statsRow = db.prepare(`
       SELECT
         COUNT(*) AS total,
@@ -184,9 +183,6 @@ function superLikePostsHandler(req, res) {
     const offset = (page - 1) * pageSize;
     const orderBy = buildOrderBy(sortKey, sortDirection);
 
-    /*
-     * 真正的 SQL 分页：PostgreSQL 只返回当前页，不再先 all() 全量读取。
-     */
     const data = db.prepare(`
       SELECT *
       FROM (
@@ -297,6 +293,25 @@ express.static = function patchedStatic(root, options) {
   return function superLikeStatic(req, res, next) {
     const pathname = String(req.path || req.url || '').split('?')[0];
 
+    if (resolvedRoot === path.resolve(PUBLIC_DIR) && pathname === '/superlike.html') {
+      try {
+        let html = fs.readFileSync(SUPERLIKE_HTML, 'utf8');
+        html = html.replace(
+          'src="/superlike.js"',
+          `src="/superlike.js?v=${SUPERLIKE_ASSET_VERSION}"`
+        );
+
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+        res.setHeader('Cloudflare-CDN-Cache-Control', 'no-store');
+        res.setHeader('CDN-Cache-Control', 'no-store');
+        return res.send(html);
+      } catch (error) {
+        console.error('[SuperLike分页] 注入页面版本号失败：', error);
+        return next(error);
+      }
+    }
+
     if (resolvedRoot === path.resolve(PUBLIC_DIR) && pathname === '/superlike.js') {
       try {
         let source = fs.readFileSync(SUPERLIKE_JS, 'utf8');
@@ -309,6 +324,8 @@ express.static = function patchedStatic(root, options) {
 
         res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
         res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+        res.setHeader('Cloudflare-CDN-Cache-Control', 'no-store');
+        res.setHeader('CDN-Cache-Control', 'no-store');
         return res.send(`${source}\n\n/* server pagination override */\n${override}\n`);
       } catch (error) {
         console.error('[SuperLike分页] 注入前端分页脚本失败：', error);
