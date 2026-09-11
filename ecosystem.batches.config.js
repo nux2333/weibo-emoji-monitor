@@ -164,7 +164,9 @@ module.exports = {
         'recheck-superlike.js'
       ),
       env: {
-        SUPERLIKE_RECHECK_MODE: '4'
+        SUPERLIKE_RECHECK_MODE: '4',
+        /* 19:00 起晚高峰：每3分钟扫描一轮。 */
+        SUPERLIKE_LIST_NIGHT_INTERVAL_MS: String(3 * 60 * 1000)
       }
     },
     {
