@@ -303,37 +303,25 @@ function formatPostTime(
   }
 
 
-  let date =
-    new Date(
-      value
+  const valueText =
+    String(value);
+
+  const sqliteChinaTime =
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+      valueText
     );
 
-
-  /*
-   * 如果未来数据库保存成：
-   * YYYY-MM-DD HH:mm:ss
-   * 则按北京时间理解。
-   */
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-    &&
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
-      String(value)
-    )
-  ) {
-    date =
-      new Date(
-        String(value)
-          .replace(
+  let date =
+    sqliteChinaTime
+      ? new Date(
+          valueText.replace(
             ' ',
             'T'
-          )
-        +
-        '+08:00'
-      );
-  }
+          ) + '+08:00'
+        )
+      : new Date(
+          valueText
+        );
 
 
   if (
@@ -611,31 +599,25 @@ function parseSortableTime(value) {
     return 0;
   }
 
-  let date =
-    new Date(
-      value
+  const valueText =
+    String(value);
+
+  const sqliteChinaTime =
+    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
+      valueText
     );
 
-  if (
-    Number.isNaN(
-      date.getTime()
-    )
-    &&
-    /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(
-      String(value)
-    )
-  ) {
-    date =
-      new Date(
-        String(value)
-          .replace(
+  const date =
+    sqliteChinaTime
+      ? new Date(
+          valueText.replace(
             ' ',
             'T'
-          )
-        +
-        '+08:00'
-      );
-  }
+          ) + '+08:00'
+        )
+      : new Date(
+          valueText
+        );
 
   return Number.isNaN(
     date.getTime()
