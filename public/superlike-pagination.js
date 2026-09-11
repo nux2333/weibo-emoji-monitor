@@ -70,8 +70,22 @@ function buildServerParams(page = currentPage, size = pageSize) {
   params.set('pageSize', String(size));
   params.set('sortKey', sortKey);
   params.set('sortDirection', sortDirection);
+  params.set('_cb', `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
   return params;
+}
+
+function fetchSuperLikePage(page = currentPage, size = pageSize) {
+  return fetch(
+    '/api/superlike-posts?' + buildServerParams(page, size).toString(),
+    {
+      cache: 'no-store',
+      headers: {
+        'Cache-Control': 'no-cache, no-store, max-age=0',
+        'Pragma': 'no-cache'
+      }
+    }
+  );
 }
 
 const legacyRenderTable = renderTable;
@@ -98,9 +112,8 @@ loadData = async function loadServerPage(resetPage = false) {
   currentKeyword = getKeyword();
   saveSearchState();
 
-  const response = await fetch(
-    '/api/superlike-posts?' + buildServerParams().toString()
-  );
+  const requestedPage = currentPage;
+  const response = await fetchSuperLikePage(requestedPage, pageSize);
   const json = await response.json();
 
   if (!response.ok || !json.success) {
@@ -117,7 +130,7 @@ loadData = async function loadServerPage(resetPage = false) {
 
   const pagination = json.pagination || {};
   serverPaginationState = {
-    page: Number(pagination.page || currentPage || 1),
+    page: Number(pagination.page || requestedPage || 1),
     pageSize: Number(pagination.pageSize || pageSize || 50),
     total: Number(pagination.total ?? stats.total ?? allRows.length),
     totalPages: Math.max(1, Number(pagination.totalPages || 1))
@@ -217,9 +230,7 @@ async function fetchAllFilteredRowsForCsv() {
   let totalPages = 1;
 
   do {
-    const response = await fetch(
-      '/api/superlike-posts?' + buildServerParams(page, exportPageSize).toString()
-    );
+    const response = await fetchSuperLikePage(page, exportPageSize);
     const json = await response.json();
 
     if (!response.ok || !json.success) {
