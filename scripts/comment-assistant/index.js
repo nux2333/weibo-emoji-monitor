@@ -168,7 +168,34 @@ async function sendComment(page, context, postId, commentText) {
   const csrf=await getCsrfToken(page,context); if(!csrf?.token) return {ok:false,status:0,json:null,text:'CSRF token not found',csrfSource:null};
   const result=await page.evaluate(async ({postId,commentText,fp,csrfToken}) => { const form=new URLSearchParams(); Object.entries({id:String(postId),comment:commentText,pic_id:'',is_repost:'0',comment_ori:'0',is_comment:'0'}).forEach(([k,v])=>form.set(k,v)); if(fp) form.set('fp',fp); const response=await fetch('/ajax/comments/create',{method:'POST',credentials:'include',headers:{'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8','X-Requested-With':'XMLHttpRequest','X-XSRF-TOKEN':csrfToken,'X-CSRF-TOKEN':csrfToken,Accept:'application/json, text/plain, */*'},body:form.toString()}); const text=await response.text(); let json=null; try{json=JSON.parse(text);}catch{} return {ok:response.ok,status:response.status,json,text}; },{postId,commentText,fp:COMMENT_FP,csrfToken:csrf.token}); return {...result,csrfSource:csrf.source};
 }
-function summarizeResult(result) { if(!result) return '没有返回结果'; const body=result.json||{}; const code=body.ok??body.code??body.error_code??''; const message=body.msg||body.message||body.error||''; return [`HTTP ${result.status}`,code!==''?`code=${code}`:'',message?`msg=${message}`:'',result.csrfSource?`csrf=${result.csrfSource}`:''].filter(Boolean).join(' | '); }
+function getBusinessCode(result) {
+  const body = result?.json || {};
+  if (body.ok !== undefined) return body.ok;
+  if (body.code !== undefined) return body.code;
+  if (body.error_code !== undefined) return body.error_code;
+  return null;
+}
+function isCommentSuccess(result) {
+  if (!result?.ok) return false;
+  const body = result.json;
+  if (!body || typeof body !== 'object') return false;
+  if (body.ok !== undefined) return Number(body.ok) === 1;
+  if (body.code !== undefined) return Number(body.code) === 0;
+  if (body.error_code !== undefined) return Number(body.error_code) === 0;
+  return false;
+}
+function summarizeResult(result) {
+  if (!result) return '没有返回结果';
+  const body = result.json || {};
+  const code = getBusinessCode(result);
+  const message = body.msg || body.message || body.error || '';
+  return [
+    `HTTP ${result.status}`,
+    code !== null ? `code=${code}` : '',
+    message ? `msg=${message}` : '',
+    result.csrfSource ? `csrf=${result.csrfSource}` : ''
+  ].filter(Boolean).join(' | ');
+}
 
 async function main() {
   initDatabase();
@@ -218,7 +245,7 @@ async function main() {
         else if (pr?.error) console.log(`[只读代理] GET失败：${pr.error}`);
       }
 
-      await page.goto(row.post_link, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(error => console.warn(`打开失败：${error.message}`));
+      await page.goto(row.post_link, { waitUntil:'domcontentloaded', timeout:20000 }).catch(error => console.warn(`打开失败：${error.message}`));
       await page.waitForTimeout(1500);
       const current = await getCurrentCommentCount(page, row.post_id, row.uid);
       if (Number.isFinite(current.count)) console.log(`[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${current.count} | 来源=${current.source}`);
@@ -235,10 +262,13 @@ async function main() {
 
       try {
         const result = await sendComment(page, context, row.post_id, DEFAULT_COMMENT);
-        console.log(`[评论结果] ${summarizeResult(result)}`);
-        if (!result.ok || (result.json && result.json.ok === 0)) {
-          const raw = result.text ? String(result.text).slice(0, 500) : '';
-          if (raw) console.log(`[返回内容] ${raw}`);
+        const success = isCommentSuccess(result);
+        console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
+        if (!success) {
+          const raw = result?.text ? String(result.text).slice(0, 1000) : '';
+          if (raw) console.log(`[微博返回] ${raw}`);
+          else if (result?.json) console.log(`[微博返回] ${JSON.stringify(result.json)}`);
+          else console.log('[微博返回] 无响应内容');
         }
       } catch (error) {
         console.error(`[评论失败] ${error.message}`);
