@@ -53,10 +53,6 @@ echo PM2_HOME: %PM2_HOME%
 echo PM2_CMD: %PM2_CMD%
 echo ============================================================
 
-rem Do NOT use a persistent directory/file lock here.
-rem A power loss can leave a stale lock behind and permanently block future
-rem startup recovery. Task Scheduler itself should prevent duplicate launches.
-
 cd /d "%PROJECT_DIR%"
 if errorlevel 1 (
     echo [ERROR] Cannot enter project directory: "%PROJECT_DIR%"
@@ -97,9 +93,14 @@ if not exist "%PM2_HOME%\dump.pm2" (
     exit /b 15
 )
 
-if not exist "%PROJECT_DIR%\ecosystem.batches.config.js" (
-    echo [ERROR] PM2 ecosystem file was not found: "%PROJECT_DIR%\ecosystem.batches.config.js"
+if not exist "%PROJECT_DIR%\ecosystem.server.config.js" (
+    echo [ERROR] Server ecosystem file was not found: "%PROJECT_DIR%\ecosystem.server.config.js"
     exit /b 16
+)
+
+if not exist "%PROJECT_DIR%\ecosystem.batches.config.js" (
+    echo [ERROR] Batch ecosystem file was not found: "%PROJECT_DIR%\ecosystem.batches.config.js"
+    exit /b 17
 )
 
 for %%F in ("%PM2_HOME%\dump.pm2") do echo [INFO] PM2 dump: %%~fF ^(%%~zF bytes^)
@@ -133,20 +134,28 @@ goto resurrect_retry
 echo [INFO] PM2 resurrect command succeeded.
 
 rem ============================================================
-rem Required boot services: force-start from ecosystem.
-rem This layer does NOT trust dump.pm2's saved online/stopped state.
+rem Server and background workers use different ecosystem files.
 rem Mode1/Mode2/Mode3/JYZ remain manual and are intentionally excluded.
 rem ============================================================
 echo.
-echo [INFO] Force-starting required apps from ecosystem.batches.config.js ...
-set "BOOT_APPS=weibo-server weibo-proxy-pool scan-fresh-latest scan-fresh-hot scan-fresh-superlike scan-fresh-yishanshui scan-fresh-qa scan-history superlike-mode4"
+echo [INFO] Ensuring weibo-server is online from ecosystem.server.config.js ...
+call "%PM2_CMD%" start "%PROJECT_DIR%\ecosystem.server.config.js" --only "weibo-server" --update-env
+if errorlevel 1 (
+    echo [ERROR] Failed to start weibo-server from server ecosystem.
+    call "%PM2_CMD%" list
+    exit /b 23
+)
+
+echo.
+echo [INFO] Force-starting required batch apps from ecosystem.batches.config.js ...
+set "BOOT_APPS=weibo-proxy-pool scan-fresh-latest scan-fresh-hot scan-fresh-superlike scan-fresh-yishanshui scan-fresh-qa scan-history superlike-mode4"
 set "BOOT_START_FAILED=0"
 
 for %%A in (%BOOT_APPS%) do (
     echo [INFO] Ensuring %%A is online ...
     call "%PM2_CMD%" start "%PROJECT_DIR%\ecosystem.batches.config.js" --only "%%A" --update-env
     if errorlevel 1 (
-        echo [ERROR] Failed to start %%A from ecosystem.
+        echo [ERROR] Failed to start %%A from batch ecosystem.
         set "BOOT_START_FAILED=1"
     )
 )
@@ -154,10 +163,9 @@ for %%A in (%BOOT_APPS%) do (
 if "!BOOT_START_FAILED!"=="1" (
     echo [ERROR] One or more required boot apps failed to start.
     call "%PM2_CMD%" list
-    exit /b 23
+    exit /b 24
 )
 
-rem Give restored/forced-start processes a moment to initialize.
 timeout /t 8 /nobreak >nul
 
 echo.
