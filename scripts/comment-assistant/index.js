@@ -108,16 +108,15 @@ async function hasWeiboLogin(context) {
 }
 
 async function ensureLoggedIn() {
+  console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
   let context = await launchBrowser(true);
   if (await hasWeiboLogin(context)) {
-    console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
-    console.log('[登录] 已检测到有效登录信息，Chrome 后台运行。');
+    console.log('[登录] 已检测到登录信息，Chrome 后台运行。');
     return context;
   }
 
   await context.close();
-  console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
-  console.log('[登录] 未检测到登录信息，正在打开 Chrome，请手动登录微博。');
+  console.log('[登录] 当前账号没有登录信息，正在打开 Chrome，请手动登录微博。');
   context = await launchBrowser(false);
   const page = context.pages()[0] || await context.newPage();
   await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
@@ -135,6 +134,7 @@ async function ensureLoggedIn() {
     throw new Error('登录信息保存失败，请重新运行后再次登录');
   }
 
+  console.log(`[登录] ${ACCOUNT} 登录信息确认完成。`);
   return context;
 }
 
@@ -171,22 +171,83 @@ async function sendComment(page, context, postId, commentText) {
 function summarizeResult(result) { if(!result) return '没有返回结果'; const body=result.json||{}; const code=body.ok??body.code??body.error_code??''; const message=body.msg||body.message||body.error||''; return [`HTTP ${result.status}`,code!==''?`code=${code}`:'',message?`msg=${message}`:'',result.csrfSource?`csrf=${result.csrfSource}`:''].filter(Boolean).join(' | '); }
 
 async function main() {
-  initDatabase(); const targets=getTargets();
-  if(!targets.length){console.log(`没有符合条件的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);return;}
-  console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`); console.log('每条评论发送前都会要求你确认。'); console.log(`默认评论：${DEFAULT_COMMENT}`);
-  if(!COMMENT_FP) console.log('COMMENT_FP 未设置：先尝试不传 fp；如果微博返回参数错误，再设置抓包里的 fp。');
-  const selectedProxy=pickRandomHealthyProxy(); let readOnlyProxyContext=null;
-  if(selectedProxy){console.log(`[只读代理] 健康池=${GOOD_PROXY_FILE}`);console.log(`[只读代理] 本轮固定使用：${maskProxy(selectedProxy)}`);try{readOnlyProxyContext=await createReadOnlyProxyContext(selectedProxy);}catch(error){console.warn(`[只读代理] 创建失败：${error.message}`);}}else console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
-  const context=await ensureLoggedIn(); const page=context.pages()[0]||await context.newPage(); const rl=readline.createInterface({input,output});
+  initDatabase();
+
+  const context = await ensureLoggedIn();
+  let readOnlyProxyContext = null;
+  let rl = null;
+
   try {
-    for(let i=0;i<targets.length;i+=1){const row=targets[i];console.log('\n==============================================');console.log(`[${i+1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count??'-'}`);console.log(`UID=${row.uid||'-'} | ${row.username||'-'}`);console.log(`Post=${row.post_id}`);console.log(`Link=${row.post_link}`);if(row.post_text)console.log(`文案=${String(row.post_text).replace(/\s+/g,' ').slice(0,160)}`);
-      if(readOnlyProxyContext){const pr=await readPostViaProxy(readOnlyProxyContext,row.post_link);if(pr?.ok)console.log(`[只读代理] GET ${pr.status} OK`);else if(pr?.status)console.log(`[只读代理] GET HTTP ${pr.status}`);else if(pr?.error)console.log(`[只读代理] GET失败：${pr.error}`);}
-      await page.goto(row.post_link,{waitUntil:'domcontentloaded',timeout:20000}).catch(error=>console.warn(`打开失败：${error.message}`)); await page.waitForTimeout(1500);
-      const current=await getCurrentCommentCount(page,row.post_id,row.uid); if(Number.isFinite(current.count))console.log(`[评论] 初始=${row.initial_comments_count??'-'} | 当前=${current.count} | 来源=${current.source}`);else{console.log(`[评论] 初始=${row.initial_comments_count??'-'} | 当前=未获取到`);if(current.apiResult)console.log(`[buildComments] HTTP=${current.apiResult.status??'-'} | ok=${current.apiResult.apiOk??'-'} | ${current.apiResult.message||current.apiResult.raw||''}`);}
-      const csrf=await getCsrfToken(page,context);console.log(csrf?.token?`[CSRF] 已找到：${csrf.source}`:'[CSRF] 未找到 token');
-      const answer=(await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();if(answer==='q')break;if(answer!=='y')continue;
-      try{const result=await sendComment(page,context,row.post_id,DEFAULT_COMMENT);console.log(`[评论结果] ${summarizeResult(result)}`);if(!result.ok||(result.json&&result.json.ok===0)){const raw=result.text?String(result.text).slice(0,500):'';if(raw)console.log(`[返回内容] ${raw}`);}}catch(error){console.error(`[评论失败] ${error.message}`);}
+    const targets = getTargets();
+    if (!targets.length) {
+      console.log(`没有符合条件的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);
+      return;
     }
-  } finally {rl.close();if(readOnlyProxyContext)await readOnlyProxyContext.dispose().catch(()=>{});await context.close();}
+
+    console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`);
+    console.log('每条评论发送前都会要求你确认。');
+    console.log(`默认评论：${DEFAULT_COMMENT}`);
+    if (!COMMENT_FP) console.log('COMMENT_FP 未设置：先尝试不传 fp；如果微博返回参数错误，再设置抓包里的 fp。');
+
+    const selectedProxy = pickRandomHealthyProxy();
+    if (selectedProxy) {
+      console.log(`[只读代理] 健康池=${GOOD_PROXY_FILE}`);
+      console.log(`[只读代理] 本轮固定使用：${maskProxy(selectedProxy)}`);
+      try { readOnlyProxyContext = await createReadOnlyProxyContext(selectedProxy); }
+      catch (error) { console.warn(`[只读代理] 创建失败：${error.message}`); }
+    } else {
+      console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
+    }
+
+    const page = context.pages()[0] || await context.newPage();
+    rl = readline.createInterface({ input, output });
+
+    for (let i = 0; i < targets.length; i += 1) {
+      const row = targets[i];
+      console.log('\n==============================================');
+      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'}`);
+      console.log(`UID=${row.uid || '-'} | ${row.username || '-'}`);
+      console.log(`Post=${row.post_id}`);
+      console.log(`Link=${row.post_link}`);
+      if (row.post_text) console.log(`文案=${String(row.post_text).replace(/\s+/g, ' ').slice(0, 160)}`);
+
+      if (readOnlyProxyContext) {
+        const pr = await readPostViaProxy(readOnlyProxyContext, row.post_link);
+        if (pr?.ok) console.log(`[只读代理] GET ${pr.status} OK`);
+        else if (pr?.status) console.log(`[只读代理] GET HTTP ${pr.status}`);
+        else if (pr?.error) console.log(`[只读代理] GET失败：${pr.error}`);
+      }
+
+      await page.goto(row.post_link, { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(error => console.warn(`打开失败：${error.message}`));
+      await page.waitForTimeout(1500);
+      const current = await getCurrentCommentCount(page, row.post_id, row.uid);
+      if (Number.isFinite(current.count)) console.log(`[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${current.count} | 来源=${current.source}`);
+      else {
+        console.log(`[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=未获取到`);
+        if (current.apiResult) console.log(`[buildComments] HTTP=${current.apiResult.status ?? '-'} | ok=${current.apiResult.apiOk ?? '-'} | ${current.apiResult.message || current.apiResult.raw || ''}`);
+      }
+
+      const csrf = await getCsrfToken(page, context);
+      console.log(csrf?.token ? `[CSRF] 已找到：${csrf.source}` : '[CSRF] 未找到 token');
+      const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
+      if (answer === 'q') break;
+      if (answer !== 'y') continue;
+
+      try {
+        const result = await sendComment(page, context, row.post_id, DEFAULT_COMMENT);
+        console.log(`[评论结果] ${summarizeResult(result)}`);
+        if (!result.ok || (result.json && result.json.ok === 0)) {
+          const raw = result.text ? String(result.text).slice(0, 500) : '';
+          if (raw) console.log(`[返回内容] ${raw}`);
+        }
+      } catch (error) {
+        console.error(`[评论失败] ${error.message}`);
+      }
+    }
+  } finally {
+    if (rl) rl.close();
+    if (readOnlyProxyContext) await readOnlyProxyContext.dispose().catch(() => {});
+    await context.close();
+  }
 }
-main().catch(error=>{console.error('[comment-assistant] 异常：',error);process.exitCode=1;});
+main().catch(error => { console.error('[comment-assistant] 异常：', error); process.exitCode = 1; });
