@@ -56,21 +56,17 @@ function parseStoredBeijingPostTime(value) {
   return null;
 }
 
-function getBeijingTodayKey() {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'Asia/Shanghai',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(new Date());
-
-  const values = Object.fromEntries(
-    parts
-      .filter(part => part.type !== 'literal')
-      .map(part => [part.type, part.value])
-  );
-
-  return `${values.year}-${values.month}-${values.day}`;
+/*
+ * “只看当天”不再做任何时区换算。
+ * 服务器当前日期是多少，就生成 YYYY-MM-DD；
+ * 然后只和数据库 post_created_at 的前 10 位比较。
+ */
+function getTodayKeyNoTimezoneConversion() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function commentsNeededFor80(row) {
@@ -268,11 +264,13 @@ function superLikePostsHandler(req, res) {
       comments_needed_for_80: commentsNeededFor80(row)
     }));
 
+    const todayKey = getTodayKeyNoTimezoneConversion();
+
     if (todayOnly) {
-      const todayKey = getBeijingTodayKey();
-      rows = rows.filter(row =>
-        parseStoredBeijingPostTime(row.post_created_at)?.dateKey === todayKey
-      );
+      rows = rows.filter(row => {
+        const raw = String(row.post_created_at || '').trim();
+        return raw.slice(0, 10) === todayKey;
+      });
     }
 
     sortRows(rows, sortKey, sortDirection);
@@ -317,6 +315,7 @@ function superLikePostsHandler(req, res) {
       filters: {
         hideBlack,
         todayOnly,
+        todayKey,
         moved: movedFilter,
         blackKeywords
       },
