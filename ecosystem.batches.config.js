@@ -11,6 +11,11 @@ const POSTGRES_PRELOAD = path.join(
   'src',
   'postgres-preload.js'
 );
+const MODE2_THRESHOLD_PRELOAD = path.join(
+  __dirname,
+  'src',
+  'mode2-dynamic-comment-threshold-preload.js'
+);
 
 const common = {
   cwd: __dirname,
@@ -129,6 +134,11 @@ module.exports = {
         'scripts',
         'recheck-superlike.js'
       ),
+      node_args: [
+        ...common.node_args,
+        '--require',
+        MODE2_THRESHOLD_PRELOAD
+      ],
       env: {
         SUPERLIKE_RECHECK_MODE: '2'
       }
