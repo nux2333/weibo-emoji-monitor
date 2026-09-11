@@ -50,7 +50,7 @@ function getTargets() {
       AND post_link IS NOT NULL
       AND TRIM(post_link) <> ''
       AND post_created_at IS NOT NULL
-      AND (post_created_at AT TIME ZONE 'Asia/Shanghai')::date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+      AND ((post_created_at::timestamptz) AT TIME ZONE 'Asia/Shanghai')::date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
     ORDER BY experience_7d DESC, post_created_at DESC, first_seen_at DESC
     LIMIT ?
   `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
