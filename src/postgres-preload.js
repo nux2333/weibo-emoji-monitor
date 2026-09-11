@@ -39,6 +39,22 @@ function requireDatabaseUrl() {
   return url;
 }
 
+/*
+ * db.js 以及历史脚本里仍保留了一些 SQLite 专用 PRAGMA。
+ * PostgreSQL 不需要、也不认识这些语句。
+ *
+ * 对 exec() 的多语句文本统一过滤 PRAGMA，其他 SQL 原样保留。
+ * 这样不用在每一个 SQLite 时代的调用点单独加 PostgreSQL 判断。
+ */
+function stripSqlitePragmas(sql) {
+  return String(sql || '')
+    .split(';')
+    .map(statement => statement.trim())
+    .filter(Boolean)
+    .filter(statement => !/^PRAGMA\b/i.test(statement))
+    .join(';\n');
+}
+
 class PostgresSyncStatement {
   constructor(database, sql) {
     this.database = database;
@@ -120,8 +136,16 @@ class PostgresSyncDatabase {
 
   exec(sql) {
     this._assertOpen();
+
+    const postgresSql = stripSqlitePragmas(sql);
+
+    // 整段都是 SQLite PRAGMA 时，在 PostgreSQL 模式直接视为成功。
+    if (!postgresSql) {
+      return this;
+    }
+
     this._request({
-      sql: String(sql || ''),
+      sql: postgresSql,
       params: [],
       mode: 'run',
       exec: true
@@ -223,5 +247,6 @@ installPostgresCompat();
 module.exports = {
   PostgresSyncDatabase,
   PostgresSyncStatement,
-  installPostgresCompat
+  installPostgresCompat,
+  stripSqlitePragmas
 };
