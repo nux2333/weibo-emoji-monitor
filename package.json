@@ -6,7 +6,7 @@
     "start": "node -r ./src/postgres-preload.js -r ./src/superlike-pagination-preload.js server.js",
     "dev": "node -r ./src/postgres-preload.js -r ./src/superlike-pagination-preload.js --watch server.js",
     "rebuild-comments": "node -r ./src/postgres-preload.js src/rebuild-comments.js",
-    "recheck-superlike": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/recheck-superlike.js",
+    "recheck-superlike": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js -r ./src/mode2-dynamic-comment-threshold-preload.js scripts/recheck-superlike.js",
     "scan-superlike": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/start-superlike-workers.js",
     "setup-proxies": "node scripts/setup-webshare-proxies.js",
     "test-proxyclean": "node -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/test-proxyclean.js",
