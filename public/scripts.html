@@ -138,9 +138,28 @@ async function loadScripts(){
   }
 }
 
+/*
+ * 启动统一从 ecosystem 重新创建：
+ * 后端在 PM2 中不存在该进程时会执行
+ *   pm2 start ecosystem.batches.config.js --only <name>
+ * 因此页面启动前先 delete，避免复用旧 dump/旧 env/旧 stopped 定义。
+ */
+async function startFromEcosystem(key){
+  try{
+    await api('/api/admin/scripts/'+encodeURIComponent(key)+'/delete',{method:'POST'});
+  }catch(e){
+    /* 未创建时 delete 也可能无事可做；继续 start。 */
+  }
+  await api('/api/admin/scripts/'+encodeURIComponent(key)+'/start',{method:'POST'});
+}
+
 async function act(key,action){
   try{
-    await api('/api/admin/scripts/'+encodeURIComponent(key)+'/'+action,{method:'POST'});
+    if(action==='start'){
+      await startFromEcosystem(key);
+    }else{
+      await api('/api/admin/scripts/'+encodeURIComponent(key)+'/'+action,{method:'POST'});
+    }
     await new Promise(r=>setTimeout(r,700));
     loadScripts();
   }catch(e){
@@ -169,7 +188,7 @@ async function startAll(){
     const j=await api('/api/admin/scripts');
     for(const item of (j.data||[])){
       if(item.status!=='online'&&item.status!=='launching'){
-        await api('/api/admin/scripts/'+encodeURIComponent(item.key)+'/start',{method:'POST'});
+        await startFromEcosystem(item.key);
       }
     }
     setTimeout(loadScripts,1200);
