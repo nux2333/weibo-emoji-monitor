@@ -1,7 +1,8 @@
+const fs = require('fs');
 const path = require('path');
 const readline = require('readline/promises');
 const { stdin: input, stdout: output } = require('process');
-const { chromium } = require('playwright');
+const { chromium, request } = require('playwright');
 const { db, initDatabase } = require('../../src/db');
 
 const ROOT = path.join(__dirname, '..', '..');
@@ -9,11 +10,108 @@ const PROFILE_DIR = process.env.COMMENT_ASSISTANT_PROFILE
   ? path.resolve(process.env.COMMENT_ASSISTANT_PROFILE)
   : path.join(ROOT, 'data', 'comment-assistant-profile');
 
+const GOOD_PROXY_FILE = process.env.WEIBO_GOOD_PROXY_FILE
+  ? path.resolve(process.env.WEIBO_GOOD_PROXY_FILE)
+  : path.join(ROOT, 'data', 'weibo-good-proxies.txt');
+
 const MIN_EXPERIENCE = Number(process.env.COMMENT_MIN_EXPERIENCE || 70);
 const LIMIT = Number(process.env.COMMENT_TARGET_LIMIT || 20);
 const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
 const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '[泪奔][泪奔][泪奔][泪奔][泪奔]';
 const COMMENT_FP = process.env.COMMENT_FP || '';
+
+function normalizeProxy(rawValue) {
+  const raw = String(rawValue || '').split('#')[0].trim();
+  if (!raw) return null;
+  return /^(?:https?|socks5):\/\//i.test(raw) ? raw : `http://${raw}`;
+}
+
+function readGoodProxyPool() {
+  try {
+    if (!fs.existsSync(GOOD_PROXY_FILE)) return [];
+    return Array.from(new Set(
+      fs.readFileSync(GOOD_PROXY_FILE, 'utf8')
+        .split(/\r?\n/)
+        .map(normalizeProxy)
+        .filter(Boolean)
+    ));
+  } catch (error) {
+    console.warn(`[代理池] 读取失败：${error.message}`);
+    return [];
+  }
+}
+
+function toPlaywrightProxy(rawValue) {
+  const normalized = normalizeProxy(rawValue);
+  if (!normalized) return null;
+
+  try {
+    const parsed = new URL(normalized);
+    const proxy = {
+      server: `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`
+    };
+    if (parsed.username) proxy.username = decodeURIComponent(parsed.username);
+    if (parsed.password) proxy.password = decodeURIComponent(parsed.password);
+    return proxy;
+  } catch {
+    return { server: normalized };
+  }
+}
+
+function maskProxy(rawValue) {
+  try {
+    const parsed = new URL(rawValue);
+    return `${parsed.protocol}//${parsed.hostname}${parsed.port ? ':' + parsed.port : ''}`;
+  } catch {
+    return String(rawValue || '').replace(/\/\/[^@]+@/, '//***@');
+  }
+}
+
+function pickRandomHealthyProxy() {
+  const items = readGoodProxyPool();
+  if (!items.length) return null;
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+async function createReadOnlyProxyContext(proxy) {
+  if (!proxy) return null;
+
+  const apiContext = await request.newContext({
+    proxy: toPlaywrightProxy(proxy),
+    ignoreHTTPSErrors: true,
+    userAgent:
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+      + 'AppleWebKit/537.36 (KHTML, like Gecko) '
+      + 'Chrome/152.0.0.0 Safari/537.36',
+    extraHTTPHeaders: {
+      Accept: 'text/html,application/xhtml+xml,application/json,text/plain,*/*'
+    }
+  });
+
+  return apiContext;
+}
+
+async function readPostViaProxy(apiContext, url) {
+  if (!apiContext) return null;
+
+  try {
+    const response = await apiContext.get(url, {
+      timeout: 10000,
+      failOnStatusCode: false
+    });
+
+    return {
+      status: response.status(),
+      ok: response.ok()
+    };
+  } catch (error) {
+    return {
+      status: null,
+      ok: false,
+      error: error.message
+    };
+  }
+}
 
 function getTargets() {
   return db.prepare(`
@@ -38,11 +136,7 @@ function getTargets() {
       post_created_at DESC,
       first_seen_at DESC
     LIMIT ?
-  `).all(
-    MIN_EXPERIENCE,
-    MAX_COMMENTS,
-    LIMIT
-  );
+  `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
 }
 
 async function sendComment(page, postId, commentText) {
@@ -63,7 +157,7 @@ async function sendComment(page, postId, commentText) {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest',
-          'Accept': 'application/json, text/plain, */*'
+          Accept: 'application/json, text/plain, */*'
         },
         body: form.toString()
       });
@@ -123,6 +217,22 @@ async function main() {
     console.log('COMMENT_FP 未设置：先尝试不传 fp；如果微博返回参数错误，再设置抓包里的 fp。');
   }
 
+  const selectedProxy = pickRandomHealthyProxy();
+  let readOnlyProxyContext = null;
+
+  if (selectedProxy) {
+    console.log(`[只读代理] 健康池=${GOOD_PROXY_FILE}`);
+    console.log(`[只读代理] 本轮固定使用：${maskProxy(selectedProxy)}`);
+    try {
+      readOnlyProxyContext = await createReadOnlyProxyContext(selectedProxy);
+    } catch (error) {
+      console.warn(`[只读代理] 创建失败：${error.message}`);
+    }
+  } else {
+    console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
+  }
+
+  // 登录浏览器保持直连。评论 POST 也从这个未配置代理的 context 发出。
   const context = await chromium.launchPersistentContext(PROFILE_DIR, {
     headless: false,
     viewport: { width: 1280, height: 900 }
@@ -143,6 +253,17 @@ async function main() {
       console.log(`Link=${row.post_link}`);
       if (row.post_text) {
         console.log(`文案=${String(row.post_text).replace(/\s+/g, ' ').slice(0, 160)}`);
+      }
+
+      if (readOnlyProxyContext) {
+        const proxyResult = await readPostViaProxy(readOnlyProxyContext, row.post_link);
+        if (proxyResult?.ok) {
+          console.log(`[只读代理] GET ${proxyResult.status} OK`);
+        } else if (proxyResult?.status) {
+          console.log(`[只读代理] GET HTTP ${proxyResult.status}`);
+        } else if (proxyResult?.error) {
+          console.log(`[只读代理] GET失败：${proxyResult.error}`);
+        }
       }
 
       await page.goto(row.post_link, {
@@ -175,6 +296,7 @@ async function main() {
     }
   } finally {
     rl.close();
+    if (readOnlyProxyContext) await readOnlyProxyContext.dispose().catch(() => {});
     await context.close();
   }
 }
