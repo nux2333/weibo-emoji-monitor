@@ -1,0 +1,75 @@
+name: One-shot fix history empty pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/one-shot-fix-history-empty-pages.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch history scanners
+        shell: python
+        run: |
+          from pathlib import Path
+
+          path = Path('src/superlike/monitor-scanner.js')
+          text = path.read_text(encoding='utf-8')
+
+          old = """const HISTORY_OLD_PAGE_THRESHOLD =\n  Math.max(\n    1,\n    Number(\n      process.env.SUPERLIKE_HISTORY_OLD_PAGE_THRESHOLD\n    )\n    || 1\n  );\n"""
+          new = old + """\n/*\n * History 防空扫：最终可处理 Post 连续为 0 时，说明当前 cursor\n * 已进入无有效数据区。单独计数，不再依赖发帖时间是否能解析。\n */\nconst HISTORY_ZERO_POST_THRESHOLD =\n  Math.max(\n    1,\n    Number(\n      process.env.SUPERLIKE_HISTORY_ZERO_POST_THRESHOLD\n    )\n    || 3\n  );\n"""
+          if 'const HISTORY_ZERO_POST_THRESHOLD' not in text:
+              if old not in text:
+                  raise SystemExit('constant anchor not found')
+              text = text.replace(old, new, 1)
+
+          old = """          let historyPage = 0;\n          let consecutiveOldPages = 0;\n\n          while (\n"""
+          new = """          let historyPage = 0;\n          let consecutiveOldPages = 0;\n          let consecutiveZeroPostPages = 0;\n\n          while (\n"""
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif 'let consecutiveZeroPostPages = 0;' not in text:
+              raise SystemExit('tag history counter anchor not found')
+
+          old = """            if (ageState.fullyOlder) {\n              consecutiveOldPages++;\n            } else {\n              consecutiveOldPages = 0;\n            }\n\n            if (\n              consecutiveOldPages\n              >= HISTORY_OLD_PAGE_THRESHOLD\n            ) {\n"""
+          new = """            if (Number(pageStats.found || 0) === 0) {\n              consecutiveZeroPostPages++;\n\n              console.log(\n                `[SuperLike][分区历史空页] ${source.name} page=${params.page ?? '-'} | Post=0 | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD}`\n              );\n            } else {\n              consecutiveZeroPostPages = 0;\n            }\n\n            if (\n              consecutiveZeroPostPages\n              >= HISTORY_ZERO_POST_THRESHOLD\n            ) {\n              clearScanSourceResume(\n                monitor.id,\n                source.key\n              );\n\n              console.log(\n                `[SuperLike][分区历史空扫停止] ${source.name} 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，清除Resume并停止该分区历史扫描。`\n              );\n\n              break;\n            }\n\n            if (ageState.fullyOlder) {\n              consecutiveOldPages++;\n            } else {\n              consecutiveOldPages = 0;\n            }\n\n            if (\n              consecutiveOldPages\n              >= HISTORY_OLD_PAGE_THRESHOLD\n            ) {\n"""
+          if '[SuperLike][分区历史空扫停止]' not in text:
+              if old not in text:
+                  raise SystemExit('tag history stop anchor not found')
+              text = text.replace(old, new, 1)
+
+          old = """      let consecutiveOldPages = 0;\n\n      console.log(\n"""
+          new = """      let consecutiveOldPages = 0;\n      let consecutiveZeroPostPages = 0;\n\n      console.log(\n"""
+          if old in text:
+              text = text.replace(old, new, 1)
+          elif text.count('let consecutiveZeroPostPages = 0;') < 2:
+              raise SystemExit('latest history counter anchor not found')
+
+          old = """        if (ageState.fullyOlder) {\n          consecutiveOldPages++;\n\n          console.log(\n            `[SuperLike][History][昨日00:00边界] page=${params.page} 整页早于昨日00:00之后/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`\n          );\n        } else {\n"""
+          new = """        if (Number(pageStats.found || 0) === 0) {\n          consecutiveZeroPostPages++;\n\n          console.log(\n            `[SuperLike][History][空页] page=${params.page} | Post=0 | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD}`\n          );\n        } else {\n          if (consecutiveZeroPostPages > 0) {\n            console.log(\n              `[SuperLike][History][空页] page=${params.page} 恢复有效Post；连续空页 ${consecutiveZeroPostPages} -> 0`\n            );\n          }\n\n          consecutiveZeroPostPages = 0;\n        }\n\n        if (\n          consecutiveZeroPostPages\n          >= HISTORY_ZERO_POST_THRESHOLD\n        ) {\n          clearScanResume(\n            monitor.id\n          );\n\n          console.log(\n            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，清除 latest-posts Resume 并结束 History。`\n          );\n\n          break;\n        }\n\n        if (ageState.fullyOlder) {\n          consecutiveOldPages++;\n\n          console.log(\n            `[SuperLike][History][昨日00:00边界] page=${params.page} 整页早于昨日00:00之后/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`\n          );\n        } else {\n"""
+          if '[SuperLike][History][空扫停止]' not in text:
+              if old not in text:
+                  raise SystemExit('latest history stop anchor not found')
+              text = text.replace(old, new, 1)
+
+          path.write_text(text, encoding='utf-8')
+      - name: Commit patch and remove one-shot workflow
+        shell: bash
+        run: |
+          rm -f .github/workflows/one-shot-fix-history-empty-pages.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/superlike/monitor-scanner.js .github/workflows/one-shot-fix-history-empty-pages.yml
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+            exit 0
+          fi
+          git commit -m "fix: stop history after consecutive empty pages"
+          git push origin HEAD:main
