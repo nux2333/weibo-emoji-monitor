@@ -7,7 +7,12 @@ module.exports = {
       script: 'server.js',
       cwd: __dirname,
       interpreter: process.execPath,
+      env: {
+        SKIP_DB_INIT: '1'
+      },
       node_args: [
+        '--require',
+        path.join(__dirname, 'src', 'skip-db-init-preload.js'),
         '--require',
         path.join(__dirname, 'src', 'postgres-preload.js'),
         '--require',
