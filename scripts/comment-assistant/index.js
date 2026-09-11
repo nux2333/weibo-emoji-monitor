@@ -18,13 +18,19 @@ const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
 const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '[泪奔][泪奔][泪奔][泪奔][泪奔]';
 const COMMENT_FP = process.env.COMMENT_FP || '';
 
-function getShanghaiToday() {
+function formatShanghaiDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'
-  }).format(new Date());
+  }).format(date);
+}
+
+function getShanghaiToday() {
+  return formatShanghaiDate(new Date());
 }
 
 function normalizeProxy(rawValue) {
@@ -49,9 +55,9 @@ async function readPostViaProxy(apiContext, url) { if (!apiContext) return null;
 
 function getTargets() {
   const shanghaiToday = getShanghaiToday();
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT post_id, uid, username, post_link, post_text, experience_7d,
-           comments_count, initial_comments_count, post_created_at
+           comments_count, initial_comments_count, post_created_at, first_seen_at
     FROM superlike_posts
     WHERE COALESCE(current_has_superlike, 0) = 0
       AND experience_7d IS NOT NULL
@@ -60,10 +66,19 @@ function getTargets() {
       AND post_link IS NOT NULL
       AND TRIM(post_link) <> ''
       AND post_created_at IS NOT NULL
-      AND SUBSTR(TRIM(post_created_at), 1, 10) = ?
-    ORDER BY experience_7d DESC, post_created_at DESC, first_seen_at DESC
-    LIMIT ?
-  `).all(MIN_EXPERIENCE, MAX_COMMENTS, shanghaiToday, LIMIT);
+    ORDER BY experience_7d DESC, first_seen_at DESC
+  `).all(MIN_EXPERIENCE, MAX_COMMENTS);
+
+  const todayRows = rows.filter(row => formatShanghaiDate(row.post_created_at) === shanghaiToday);
+  todayRows.sort((a, b) => {
+    const experienceDiff = Number(b.experience_7d || 0) - Number(a.experience_7d || 0);
+    if (experienceDiff !== 0) return experienceDiff;
+    const postDiff = new Date(b.post_created_at).getTime() - new Date(a.post_created_at).getTime();
+    if (Number.isFinite(postDiff) && postDiff !== 0) return postDiff;
+    return new Date(b.first_seen_at || 0).getTime() - new Date(a.first_seen_at || 0).getTime();
+  });
+
+  return todayRows.slice(0, LIMIT);
 }
 
 async function getCurrentCommentCountFromApi(page, postId, uid) {
