@@ -216,6 +216,13 @@ function translateDateTime(sql) {
     "to_char(($1)::timestamp + INTERVAL '8 hours', 'YYYY-MM-DD')"
   );
 
+  // SQLite: date(datetime(column))
+  // 必须先于普通 datetime(column) 翻译，避免变成 date(to_char(...)) -> DATE = TEXT。
+  s = s.replace(
+    /date\(\s*datetime\(\s*([A-Za-z_][A-Za-z0-9_.]*)\s*\)\s*\)/gi,
+    "to_char(($1)::timestamp, 'YYYY-MM-DD')"
+  );
+
   // SQLite: datetime('now','+8 hours','start of day','-N day')
   s = s.replace(
     /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'start of day'\s*,\s*'-(\d+)\s+days?'\s*\)/gi,
