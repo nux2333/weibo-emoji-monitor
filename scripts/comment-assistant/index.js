@@ -121,6 +121,7 @@ function getTargets() {
       post_text,
       experience_7d,
       comments_count,
+      initial_comments_count,
       post_created_at
     FROM superlike_posts
     WHERE COALESCE(current_has_superlike, 0) = 0
@@ -135,6 +136,57 @@ function getTargets() {
       first_seen_at DESC
     LIMIT ?
   `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
+}
+
+async function getCurrentCommentCount(page) {
+  return page.evaluate(() => {
+    function parseCount(raw) {
+      const text = String(raw || '').replace(/,/g, '').trim();
+      if (!text) return null;
+
+      const patterns = [
+        /评论\s*[（(]?\s*(\d+)\s*[）)]?/i,
+        /共\s*(\d+)\s*条?评论/i,
+        /(\d+)\s*条?评论/i
+      ];
+
+      for (const pattern of patterns) {
+        const match = text.match(pattern);
+        if (match) return Number(match[1]);
+      }
+
+      return null;
+    }
+
+    const preferredSelectors = [
+      '[aria-label*="评论"]',
+      '[title*="评论"]',
+      'button',
+      'a',
+      '[role="button"]'
+    ];
+
+    for (const selector of preferredSelectors) {
+      const nodes = Array.from(document.querySelectorAll(selector));
+      for (const node of nodes) {
+        const candidates = [
+          node.getAttribute && node.getAttribute('aria-label'),
+          node.getAttribute && node.getAttribute('title'),
+          node.textContent
+        ];
+
+        for (const candidate of candidates) {
+          const count = parseCount(candidate);
+          if (Number.isFinite(count)) {
+            return count;
+          }
+        }
+      }
+    }
+
+    const bodyText = document.body ? document.body.innerText : '';
+    return parseCount(bodyText);
+  }).catch(() => null);
 }
 
 async function getCsrfToken(page, context) {
@@ -323,7 +375,7 @@ async function main() {
       const row = targets[i];
 
       console.log('\n==============================================');
-      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 评论=${row.comments_count}`);
+      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'}`);
       console.log(`UID=${row.uid || '-'} | ${row.username || '-'}`);
       console.log(`Post=${row.post_id}`);
       console.log(`Link=${row.post_link}`);
@@ -349,7 +401,14 @@ async function main() {
         console.warn(`打开失败：${error.message}`);
       });
 
-      await page.waitForTimeout(1200);
+      await page.waitForTimeout(1500);
+
+      const currentComments = await getCurrentCommentCount(page);
+      console.log(
+        Number.isFinite(currentComments)
+          ? `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${currentComments}`
+          : `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=未获取到`
+      );
 
       const csrf = await getCsrfToken(page, context);
       console.log(
