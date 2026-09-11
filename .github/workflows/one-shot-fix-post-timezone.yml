@@ -1,0 +1,48 @@
+name: One shot fix post timezone
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/one-shot-fix-post-timezone.yml'
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix post_created_at timezone parsing
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('public/superlike.js')
+          s = p.read_text(encoding='utf-8')
+
+          old = """  let date =\n    new Date(\n      value\n    );\n\n\n  /*\n   * 如果未来数据库保存成：\n   * YYYY-MM-DD HH:mm:ss\n   * 则按北京时间理解。\n   */\n  if (\n    Number.isNaN(\n      date.getTime()\n    )\n    &&\n    /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(\n      String(value)\n    )\n  ) {\n    date =\n      new Date(\n        String(value)\n          .replace(\n            ' ',\n            'T'\n          )\n        +\n        '+08:00'\n      );\n  }\n"""
+          new = """  const valueText =\n    String(value);\n\n  const sqliteChinaTime =\n    /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(\n      valueText\n    );\n\n  let date =\n    sqliteChinaTime\n      ? new Date(\n          valueText.replace(\n            ' ',\n            'T'\n          ) + '+08:00'\n        )\n      : new Date(\n          valueText\n        );\n"""
+          if old not in s:
+              raise SystemExit('formatPostTime anchor not found')
+          s = s.replace(old, new, 1)
+
+          old2 = """  let date =\n    new Date(\n      value\n    );\n\n  if (\n    Number.isNaN(\n      date.getTime()\n    )\n    &&\n    /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(\n      String(value)\n    )\n  ) {\n    date =\n      new Date(\n        String(value)\n          .replace(\n            ' ',\n            'T'\n          )\n        +\n        '+08:00'\n      );\n  }\n"""
+          new2 = """  const valueText =\n    String(value);\n\n  const sqliteChinaTime =\n    /^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(\n      valueText\n    );\n\n  const date =\n    sqliteChinaTime\n      ? new Date(\n          valueText.replace(\n            ' ',\n            'T'\n          ) + '+08:00'\n        )\n      : new Date(\n          valueText\n        );\n"""
+          if old2 not in s:
+              raise SystemExit('parseSortableTime anchor not found')
+          s = s.replace(old2, new2, 1)
+
+          p.write_text(s, encoding='utf-8')
+          PY
+      - name: Commit changes
+        shell: bash
+        run: |
+          if git diff --quiet -- public/superlike.js; then
+            echo 'No changes'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add public/superlike.js
+          git commit -m 'fix: parse DB post time as China time'
+          git push
