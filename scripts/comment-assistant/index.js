@@ -6,9 +6,21 @@ const { chromium, request } = require('playwright');
 const { db, initDatabase } = require('../../src/db');
 
 const ROOT = path.join(__dirname, '..', '..');
+const ACCOUNT = String(process.env.COMMENT_ACCOUNT || 'default')
+  .trim()
+  .replace(/[^a-zA-Z0-9_-]/g, '_') || 'default';
+const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
+const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
+const DEFAULT_ACCOUNT_PROFILE = path.join(PROFILE_ROOT, ACCOUNT);
 const PROFILE_DIR = process.env.COMMENT_ASSISTANT_PROFILE
   ? path.resolve(process.env.COMMENT_ASSISTANT_PROFILE)
-  : path.join(ROOT, 'data', 'comment-assistant-profile');
+  : (
+      ACCOUNT === 'default'
+      && fs.existsSync(LEGACY_PROFILE_DIR)
+      && !fs.existsSync(DEFAULT_ACCOUNT_PROFILE)
+        ? LEGACY_PROFILE_DIR
+        : DEFAULT_ACCOUNT_PROFILE
+    );
 const GOOD_PROXY_FILE = process.env.WEIBO_GOOD_PROXY_FILE
   ? path.resolve(process.env.WEIBO_GOOD_PROXY_FILE)
   : path.join(ROOT, 'data', 'weibo-good-proxies.txt');
@@ -17,6 +29,8 @@ const LIMIT = Number(process.env.COMMENT_TARGET_LIMIT || 20);
 const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
 const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '法国人是世界上最严肃的人类因为他们见面就会互相说一句绷住';
 const COMMENT_FP = process.env.COMMENT_FP || '';
+
+fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
 function formatShanghaiDate(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -96,11 +110,13 @@ async function hasWeiboLogin(context) {
 async function ensureLoggedIn() {
   let context = await launchBrowser(true);
   if (await hasWeiboLogin(context)) {
+    console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
     console.log('[登录] 已检测到有效登录信息，Chrome 后台运行。');
     return context;
   }
 
   await context.close();
+  console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
   console.log('[登录] 未检测到登录信息，正在打开 Chrome，请手动登录微博。');
   context = await launchBrowser(false);
   const page = context.pages()[0] || await context.newPage();
