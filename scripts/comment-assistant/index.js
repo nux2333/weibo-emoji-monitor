@@ -138,7 +138,62 @@ function getTargets() {
   `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
 }
 
-async function getCurrentCommentCount(page) {
+async function getCurrentCommentCountFromApi(page, postId, uid) {
+  return page.evaluate(
+    async ({ postId, uid }) => {
+      const url = new URL('/ajax/statuses/buildComments', location.origin);
+      url.searchParams.set('is_reload', '1');
+      url.searchParams.set('id', String(postId));
+      url.searchParams.set('is_show_bulletin', '3');
+      url.searchParams.set('is_mix', '0');
+      url.searchParams.set('count', '10');
+      url.searchParams.set('uid', String(uid || ''));
+      url.searchParams.set('fetch_level', '0');
+      url.searchParams.set('locale', 'zh-CN');
+
+      try {
+        const response = await fetch(url.toString(), {
+          method: 'GET',
+          credentials: 'include',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest'
+          }
+        });
+
+        const text = await response.text();
+        let json = null;
+        try {
+          json = JSON.parse(text);
+        } catch {
+          // Keep raw response for diagnostics.
+        }
+
+        const total = Number(json?.total_number);
+        return {
+          ok: response.ok && json?.ok === 1 && Number.isFinite(total),
+          status: response.status,
+          totalNumber: Number.isFinite(total) ? total : null,
+          apiOk: json?.ok ?? null,
+          message: json?.message || json?.msg || '',
+          raw: text.slice(0, 300)
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: null,
+          totalNumber: null,
+          apiOk: null,
+          message: error.message,
+          raw: ''
+        };
+      }
+    },
+    { postId, uid }
+  );
+}
+
+async function getCurrentCommentCountFromDom(page) {
   return page.evaluate(() => {
     function parseCount(raw) {
       const text = String(raw || '').replace(/,/g, '').trim();
@@ -177,9 +232,7 @@ async function getCurrentCommentCount(page) {
 
         for (const candidate of candidates) {
           const count = parseCount(candidate);
-          if (Number.isFinite(count)) {
-            return count;
-          }
+          if (Number.isFinite(count)) return count;
         }
       }
     }
@@ -187,6 +240,25 @@ async function getCurrentCommentCount(page) {
     const bodyText = document.body ? document.body.innerText : '';
     return parseCount(bodyText);
   }).catch(() => null);
+}
+
+async function getCurrentCommentCount(page, postId, uid) {
+  const apiResult = await getCurrentCommentCountFromApi(page, postId, uid);
+
+  if (apiResult?.ok && Number.isFinite(apiResult.totalNumber)) {
+    return {
+      count: apiResult.totalNumber,
+      source: 'buildComments',
+      apiResult
+    };
+  }
+
+  const domCount = await getCurrentCommentCountFromDom(page);
+  return {
+    count: Number.isFinite(domCount) ? domCount : null,
+    source: Number.isFinite(domCount) ? 'DOM回退' : null,
+    apiResult
+  };
 }
 
 async function getCsrfToken(page, context) {
@@ -401,14 +473,22 @@ async function main() {
         console.warn(`打开失败：${error.message}`);
       });
 
-      await page.waitForTimeout(1500);
+      await page.waitForTimeout(1200);
 
-      const currentComments = await getCurrentCommentCount(page);
-      console.log(
-        Number.isFinite(currentComments)
-          ? `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${currentComments}`
-          : `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=未获取到`
-      );
+      const currentCommentResult = await getCurrentCommentCount(page, row.post_id, row.uid);
+      if (Number.isFinite(currentCommentResult.count)) {
+        console.log(
+          `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${currentCommentResult.count} | 来源=${currentCommentResult.source}`
+        );
+      } else {
+        const api = currentCommentResult.apiResult;
+        const detail = api
+          ? `HTTP=${api.status ?? '-'} | ok=${api.apiOk ?? '-'} | ${api.message || '无返回消息'}`
+          : 'buildComments 未返回结果';
+        console.log(
+          `[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=未获取到 | ${detail}`
+        );
+      }
 
       const csrf = await getCsrfToken(page, context);
       console.log(
