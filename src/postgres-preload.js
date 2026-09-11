@@ -108,6 +108,15 @@ class PostgresSyncDatabase {
     this.worker = new Worker(
       path.join(__dirname, 'postgres-sync-worker.js'),
       {
+        /*
+         * Worker 默认会继承父进程的 process.execArgv。
+         * PM2 当前通过 --require 预加载 postgres-preload / 分页 preload / DB 启动保护；
+         * 如果 Worker 继续继承，会在 Worker 内再次执行整套 preload，导致递归加载、
+         * 重复创建 DatabaseSync bridge，甚至触发内存暴涨/进程反复重启。
+         *
+         * postgres-sync-worker.js 自己只需要 pg.Client，不需要任何 preload。
+         */
+        execArgv: [],
         env: {
           ...process.env,
           DATABASE_URL: process.env.DATABASE_URL
