@@ -22,11 +22,7 @@ function getProfiles() {
   const profiles = [];
 
   if (fs.existsSync(LEGACY_PROFILE_DIR) && hasProfileData(LEGACY_PROFILE_DIR)) {
-    profiles.push({
-      name: 'default',
-      dir: LEGACY_PROFILE_DIR,
-      legacy: true
-    });
+    profiles.push({ name: 'default', dir: LEGACY_PROFILE_DIR, legacy: true });
   }
 
   if (fs.existsSync(PROFILE_ROOT)) {
@@ -48,7 +44,6 @@ function getProfiles() {
 function printProfiles(profiles) {
   if (!profiles.length) {
     console.log('没有找到已经使用过的评论账号 Profile。');
-    console.log(`Profile目录：${PROFILE_ROOT}`);
     return;
   }
 
@@ -57,7 +52,6 @@ function printProfiles(profiles) {
   profiles.forEach((profile, index) => {
     const legacy = profile.legacy ? ' (旧版默认Profile)' : '';
     console.log(`${index + 1}. ${profile.name}${legacy}`);
-    console.log(`   ${profile.dir}`);
   });
   console.log('----------------------------------------------');
   console.log('启动示例：npm run comment-assistant -- 1');
@@ -71,7 +65,6 @@ function runAssistant(profile) {
   };
 
   console.log(`[账号选择] ID=${profile.id} | ${profile.name}`);
-  console.log(`[账号选择] Profile=${profile.dir}`);
 
   const child = spawn(process.execPath, ['-r', PG_PRELOAD, INDEX_JS], {
     cwd: ROOT,
@@ -99,10 +92,7 @@ function runDefaultAssistant() {
 }
 
 const arg = String(process.argv[2] || '').trim();
-const profiles = getProfiles().map((profile, index) => ({
-  ...profile,
-  id: index + 1
-}));
+const profiles = getProfiles().map((profile, index) => ({ ...profile, id: index + 1 }));
 
 if (/^(list|ls)$/i.test(arg)) {
   printProfiles(profiles);
