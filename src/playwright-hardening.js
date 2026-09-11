@@ -10,6 +10,7 @@
 
 const HARDENED = Symbol.for('weibo.playwright.hardened');
 const ORIGINAL = Symbol.for('weibo.playwright.original');
+const LAST_HARD_TIMEOUT = Symbol.for('weibo.playwright.lastHardTimeout');
 
 const ACTION_TIMEOUT_MS = positiveEnv(
   'PLAYWRIGHT_ACTION_TIMEOUT_MS',
@@ -71,6 +72,42 @@ function isHardTimeoutError(error) {
   return !!error && (
     error.code === 'PLAYWRIGHT_HARD_TIMEOUT'
     || /PLAYWRIGHT_HARD_TIMEOUT/i.test(String(error.message || ''))
+  );
+}
+
+function isClosedTargetError(error) {
+  const message = String(error?.message || error || '');
+  return (
+    /Target page, context or browser has been closed/i.test(message)
+    || /Target closed/i.test(message)
+    || /Browser has been closed/i.test(message)
+    || /Context has been closed/i.test(message)
+    || /Page has been closed/i.test(message)
+  );
+}
+
+function rememberHardTimeout(target, label, timeoutMs) {
+  if (!target) return;
+  try {
+    target[LAST_HARD_TIMEOUT] = {
+      label,
+      timeoutMs,
+      at: Date.now()
+    };
+  } catch {
+    // best effort only
+  }
+}
+
+function normalizeClosedAfterHardTimeout(target, error) {
+  if (!isClosedTargetError(error)) return error;
+
+  const last = target?.[LAST_HARD_TIMEOUT];
+  if (!last) return error;
+
+  return new PlaywrightHardTimeoutError(
+    last.label || 'Playwright operation',
+    last.timeoutMs || 1
   );
 }
 
@@ -177,25 +214,55 @@ function hardenPage(page) {
     const hardMs = Number.isFinite(requested) && requested > 0
       ? Math.min(GOTO_HARD_TIMEOUT_MS, requested + 5000)
       : GOTO_HARD_TIMEOUT_MS;
+    const label = `page.goto ${String(args[0] || '').slice(0, 160)}`;
 
     return withHardTimeout(
       () => original(...args),
       hardMs,
-      `page.goto ${String(args[0] || '').slice(0, 160)}`,
-      () => originalClose?.({ runBeforeUnload: false })
+      label,
+      () => {
+        rememberHardTimeout(page, label, hardMs);
+        return originalClose?.({ runBeforeUnload: false });
+      }
     );
   });
 
   for (const methodName of ['evaluate', 'evaluateHandle']) {
-    wrapMethod(page, methodName, original => async (...args) =>
-      withHardTimeout(
-        () => original(...args),
-        EVALUATE_HARD_TIMEOUT_MS,
-        `page.${methodName}`,
-        () => originalClose?.({ runBeforeUnload: false })
-      )
-    );
+    wrapMethod(page, methodName, original => async (...args) => {
+      const label = `page.${methodName}`;
+
+      try {
+        return await withHardTimeout(
+          () => original(...args),
+          EVALUATE_HARD_TIMEOUT_MS,
+          label,
+          () => {
+            rememberHardTimeout(page, label, EVALUATE_HARD_TIMEOUT_MS);
+            return originalClose?.({ runBeforeUnload: false });
+          }
+        );
+      } catch (error) {
+        throw normalizeClosedAfterHardTimeout(page, error);
+      }
+    });
   }
+
+  /*
+   * page.goto/evaluate 的硬超时会主动关闭 Page。业务代码有时会 catch 掉
+   * 第一个 timeout，随后继续 waitForTimeout；Playwright 此时只会抛
+   * "Target page, context or browser has been closed"，导致原始 ERR_TIMED_OUT
+   * 信息丢失，业务层无法识别为可重试网络错误。
+   *
+   * 这里把这种“硬超时后的二次 closed 错误”恢复成
+   * PlaywrightHardTimeoutError，使所有 Batch 都能继续沿用现有重试逻辑。
+   */
+  wrapMethod(page, 'waitForTimeout', original => async (...args) => {
+    try {
+      return await original(...args);
+    } catch (error) {
+      throw normalizeClosedAfterHardTimeout(page, error);
+    }
+  });
 
   if (originalClose) {
     wrapMethod(page, 'close', original => async (...args) =>
