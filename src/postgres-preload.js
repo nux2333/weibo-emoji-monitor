@@ -68,7 +68,11 @@ function stripSqlitePragmas(sql) {
  * “字段 +8 hours”降级为普通 date()/datetime()，保证所有 server / batch /
  * scanner / recheck 脚本即使还有旧 SQL，也不会把这三个字段二次加 8 小时。
  *
- * 注意：本规则只处理字段本身，不改 date('now', '+8 hours') 之类业务日期逻辑。
+ * 同时，只要这条 SQL 涉及这三个字段之一，配套的
+ * date('now', '+8 hours') / datetime('now', '+8 hours') 也去掉 +8。
+ * 这样诸如：
+ *   date(first_seen_at) = date('now', '+8 hours')
+ * 不会再把比较基准额外偏移 8 小时。
  */
 function stripStoredTimestampPlus8(sql) {
   const source = String(sql || '');
@@ -92,6 +96,36 @@ function stripStoredTimestampPlus8(sql) {
     ),
     'date($1)'
   );
+
+  const touchesStoredTimestamp =
+    /\b(?:post_created_at|first_seen_at|inserted_at)\b/i.test(result);
+
+  if (touchesStoredTimestamp) {
+    result = result.replace(
+      /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*\)/gi,
+      "datetime('now')"
+    );
+
+    result = result.replace(
+      /date\(\s*'now'\s*,\s*'\+8 hours'\s*\)/gi,
+      "date('now')"
+    );
+
+    result = result.replace(
+      /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'(-?\d+)\s+days?'\s*\)/gi,
+      "datetime('now', '$1 days')"
+    );
+
+    result = result.replace(
+      /date\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'(-?\d+)\s+days?'\s*\)/gi,
+      "date('now', '$1 days')"
+    );
+
+    result = result.replace(
+      /datetime\(\s*'now'\s*,\s*'\+8 hours'\s*,\s*'start of day'\s*,\s*'(-?\d+)\s+days?'\s*\)/gi,
+      "datetime('now', 'start of day', '$1 days')"
+    );
+  }
 
   return result;
 }
