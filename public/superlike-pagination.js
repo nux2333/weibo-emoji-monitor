@@ -1,3 +1,49 @@
+/*
+ * post_created_at 现在统一按北京时间字符串保存：YYYY-MM-DD HH:mm:ss。
+ * 页面绝不能再 new Date()/toLocaleString() 做时区换算。
+ * 数据库是什么时间，这里就显示什么时间。
+ */
+formatPostTime = function formatStoredPostTime(value) {
+  if (!value) {
+    return '-';
+  }
+
+  const text = String(value).trim();
+  const match = text.match(
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}:\d{2}:\d{2})$/
+  );
+
+  if (!match) {
+    return text;
+  }
+
+  const [, year, month, day, time] = match;
+  return `${year}/${Number(month)}/${Number(day)} ${time}`;
+};
+
+/*
+ * 客户端旧排序兼容：标准北京时间字符串直接转数字比较，
+ * 不经过 Date，因此不会受浏览器所在时区影响。
+ * 当前分页模式主要由后端排序，这里只是保留兼容。
+ */
+parseSortableTime = function parseStoredPostTime(value) {
+  if (!value) {
+    return 0;
+  }
+
+  const text = String(value).trim();
+  const match = text.match(
+    /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2}):(\d{2})$/
+  );
+
+  if (!match) {
+    return 0;
+  }
+
+  const [, year, month, day, hour, minute, second] = match;
+  return Number(`${year}${month}${day}${hour}${minute}${second}`);
+};
+
 let serverPaginationState = {
   page: 1,
   pageSize,
