@@ -55,6 +55,47 @@ function stripSqlitePragmas(sql) {
     .join(';\n');
 }
 
+/*
+ * post_created_at / first_seen_at / inserted_at 现在都按数据库中的现值使用。
+ *
+ * 历史 SQLite 代码里仍可能残留：
+ *   datetime(first_seen_at, '+8 hours')
+ *   date(sp.first_seen_at, '+8 hours')
+ *   datetime(inserted_at, '+8 hours')
+ *   datetime(post_created_at, '+8 hours')
+ *
+ * 这些字段不允许再做 +8 小时转换。统一在进入 PostgreSQL Worker 前把
+ * “字段 +8 hours”降级为普通 date()/datetime()，保证所有 server / batch /
+ * scanner / recheck 脚本即使还有旧 SQL，也不会把这三个字段二次加 8 小时。
+ *
+ * 注意：本规则只处理字段本身，不改 date('now', '+8 hours') 之类业务日期逻辑。
+ */
+function stripStoredTimestampPlus8(sql) {
+  const source = String(sql || '');
+  const field =
+    '((?:[A-Za-z_][A-Za-z0-9_]*\\.)?(?:post_created_at|first_seen_at|inserted_at))';
+
+  let result = source;
+
+  result = result.replace(
+    new RegExp(
+      `datetime\\(\\s*${field}\\s*,\\s*'\\+8 hours'\\s*\\)`,
+      'gi'
+    ),
+    'datetime($1)'
+  );
+
+  result = result.replace(
+    new RegExp(
+      `date\\(\\s*${field}\\s*,\\s*'\\+8 hours'\\s*\\)`,
+      'gi'
+    ),
+    'date($1)'
+  );
+
+  return result;
+}
+
 class PostgresSyncStatement {
   constructor(database, sql) {
     this.database = database;
@@ -181,11 +222,16 @@ class PostgresSyncDatabase {
   _request(payload) {
     this._assertOpen();
 
+    const normalizedPayload = {
+      ...payload,
+      sql: stripStoredTimestampPlus8(payload.sql)
+    };
+
     const sharedBuffer = new SharedArrayBuffer(16 + MAX_RESPONSE_BYTES);
     const control = new Int32Array(sharedBuffer, 0, 4);
 
     this.worker.postMessage({
-      ...payload,
+      ...normalizedPayload,
       sharedBuffer
     });
 
@@ -199,7 +245,7 @@ class PostgresSyncDatabase {
     if (waitResult === 'timed-out') {
       throw new Error(
         `POSTGRES_SYNC_TIMEOUT: SQL 调用超过 ${CALL_TIMEOUT_MS}ms | ` +
-        String(payload.sql || '').replace(/\s+/g, ' ').slice(0, 180)
+        String(normalizedPayload.sql || '').replace(/\s+/g, ' ').slice(0, 180)
       );
     }
 
@@ -257,5 +303,6 @@ module.exports = {
   PostgresSyncDatabase,
   PostgresSyncStatement,
   installPostgresCompat,
-  stripSqlitePragmas
+  stripSqlitePragmas,
+  stripStoredTimestampPlus8
 };
