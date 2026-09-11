@@ -1672,7 +1672,7 @@ function saveScanResume(
     || !sortTimeFlowId
     || !templateUrl
     || !nextParams
-    || Number(nextParams.page) < 2
+    || Number(nextParams.page) < 1
   ) {
     return false;
   }

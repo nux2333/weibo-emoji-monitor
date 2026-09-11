@@ -2415,12 +2415,22 @@ async function scanOneSuperLikeMonitor(
           consecutiveZeroPostPages
           >= HISTORY_ZERO_POST_THRESHOLD
         ) {
-          clearScanResume(
-            monitor.id
+          saveScanResume(
+            monitor.id,
+            checkpoint,
+            latestResume.sort_time_flow_id
+            || sortTimeFlowId,
+            latestResume.template_url
+            || sortTimeRequestTemplateUrl,
+            {
+              page: 1,
+              since_id: null,
+              max_id: '0'
+            }
           );
 
           console.log(
-            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，清除 latest-posts Resume 并结束 History。`
+            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，Resume 已重置到 page=1 并清空 cursor，本轮 History 结束。`
           );
 
           break;
