@@ -76,7 +76,7 @@ function pickRandomHealthyProxy() {
 async function createReadOnlyProxyContext(proxy) {
   if (!proxy) return null;
 
-  const apiContext = await request.newContext({
+  return request.newContext({
     proxy: toPlaywrightProxy(proxy),
     ignoreHTTPSErrors: true,
     userAgent:
@@ -87,8 +87,6 @@ async function createReadOnlyProxyContext(proxy) {
       Accept: 'text/html,application/xhtml+xml,application/json,text/plain,*/*'
     }
   });
-
-  return apiContext;
 }
 
 async function readPostViaProxy(apiContext, url) {
@@ -139,9 +137,78 @@ function getTargets() {
   `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
 }
 
-async function sendComment(page, postId, commentText) {
-  return page.evaluate(
-    async ({ postId, commentText, fp }) => {
+async function getCsrfToken(page, context) {
+  const cookieCandidates = [
+    'XSRF-TOKEN',
+    'XSRF_TOKEN',
+    'csrf',
+    'csrf_token',
+    'CSRF-TOKEN',
+    '_csrf'
+  ];
+
+  const cookies = await context.cookies('https://weibo.com');
+  for (const name of cookieCandidates) {
+    const found = cookies.find(cookie => cookie.name === name && cookie.value);
+    if (found) {
+      return {
+        token: decodeURIComponent(found.value),
+        source: `cookie:${name}`
+      };
+    }
+  }
+
+  const fromPage = await page.evaluate(() => {
+    const selectors = [
+      'meta[name="csrf-token"]',
+      'meta[name="csrf_token"]',
+      'meta[name="xsrf-token"]',
+      'meta[name="x-xsrf-token"]'
+    ];
+
+    for (const selector of selectors) {
+      const el = document.querySelector(selector);
+      const value = el && el.getAttribute('content');
+      if (value) {
+        return {
+          token: value,
+          source: `meta:${selector}`
+        };
+      }
+    }
+
+    const globals = [
+      ['window.$CONFIG.csrf', window.$CONFIG && window.$CONFIG.csrf],
+      ['window.$CONFIG.csrf_token', window.$CONFIG && window.$CONFIG.csrf_token],
+      ['window.__INITIAL_STATE__.csrf', window.__INITIAL_STATE__ && window.__INITIAL_STATE__.csrf],
+      ['window.__INITIAL_STATE__.csrfToken', window.__INITIAL_STATE__ && window.__INITIAL_STATE__.csrfToken]
+    ];
+
+    for (const [source, value] of globals) {
+      if (value) return { token: String(value), source };
+    }
+
+    return null;
+  }).catch(() => null);
+
+  return fromPage;
+}
+
+async function sendComment(page, context, postId, commentText) {
+  const csrf = await getCsrfToken(page, context);
+
+  if (!csrf?.token) {
+    return {
+      ok: false,
+      status: 0,
+      json: null,
+      text: 'CSRF token not found',
+      csrfSource: null
+    };
+  }
+
+  const result = await page.evaluate(
+    async ({ postId, commentText, fp, csrfToken }) => {
       const form = new URLSearchParams();
       form.set('id', String(postId));
       form.set('comment', commentText);
@@ -157,6 +224,8 @@ async function sendComment(page, postId, commentText) {
         headers: {
           'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
           'X-Requested-With': 'XMLHttpRequest',
+          'X-XSRF-TOKEN': csrfToken,
+          'X-CSRF-TOKEN': csrfToken,
           Accept: 'application/json, text/plain, */*'
         },
         body: form.toString()
@@ -180,9 +249,15 @@ async function sendComment(page, postId, commentText) {
     {
       postId,
       commentText,
-      fp: COMMENT_FP
+      fp: COMMENT_FP,
+      csrfToken: csrf.token
     }
   );
+
+  return {
+    ...result,
+    csrfSource: csrf.source
+  };
 }
 
 function summarizeResult(result) {
@@ -195,7 +270,8 @@ function summarizeResult(result) {
   return [
     `HTTP ${result.status}`,
     code !== '' ? `code=${code}` : '',
-    message ? `msg=${message}` : ''
+    message ? `msg=${message}` : '',
+    result.csrfSource ? `csrf=${result.csrfSource}` : ''
   ].filter(Boolean).join(' | ');
 }
 
@@ -275,6 +351,13 @@ async function main() {
 
       await page.waitForTimeout(1200);
 
+      const csrf = await getCsrfToken(page, context);
+      console.log(
+        csrf?.token
+          ? `[CSRF] 已找到：${csrf.source}`
+          : '[CSRF] 未找到 token'
+      );
+
       const answer = (await rl.question(
         `发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`
       )).trim().toLowerCase();
@@ -283,7 +366,7 @@ async function main() {
       if (answer !== 'y') continue;
 
       try {
-        const result = await sendComment(page, row.post_id, DEFAULT_COMMENT);
+        const result = await sendComment(page, context, row.post_id, DEFAULT_COMMENT);
         console.log(`[评论结果] ${summarizeResult(result)}`);
 
         if (!result.ok || (result.json && result.json.ok === 0)) {
