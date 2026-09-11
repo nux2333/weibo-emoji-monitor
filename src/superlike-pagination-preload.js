@@ -12,54 +12,10 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const SUPERLIKE_JS = path.join(PUBLIC_DIR, 'superlike.js');
 const PAGINATION_OVERRIDE_JS = path.join(PUBLIC_DIR, 'superlike-pagination.js');
 
-const MONTHS = {
-  Jan: '01', Feb: '02', Mar: '03', Apr: '04',
-  May: '05', Jun: '06', Jul: '07', Aug: '08',
-  Sep: '09', Oct: '10', Nov: '11', Dec: '12'
-};
-
 /*
- * post_created_at 已经按北京时间保存。
- * 这里绝不做 +8 hours、UTC 转换或 SQL date/datetime 解析。
- * 只从“已经保存的字符串”中读取年月日/时分秒。
- */
-function parseStoredBeijingPostTime(value) {
-  const text = String(value || '').trim();
-  if (!text) return null;
-
-  let m = text.match(
-    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
-  );
-
-  if (m) {
-    const [, year, month, day, hour, minute, second] = m;
-    return {
-      dateKey: `${year}-${month}-${day}`,
-      sortKey: `${year}${month}${day}${hour}${minute}${second}`
-    };
-  }
-
-  m = text.match(
-    /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+[+-]\d{4}\s+(\d{4})$/
-  );
-
-  if (m) {
-    const [, monthName, rawDay, hour, minute, second, year] = m;
-    const month = MONTHS[monthName];
-    const day = String(Number(rawDay)).padStart(2, '0');
-    return {
-      dateKey: `${year}-${month}-${day}`,
-      sortKey: `${year}${month}${day}${hour}${minute}${second}`
-    };
-  }
-
-  return null;
-}
-
-/*
- * “只看当天”不再做任何时区换算。
- * 服务器当前日期是多少，就生成 YYYY-MM-DD；
- * 然后只和数据库 post_created_at 的前 10 位比较。
+ * post_created_at 已经按北京时间文本保存。
+ * 这里不做任何 +8 hours / UTC / timezone 转换，
+ * “当天”只比较数据库文本的 YYYY-MM-DD 前缀。
  */
 function getTodayKeyNoTimezoneConversion() {
   const now = new Date();
@@ -69,84 +25,62 @@ function getTodayKeyNoTimezoneConversion() {
   return `${year}-${month}-${day}`;
 }
 
-function commentsNeededFor80(row) {
-  const exp = Number(row.initial_experience_7d);
-  const comments = Number(row.initial_comments_count || 0);
+/*
+ * 与旧前端/Node 逻辑保持一致，把“还需要多少评论才能到 80 分”直接放到 SQL。
+ * - NULL: 没有初始经验值
+ * - 0: 已经 >= 80
+ * - -1: 即使补到 20 评论也到不了 80
+ */
+const COMMENTS_NEEDED_SQL = `
+  CASE
+    WHEN sp.initial_experience_7d IS NULL THEN NULL
+    WHEN sp.initial_experience_7d >= 80 THEN 0
+    WHEN COALESCE(sp.initial_comments_count, 0) < 5 THEN
+      CASE
+        WHEN sp.initial_experience_7d + 1 >= 80 THEN 5 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 3 >= 80 THEN 10 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 6 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 10 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
+        ELSE -1
+      END
+    WHEN COALESCE(sp.initial_comments_count, 0) < 10 THEN
+      CASE
+        WHEN sp.initial_experience_7d + 2 >= 80 THEN 10 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 5 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 9 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
+        ELSE -1
+      END
+    WHEN COALESCE(sp.initial_comments_count, 0) < 15 THEN
+      CASE
+        WHEN sp.initial_experience_7d + 3 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
+        WHEN sp.initial_experience_7d + 7 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
+        ELSE -1
+      END
+    WHEN COALESCE(sp.initial_comments_count, 0) < 20 THEN
+      CASE
+        WHEN sp.initial_experience_7d + 4 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
+        ELSE -1
+      END
+    ELSE -1
+  END
+`;
 
-  if (row.initial_experience_7d === null || row.initial_experience_7d === undefined) {
-    return null;
+function buildOrderBy(sortKey, direction) {
+  const dir = direction === 'asc' ? 'ASC' : 'DESC';
+
+  if (sortKey === 'post_created_at') {
+    return `post_created_at ${dir} NULLS LAST, id DESC`;
   }
-  if (exp >= 80) return 0;
 
-  if (comments < 5) {
-    if (exp + 1 >= 80) return 5 - comments;
-    if (exp + 3 >= 80) return 10 - comments;
-    if (exp + 6 >= 80) return 15 - comments;
-    if (exp + 10 >= 80) return 20 - comments;
-    return -1;
+  if (sortKey === 'comments_count') {
+    return `comments_count ${dir} NULLS LAST, post_created_at DESC NULLS LAST, id DESC`;
   }
-  if (comments < 10) {
-    if (exp + 2 >= 80) return 10 - comments;
-    if (exp + 5 >= 80) return 15 - comments;
-    if (exp + 9 >= 80) return 20 - comments;
-    return -1;
+
+  if (sortKey === 'comments_needed_for_80') {
+    return `comments_needed_for_80 ${dir} NULLS LAST, post_created_at DESC NULLS LAST, id DESC`;
   }
-  if (comments < 15) {
-    if (exp + 3 >= 80) return 15 - comments;
-    if (exp + 7 >= 80) return 20 - comments;
-    return -1;
-  }
-  if (comments < 20) {
-    if (exp + 4 >= 80) return 20 - comments;
-    return -1;
-  }
-  return -1;
-}
 
-function compareNullableNumber(a, b, direction) {
-  const aMissing = a === null || a === undefined || a === '';
-  const bMissing = b === null || b === undefined || b === '';
-  if (aMissing && bMissing) return 0;
-  if (aMissing) return 1;
-  if (bMissing) return -1;
-
-  const result = Number(a) - Number(b);
-  return direction === 'asc' ? result : -result;
-}
-
-function sortRows(rows, sortKey, direction) {
-  rows.sort((a, b) => {
-    let result = 0;
-
-    if (sortKey === 'post_created_at') {
-      const aKey = parseStoredBeijingPostTime(a.post_created_at)?.sortKey || '';
-      const bKey = parseStoredBeijingPostTime(b.post_created_at)?.sortKey || '';
-      if (!aKey && !bKey) result = 0;
-      else if (!aKey) result = 1;
-      else if (!bKey) result = -1;
-      else result = aKey.localeCompare(bKey);
-      if (direction === 'desc') result = -result;
-    } else if (sortKey === 'comments_count') {
-      result = compareNullableNumber(a.comments_count, b.comments_count, direction);
-    } else if (sortKey === 'comments_needed_for_80') {
-      result = compareNullableNumber(
-        a.comments_needed_for_80,
-        b.comments_needed_for_80,
-        direction
-      );
-    } else {
-      result = compareNullableNumber(a.experience_7d, b.experience_7d, direction);
-    }
-
-    if (result !== 0) return result;
-
-    const aPost = parseStoredBeijingPostTime(a.post_created_at)?.sortKey || '';
-    const bPost = parseStoredBeijingPostTime(b.post_created_at)?.sortKey || '';
-    const postResult = bPost.localeCompare(aPost);
-    if (postResult !== 0) return postResult;
-
-    return Number(b.id || 0) - Number(a.id || 0);
-  });
+  return `experience_7d ${dir} NULLS LAST, post_created_at DESC NULLS LAST, id DESC`;
 }
 
 function superLikePostsHandler(req, res) {
@@ -172,6 +106,7 @@ function superLikePostsHandler(req, res) {
       ? 'asc'
       : 'desc';
 
+    const todayKey = getTodayKeyNoTimezoneConversion();
     const where = [
       'sp.current_has_superlike = 0',
       'sp.comments_count < 22'
@@ -222,71 +157,76 @@ function superLikePostsHandler(req, res) {
       `);
     }
 
-    const whereSql = `WHERE ${where.join(' AND ')}`;
-
-    let rows = db.prepare(`
-      SELECT
-        sp.id,
-        sp.monitor_id,
-        m.name AS monitor_name,
-        sp.post_id,
-        sp.uid,
-        sp.username,
-        sp.post_link,
-        sp.post_text,
-        sp.comments_count,
-        sp.initial_comments_count,
-        sp.current_has_superlike,
-        sp.moved_flag,
-        sp.icon_summary,
-        sp.experience_7d,
-        sp.initial_experience_7d,
-        sp.post_created_at,
-        sp.inserted_at,
-        sp.first_seen_at,
-        sp.last_seen_at,
-        sp.profile_status,
-        CASE
-          WHEN EXISTS (
-            SELECT 1
-            FROM black_fan_users bfu
-            WHERE TRIM(CAST(bfu.uid AS TEXT)) = TRIM(CAST(sp.uid AS TEXT))
-          ) THEN 1
-          ELSE 0
-        END AS black_fan_flg
-      FROM superlike_posts sp
-      LEFT JOIN monitors m ON m.id = sp.monitor_id
-      ${whereSql}
-    `).all(...params);
-
-    rows = rows.map(row => ({
-      ...row,
-      comments_needed_for_80: commentsNeededFor80(row)
-    }));
-
-    const todayKey = getTodayKeyNoTimezoneConversion();
-
     if (todayOnly) {
-      rows = rows.filter(row => {
-        const raw = String(row.post_created_at || '').trim();
-        return raw.slice(0, 10) === todayKey;
-      });
+      where.push(`SUBSTR(TRIM(COALESCE(sp.post_created_at, '')), 1, 10) = ?`);
+      params.push(todayKey);
     }
 
-    sortRows(rows, sortKey, sortDirection);
+    const whereSql = `WHERE ${where.join(' AND ')}`;
 
-    const total = rows.length;
+    /*
+     * 统计单独聚合，不再把所有候选帖子拉回 Node。
+     */
+    const statsRow = db.prepare(`
+      SELECT
+        COUNT(*) AS total,
+        COUNT(DISTINCT NULLIF(TRIM(CAST(sp.uid AS TEXT)), '')) AS user_count,
+        SUM(CASE WHEN sp.experience_7d IS NOT NULL THEN 1 ELSE 0 END) AS experience_known
+      FROM superlike_posts sp
+      ${whereSql}
+    `).get(...params) || {};
+
+    const total = Number(statsRow.total || 0);
+    const userCount = Number(statsRow.user_count || 0);
+    const experienceKnown = Number(statsRow.experience_known || 0);
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(requestedPage, totalPages);
     const offset = (page - 1) * pageSize;
-    const data = rows.slice(offset, offset + pageSize);
+    const orderBy = buildOrderBy(sortKey, sortDirection);
 
-    const userCount = new Set(
-      rows.map(row => String(row.uid || '')).filter(Boolean)
-    ).size;
-    const experienceKnown = rows.filter(
-      row => row.experience_7d !== null && row.experience_7d !== undefined
-    ).length;
+    /*
+     * 真正的 SQL 分页：PostgreSQL 只返回当前页，不再先 all() 全量读取。
+     */
+    const data = db.prepare(`
+      SELECT *
+      FROM (
+        SELECT
+          sp.id,
+          sp.monitor_id,
+          m.name AS monitor_name,
+          sp.post_id,
+          sp.uid,
+          sp.username,
+          sp.post_link,
+          sp.post_text,
+          sp.comments_count,
+          sp.initial_comments_count,
+          sp.current_has_superlike,
+          sp.moved_flag,
+          sp.icon_summary,
+          sp.experience_7d,
+          sp.initial_experience_7d,
+          sp.post_created_at,
+          sp.inserted_at,
+          sp.first_seen_at,
+          sp.last_seen_at,
+          sp.profile_status,
+          CASE
+            WHEN EXISTS (
+              SELECT 1
+              FROM black_fan_users bfu
+              WHERE TRIM(CAST(bfu.uid AS TEXT)) = TRIM(CAST(sp.uid AS TEXT))
+            ) THEN 1
+            ELSE 0
+          END AS black_fan_flg,
+          ${COMMENTS_NEEDED_SQL} AS comments_needed_for_80
+        FROM superlike_posts sp
+        LEFT JOIN monitors m ON m.id = sp.monitor_id
+        ${whereSql}
+      ) paged
+      ORDER BY ${orderBy}
+      LIMIT ? OFFSET ?
+    `).all(...params, pageSize, offset);
 
     const monitors = db.prepare(`
       SELECT id,name
