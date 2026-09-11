@@ -1,12 +1,12 @@
 'use strict';
 
 /*
- * Mode3 SQL 诊断 / 日期保护。
- * 不再修改 recheck-superlike.js 源码文本，避免因格式变化导致启动失败。
- * 直接包装 PostgreSQL DatabaseSync.prepare：
- * - 候选 SQL 中 first_seen_at +8 条件改为 inserted_at / date('now')
- * - 打印实际执行 SQL
- * - 打印逐层过滤数量与最终候选样本
+ * Mode3 日期保护。
+ * post_created_at / first_seen_at / inserted_at 按数据库现值使用，
+ * 不做 +8 hours / timezone 二次换算。
+ *
+ * 这里仅包装候选 SQL，把旧的 first_seen_at 日期条件统一改为
+ * inserted_at / date('now')；不输出 SQL 诊断日志。
  */
 
 if (process.env.SUPERLIKE_RECHECK_MODE === '3') {
@@ -41,116 +41,14 @@ if (process.env.SUPERLIKE_RECHECK_MODE === '3') {
   }
 
   DatabaseSync.prototype.prepare = function mode3Prepare(sql) {
-    const candidate = isMode3CandidateSql(sql);
-    const effectiveSql = candidate
+    const effectiveSql = isMode3CandidateSql(sql)
       ? normalizeMode3CandidateSql(sql)
       : sql;
 
-    const statement = originalPrepare.call(this, effectiveSql);
-
-    if (!candidate) {
-      return statement;
-    }
-
-    const database = this;
-    const originalAll = statement.all.bind(statement);
-
-    statement.all = function mode3CandidateAll(...params) {
-      const monitorId = params[0];
-      const limit = params[1];
-
-      console.log('');
-      console.log('[Mode3 SQL] monitorId=' + monitorId + ' | limit=' + limit);
-      console.log(String(effectiveSql).trim());
-
-      try {
-        const diagnostic = originalPrepare.call(database, `
-          SELECT
-            COUNT(*) AS total_rows,
-            COUNT(*) FILTER (
-              WHERE p.monitor_id = ?
-            ) AS monitor_rows,
-            COUNT(*) FILTER (
-              WHERE p.monitor_id = ?
-                AND p.uid IS NOT NULL
-                AND p.uid <> ''
-            ) AS uid_rows,
-            COUNT(*) FILTER (
-              WHERE p.monitor_id = ?
-                AND p.uid IS NOT NULL
-                AND p.uid <> ''
-                AND date(p.inserted_at) = date('now')
-            ) AS today_rows,
-            COUNT(*) FILTER (
-              WHERE p.monitor_id = ?
-                AND p.uid IS NOT NULL
-                AND p.uid <> ''
-                AND date(p.inserted_at) = date('now')
-                AND p.experience_7d >= 70
-            ) AS today_jyz70_rows,
-            COUNT(DISTINCT CASE
-              WHEN p.monitor_id = ?
-                AND p.uid IS NOT NULL
-                AND p.uid <> ''
-                AND date(p.inserted_at) = date('now')
-                AND p.experience_7d >= 70
-              THEN p.uid
-            END) AS today_jyz70_uids
-          FROM superlike_posts p
-        `).get(
-          monitorId,
-          monitorId,
-          monitorId,
-          monitorId,
-          monitorId
-        );
-
-        const excluded = originalPrepare.call(database, `
-          SELECT
-            COUNT(DISTINCT p.uid) AS excluded_uids
-          FROM superlike_posts p
-          WHERE p.monitor_id = ?
-            AND p.uid IS NOT NULL
-            AND p.uid <> ''
-            AND date(p.inserted_at) = date('now')
-            AND p.experience_7d >= 70
-            AND EXISTS (
-              SELECT 1
-              FROM superlike_users su
-              WHERE su.uid = p.uid
-            )
-        `).get(monitorId);
-
-        console.log(
-          '[Mode3 SQL结果] ' +
-          JSON.stringify({
-            ...diagnostic,
-            ...excluded
-          })
-        );
-      } catch (error) {
-        console.error(
-          '[Mode3 SQL诊断失败] ' +
-          (error?.stack || error)
-        );
-      }
-
-      const rows = originalAll(...params);
-
-      console.log(
-        '[Mode3 候选结果] count=' +
-        rows.length +
-        ' | sample=' +
-        JSON.stringify(rows.slice(0, 10))
-      );
-
-      return rows;
-    };
-
-    return statement;
+    return originalPrepare.call(this, effectiveSql);
   };
 
   console.log(
-    '[Mode3日期保护] 已启用 prepare 包装：inserted_at 无 +8 + SQL诊断'
+    '[Mode3日期保护] inserted_at 按数据库现值判断当天，不做 +8 hours 转换'
   );
 }
