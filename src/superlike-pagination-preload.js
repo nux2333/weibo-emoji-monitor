@@ -1,3 +1,5 @@
+'use strict';
+
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
@@ -10,41 +12,51 @@ const PUBLIC_DIR = path.join(__dirname, '..', 'public');
 const SUPERLIKE_JS = path.join(PUBLIC_DIR, 'superlike.js');
 const PAGINATION_OVERRIDE_JS = path.join(PUBLIC_DIR, 'superlike-pagination.js');
 
-const COMMENTS_NEEDED_EXPR = `
-  CASE
-    WHEN sp.initial_experience_7d IS NULL THEN NULL
-    WHEN sp.initial_experience_7d >= 80 THEN 0
-    WHEN COALESCE(sp.initial_comments_count, 0) < 5 THEN
-      CASE
-        WHEN sp.initial_experience_7d + 1 >= 80 THEN 5 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 3 >= 80 THEN 10 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 6 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 10 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
-        ELSE -1
-      END
-    WHEN COALESCE(sp.initial_comments_count, 0) < 10 THEN
-      CASE
-        WHEN sp.initial_experience_7d + 2 >= 80 THEN 10 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 5 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 9 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
-        ELSE -1
-      END
-    WHEN COALESCE(sp.initial_comments_count, 0) < 15 THEN
-      CASE
-        WHEN sp.initial_experience_7d + 3 >= 80 THEN 15 - COALESCE(sp.initial_comments_count, 0)
-        WHEN sp.initial_experience_7d + 7 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
-        ELSE -1
-      END
-    WHEN COALESCE(sp.initial_comments_count, 0) < 20 THEN
-      CASE
-        WHEN sp.initial_experience_7d + 4 >= 80 THEN 20 - COALESCE(sp.initial_comments_count, 0)
-        ELSE -1
-      END
-    ELSE -1
-  END
-`;
+const MONTHS = {
+  Jan: '01', Feb: '02', Mar: '03', Apr: '04',
+  May: '05', Jun: '06', Jul: '07', Aug: '08',
+  Sep: '09', Oct: '10', Nov: '11', Dec: '12'
+};
 
-function getShanghaiDateParts() {
+/*
+ * post_created_at 已经按北京时间保存。
+ * 这里绝不做 +8 hours、UTC 转换或 SQL date/datetime 解析。
+ * 只从“已经保存的字符串”中读取年月日/时分秒。
+ */
+function parseStoredBeijingPostTime(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+
+  let m = text.match(
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})/
+  );
+
+  if (m) {
+    const [, year, month, day, hour, minute, second] = m;
+    return {
+      dateKey: `${year}-${month}-${day}`,
+      sortKey: `${year}${month}${day}${hour}${minute}${second}`
+    };
+  }
+
+  m = text.match(
+    /^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2})\s+(\d{2}):(\d{2}):(\d{2})\s+[+-]\d{4}\s+(\d{4})$/
+  );
+
+  if (m) {
+    const [, monthName, rawDay, hour, minute, second, year] = m;
+    const month = MONTHS[monthName];
+    const day = String(Number(rawDay)).padStart(2, '0');
+    return {
+      dateKey: `${year}-${month}-${day}`,
+      sortKey: `${year}${month}${day}${hour}${minute}${second}`
+    };
+  }
+
+  return null;
+}
+
+function getBeijingTodayKey() {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Shanghai',
     year: 'numeric',
@@ -58,56 +70,87 @@ function getShanghaiDateParts() {
       .map(part => [part.type, part.value])
   );
 
-  const year = values.year;
-  const month = values.month;
-  const day = values.day;
-  const monthNames = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
-  ];
-
-  return {
-    iso: `${year}-${month}-${day}`,
-    weiboPattern: `% ${monthNames[Number(month) - 1]} ${Number(day)} % ${year}`,
-    weiboPatternZeroPadded: `% ${monthNames[Number(month) - 1]} ${day} % ${year}`
-  };
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
-function getOrderBy(sortKey, sortDirection) {
-  const direction = sortDirection === 'asc' ? 'ASC' : 'DESC';
+function commentsNeededFor80(row) {
+  const exp = Number(row.initial_experience_7d);
+  const comments = Number(row.initial_comments_count || 0);
 
-  switch (sortKey) {
-    case 'post_created_at':
-      return `
-        CASE WHEN sp.post_created_at IS NULL THEN 1 ELSE 0 END ASC,
-        datetime(sp.post_created_at) ${direction},
-        sp.id ${direction}
-      `;
-
-    case 'comments_count':
-      return `
-        COALESCE(sp.comments_count, 0) ${direction},
-        datetime(sp.post_created_at) DESC,
-        sp.id DESC
-      `;
-
-    case 'comments_needed_for_80':
-      return `
-        CASE WHEN (${COMMENTS_NEEDED_EXPR}) IS NULL THEN 1 ELSE 0 END ASC,
-        (${COMMENTS_NEEDED_EXPR}) ${direction},
-        datetime(sp.post_created_at) DESC,
-        sp.id DESC
-      `;
-
-    case 'experience_7d':
-    default:
-      return `
-        CASE WHEN sp.experience_7d IS NULL THEN 1 ELSE 0 END ASC,
-        sp.experience_7d ${direction},
-        datetime(sp.post_created_at) DESC,
-        sp.id DESC
-      `;
+  if (row.initial_experience_7d === null || row.initial_experience_7d === undefined) {
+    return null;
   }
+  if (exp >= 80) return 0;
+
+  if (comments < 5) {
+    if (exp + 1 >= 80) return 5 - comments;
+    if (exp + 3 >= 80) return 10 - comments;
+    if (exp + 6 >= 80) return 15 - comments;
+    if (exp + 10 >= 80) return 20 - comments;
+    return -1;
+  }
+  if (comments < 10) {
+    if (exp + 2 >= 80) return 10 - comments;
+    if (exp + 5 >= 80) return 15 - comments;
+    if (exp + 9 >= 80) return 20 - comments;
+    return -1;
+  }
+  if (comments < 15) {
+    if (exp + 3 >= 80) return 15 - comments;
+    if (exp + 7 >= 80) return 20 - comments;
+    return -1;
+  }
+  if (comments < 20) {
+    if (exp + 4 >= 80) return 20 - comments;
+    return -1;
+  }
+  return -1;
+}
+
+function compareNullableNumber(a, b, direction) {
+  const aMissing = a === null || a === undefined || a === '';
+  const bMissing = b === null || b === undefined || b === '';
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+
+  const result = Number(a) - Number(b);
+  return direction === 'asc' ? result : -result;
+}
+
+function sortRows(rows, sortKey, direction) {
+  rows.sort((a, b) => {
+    let result = 0;
+
+    if (sortKey === 'post_created_at') {
+      const aKey = parseStoredBeijingPostTime(a.post_created_at)?.sortKey || '';
+      const bKey = parseStoredBeijingPostTime(b.post_created_at)?.sortKey || '';
+      if (!aKey && !bKey) result = 0;
+      else if (!aKey) result = 1;
+      else if (!bKey) result = -1;
+      else result = aKey.localeCompare(bKey);
+      if (direction === 'desc') result = -result;
+    } else if (sortKey === 'comments_count') {
+      result = compareNullableNumber(a.comments_count, b.comments_count, direction);
+    } else if (sortKey === 'comments_needed_for_80') {
+      result = compareNullableNumber(
+        a.comments_needed_for_80,
+        b.comments_needed_for_80,
+        direction
+      );
+    } else {
+      result = compareNullableNumber(a.experience_7d, b.experience_7d, direction);
+    }
+
+    if (result !== 0) return result;
+
+    const aPost = parseStoredBeijingPostTime(a.post_created_at)?.sortKey || '';
+    const bPost = parseStoredBeijingPostTime(b.post_created_at)?.sortKey || '';
+    const postResult = bPost.localeCompare(aPost);
+    if (postResult !== 0) return postResult;
+
+    return Number(b.id || 0) - Number(a.id || 0);
+  });
 }
 
 function superLikePostsHandler(req, res) {
@@ -123,7 +166,6 @@ function superLikePostsHandler(req, res) {
       : 'unmoved';
     const todayOnly = String(req.query.todayOnly ?? '1') !== '0';
     const hideBlack = String(req.query.hideBlack ?? '1') !== '0';
-
     const requestedPage = Math.max(1, Number(req.query.page) || 1);
     const pageSize = Math.min(200, Math.max(20, Number(req.query.pageSize) || 50));
     const sortKey = ['post_created_at', 'comments_count', 'experience_7d', 'comments_needed_for_80']
@@ -140,28 +182,6 @@ function superLikePostsHandler(req, res) {
     ];
     const params = [];
 
-    if (todayOnly) {
-      /*
-       * post_created_at 本身已经保存北京时间，例如：
-       * Fri Sep 11 17:58:32 +0800 2026
-       * 或 YYYY-MM-DD HH:mm:ss。
-       *
-       * “只看当天”直接匹配数据库里已经保存的北京时间日期，
-       * 不再使用 +8 hours / UTC 转换 / DB 时区换算。
-       */
-      const today = getShanghaiDateParts();
-      where.push(`(
-        SUBSTR(CAST(sp.post_created_at AS TEXT), 1, 10) = ?
-        OR CAST(sp.post_created_at AS TEXT) LIKE ?
-        OR CAST(sp.post_created_at AS TEXT) LIKE ?
-      )`);
-      params.push(
-        today.iso,
-        today.weiboPattern,
-        today.weiboPatternZeroPadded
-      );
-    }
-
     if (movedFilter === 'moved') {
       where.push('COALESCE(sp.moved_flag, 0) = 1');
     } else if (movedFilter === 'unmoved') {
@@ -175,10 +195,10 @@ function superLikePostsHandler(req, res) {
 
     if (keyword) {
       where.push(`(
-        sp.uid LIKE ?
-        OR sp.username LIKE ?
-        OR sp.post_text LIKE ?
-        OR sp.icon_summary LIKE ?
+        CAST(sp.uid AS TEXT) LIKE ?
+        OR COALESCE(sp.username, '') LIKE ?
+        OR COALESCE(sp.post_text, '') LIKE ?
+        OR COALESCE(sp.icon_summary, '') LIKE ?
       )`);
       const p = `%${keyword}%`;
       params.push(p, p, p, p);
@@ -189,7 +209,7 @@ function superLikePostsHandler(req, res) {
         NOT EXISTS (
           SELECT 1
           FROM black_fan_users bfu
-          WHERE TRIM(COALESCE(bfu.uid, '')) <> ''
+          WHERE TRIM(COALESCE(CAST(bfu.uid AS TEXT), '')) <> ''
             AND CAST(bfu.uid AS TEXT) = CAST(sp.uid AS TEXT)
         )
         AND NOT EXISTS (
@@ -208,22 +228,7 @@ function superLikePostsHandler(req, res) {
 
     const whereSql = `WHERE ${where.join(' AND ')}`;
 
-    const stats = db.prepare(`
-      SELECT
-        COUNT(*) AS total,
-        COUNT(DISTINCT sp.uid) AS user_count,
-        SUM(CASE WHEN sp.experience_7d IS NOT NULL THEN 1 ELSE 0 END) AS experience_known
-      FROM superlike_posts sp
-      ${whereSql}
-    `).get(...params);
-
-    const total = Number(stats?.total || 0);
-    const totalPages = Math.max(1, Math.ceil(total / pageSize));
-    const page = Math.min(requestedPage, totalPages);
-    const offset = (page - 1) * pageSize;
-    const orderBy = getOrderBy(sortKey, sortDirection);
-
-    const data = db.prepare(`
+    let rows = db.prepare(`
       SELECT
         sp.id,
         sp.monitor_id,
@@ -240,7 +245,6 @@ function superLikePostsHandler(req, res) {
         sp.icon_summary,
         sp.experience_7d,
         sp.initial_experience_7d,
-        ${COMMENTS_NEEDED_EXPR} AS comments_needed_for_80,
         sp.post_created_at,
         sp.inserted_at,
         sp.first_seen_at,
@@ -257,9 +261,34 @@ function superLikePostsHandler(req, res) {
       FROM superlike_posts sp
       LEFT JOIN monitors m ON m.id = sp.monitor_id
       ${whereSql}
-      ORDER BY ${orderBy}
-      LIMIT ? OFFSET ?
-    `).all(...params, pageSize, offset);
+    `).all(...params);
+
+    rows = rows.map(row => ({
+      ...row,
+      comments_needed_for_80: commentsNeededFor80(row)
+    }));
+
+    if (todayOnly) {
+      const todayKey = getBeijingTodayKey();
+      rows = rows.filter(row =>
+        parseStoredBeijingPostTime(row.post_created_at)?.dateKey === todayKey
+      );
+    }
+
+    sortRows(rows, sortKey, sortDirection);
+
+    const total = rows.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const page = Math.min(requestedPage, totalPages);
+    const offset = (page - 1) * pageSize;
+    const data = rows.slice(offset, offset + pageSize);
+
+    const userCount = new Set(
+      rows.map(row => String(row.uid || '')).filter(Boolean)
+    ).size;
+    const experienceKnown = rows.filter(
+      row => row.experience_7d !== null && row.experience_7d !== undefined
+    ).length;
 
     const monitors = db.prepare(`
       SELECT id,name
@@ -281,9 +310,9 @@ function superLikePostsHandler(req, res) {
       success: true,
       stats: {
         total,
-        user_count: Number(stats?.user_count || 0),
+        user_count: userCount,
         today_became_superlike: getTodaySuperLikePoolExitCount(),
-        experience_known: Number(stats?.experience_known || 0)
+        experience_known: experienceKnown
       },
       filters: {
         hideBlack,
@@ -313,10 +342,6 @@ function superLikePostsHandler(req, res) {
   }
 }
 
-/*
- * server.js 仍保留原路由源码；这里只在 Express 注册阶段替换
- * /api/superlike-posts 的 GET handler，避免大范围改动 server.js。
- */
 const originalGet = express.application.get;
 express.application.get = function patchedGet(routePath, ...handlers) {
   if (routePath === '/api/superlike-posts') {
@@ -325,10 +350,6 @@ express.application.get = function patchedGet(routePath, ...handlers) {
   return originalGet.call(this, routePath, ...handlers);
 };
 
-/*
- * 动态给现有 superlike.js 追加分页覆盖逻辑。
- * 同时移除旧脚本启动时的首次全量 loadData，避免页面打开先拉2000条。
- */
 const originalStatic = express.static;
 express.static = function patchedStatic(root, options) {
   const middleware = originalStatic(root, options);
