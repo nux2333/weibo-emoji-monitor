@@ -183,7 +183,9 @@ module.exports = {
         ...common.env,
         SUPERLIKE_RECHECK_MODE: '4',
         /* 19:00 起晚高峰：每3分钟扫描一轮。 */
-        SUPERLIKE_LIST_NIGHT_INTERVAL_MS: String(3 * 60 * 1000)
+        SUPERLIKE_LIST_NIGHT_INTERVAL_MS: String(3 * 60 * 1000),
+        /* 后续轮次命中不了旧边界时，最多扫描150页。 */
+        SUPERLIKE_LIST_BOUNDARY_SAFETY_MAX_PAGES: '150'
       }
     },
     {
