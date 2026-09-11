@@ -56,16 +56,65 @@ function readGoodProxyPool() {
   try {
     if (!fs.existsSync(GOOD_PROXY_FILE)) return [];
     return Array.from(new Set(fs.readFileSync(GOOD_PROXY_FILE, 'utf8').split(/\r?\n/).map(normalizeProxy).filter(Boolean)));
-  } catch (error) { console.warn(`[代理池] 读取失败：${error.message}`); return []; }
+  } catch (error) {
+    console.warn(`[代理池] 读取失败：${error.message}`);
+    return [];
+  }
 }
 function toPlaywrightProxy(rawValue) {
-  const normalized = normalizeProxy(rawValue); if (!normalized) return null;
-  try { const p = new URL(normalized); const proxy = { server: `${p.protocol}//${p.hostname}${p.port ? ':' + p.port : ''}` }; if (p.username) proxy.username = decodeURIComponent(p.username); if (p.password) proxy.password = decodeURIComponent(p.password); return proxy; } catch { return { server: normalized }; }
+  const normalized = normalizeProxy(rawValue);
+  if (!normalized) return null;
+  try {
+    const p = new URL(normalized);
+    const proxy = { server: `${p.protocol}//${p.hostname}${p.port ? ':' + p.port : ''}` };
+    if (p.username) proxy.username = decodeURIComponent(p.username);
+    if (p.password) proxy.password = decodeURIComponent(p.password);
+    return proxy;
+  } catch {
+    return { server: normalized };
+  }
 }
-function maskProxy(rawValue) { try { const p = new URL(rawValue); return `${p.protocol}//${p.hostname}${p.port ? ':' + p.port : ''}`; } catch { return String(rawValue || '').replace(/\/\/[^@]+@/, '//***@'); } }
-function pickRandomHealthyProxy() { const items = readGoodProxyPool(); return items.length ? items[Math.floor(Math.random() * items.length)] : null; }
-async function createReadOnlyProxyContext(proxy) { if (!proxy) return null; return request.newContext({ proxy: toPlaywrightProxy(proxy), ignoreHTTPSErrors: true, userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36', extraHTTPHeaders: { Accept: 'text/html,application/xhtml+xml,application/json,text/plain,*/*' } }); }
-async function readPostViaProxy(apiContext, url) { if (!apiContext) return null; try { const r = await apiContext.get(url, { timeout: 10000, failOnStatusCode: false }); return { status: r.status(), ok: r.ok() }; } catch (error) { return { status: null, ok: false, error: error.message }; } }
+function maskProxy(rawValue) {
+  try {
+    const p = new URL(rawValue);
+    return `${p.protocol}//${p.hostname}${p.port ? ':' + p.port : ''}`;
+  } catch {
+    return String(rawValue || '').replace(/\/\/[^@]+@/, '//***@');
+  }
+}
+async function createReadOnlyProxyContext(proxy) {
+  if (!proxy) return null;
+  return request.newContext({
+    proxy: toPlaywrightProxy(proxy),
+    ignoreHTTPSErrors: true,
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
+    extraHTTPHeaders: { Accept: 'text/html,application/xhtml+xml,application/json,text/plain,*/*' }
+  });
+}
+async function readPostWithRotatingProxy(proxyPool, proxyIndex, url) {
+  if (!proxyPool.length) return { proxyIndex, proxy: null, result: null };
+
+  const index = proxyIndex % proxyPool.length;
+  const proxy = proxyPool[index];
+  let apiContext = null;
+  try {
+    apiContext = await createReadOnlyProxyContext(proxy);
+    const response = await apiContext.get(url, { timeout: 10000, failOnStatusCode: false });
+    return {
+      proxyIndex: (index + 1) % proxyPool.length,
+      proxy,
+      result: { status: response.status(), ok: response.ok() }
+    };
+  } catch (error) {
+    return {
+      proxyIndex: (index + 1) % proxyPool.length,
+      proxy,
+      result: { status: null, ok: false, error: error.message }
+    };
+  } finally {
+    if (apiContext) await apiContext.dispose().catch(() => {});
+  }
+}
 
 function getTargets() {
   const shanghaiToday = getShanghaiToday();
@@ -276,7 +325,6 @@ async function main() {
   initDatabase();
 
   let context = await ensureLoggedIn();
-  let readOnlyProxyContext = null;
   let rl = null;
 
   try {
@@ -291,12 +339,11 @@ async function main() {
     console.log(`默认评论：${DEFAULT_COMMENT}`);
     if (!COMMENT_FP) console.log('COMMENT_FP 未设置：先尝试不传 fp；如果微博返回参数错误，再设置抓包里的 fp。');
 
-    const selectedProxy = pickRandomHealthyProxy();
-    if (selectedProxy) {
+    const proxyPool = readGoodProxyPool();
+    let proxyIndex = 0;
+    if (proxyPool.length) {
       console.log(`[只读代理] 健康池=${GOOD_PROXY_FILE}`);
-      console.log(`[只读代理] 本轮固定使用：${maskProxy(selectedProxy)}`);
-      try { readOnlyProxyContext = await createReadOnlyProxyContext(selectedProxy); }
-      catch (error) { console.warn(`[只读代理] 创建失败：${error.message}`); }
+      console.log(`[只读代理] 已加载 ${proxyPool.length} 个代理，按帖子顺序轮询使用。`);
     } else {
       console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
     }
@@ -313,8 +360,12 @@ async function main() {
       console.log(`Link=${row.post_link}`);
       if (row.post_text) console.log(`文案=${String(row.post_text).replace(/\s+/g, ' ').slice(0, 160)}`);
 
-      if (readOnlyProxyContext) {
-        const pr = await readPostViaProxy(readOnlyProxyContext, row.post_link);
+      if (proxyPool.length) {
+        const usedIndex = proxyIndex % proxyPool.length;
+        const readResult = await readPostWithRotatingProxy(proxyPool, proxyIndex, row.post_link);
+        proxyIndex = readResult.proxyIndex;
+        const pr = readResult.result;
+        console.log(`[只读代理] ${usedIndex + 1}/${proxyPool.length} ${maskProxy(readResult.proxy)}`);
         if (pr?.ok) console.log(`[只读代理] GET ${pr.status} OK`);
         else if (pr?.status) console.log(`[只读代理] GET HTTP ${pr.status}`);
         else if (pr?.error) console.log(`[只读代理] GET失败：${pr.error}`);
@@ -364,7 +415,6 @@ async function main() {
     }
   } finally {
     if (rl) rl.close();
-    if (readOnlyProxyContext) await readOnlyProxyContext.dispose().catch(() => {});
     await context.close().catch(() => {});
   }
 }
