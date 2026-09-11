@@ -171,7 +171,8 @@ function getTargets() {
 async function launchBrowser(headless) {
   const options = {
     headless,
-    viewport: { width: 1280, height: 900 }
+    viewport: { width: 1280, height: 900 },
+    ignoreHTTPSErrors: true
   };
   if (BROWSER_PROXY) options.proxy = toPlaywrightProxy(BROWSER_PROXY);
   return chromium.launchPersistentContext(PROFILE_DIR, options);
@@ -228,7 +229,7 @@ async function ensureLoggedIn() {
 
 async function getCurrentCommentCountFromApi(page, postId, uid) {
   return page.evaluate(async ({ postId, uid }) => {
-    const url = new URL('/ajax/statuses/buildComments', location.origin);
+    const url = new URL('/ajax/statuses/buildComments', 'https://weibo.com');
     Object.entries({ is_reload:'1', id:String(postId), is_show_bulletin:'3', is_mix:'0', count:'10', uid:String(uid || ''), fetch_level:'0', locale:'zh-CN' }).forEach(([k,v]) => url.searchParams.set(k,v));
     try {
       const response = await fetch(url.toString(), { method:'GET', credentials:'include', headers:{ Accept:'application/json, text/plain, */*', 'X-Requested-With':'XMLHttpRequest' } });
@@ -342,7 +343,18 @@ async function main() {
         else if (pr?.error) console.log(`[只读代理] GET失败：${pr.error}`);
       }
 
-      await page.goto(row.post_link, { waitUntil:'domcontentloaded', timeout:20000 }).catch(error => console.warn(`打开失败：${error.message}`));
+      let navigationOk = true;
+      try {
+        await page.goto(row.post_link, { waitUntil:'domcontentloaded', timeout:20000 });
+      } catch (error) {
+        navigationOk = false;
+        console.warn(`打开失败：${error.message}`);
+      }
+      if (!navigationOk) {
+        console.warn(`[跳过] 固定浏览器代理无法打开该帖子，本条不执行评论相关请求。当前代理=${maskProxy(BROWSER_PROXY)}`);
+        continue;
+      }
+
       await page.waitForTimeout(1500);
       const current = await getCurrentCommentCount(page, row.post_id, row.uid);
       if (Number.isFinite(current.count)) console.log(`[评论] 初始=${row.initial_comments_count ?? '-'} | 当前=${current.count} | 来源=${current.source}`);
