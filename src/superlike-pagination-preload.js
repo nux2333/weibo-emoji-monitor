@@ -112,7 +112,11 @@ function superLikePostsHandler(req, res) {
     const params = [];
 
     if (todayOnly) {
-      where.push("date(datetime(sp.first_seen_at, '+8 hours')) = date('now', '+8 hours')");
+      /*
+       * first_seen_at 已经按北京时间(+08:00)落库，不能再 +8 小时。
+       * 旧逻辑在 16:00 之后会把当天记录推到“次日”，导致新帖被误过滤。
+       */
+      where.push("date(sp.first_seen_at) = date('now', '+8 hours')");
     }
 
     if (movedFilter === 'moved') {
