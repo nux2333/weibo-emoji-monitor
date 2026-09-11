@@ -21,6 +21,11 @@ const MODE2_THRESHOLD_PRELOAD = path.join(
   'src',
   'mode2-dynamic-comment-threshold-preload.js'
 );
+const MODE3_INSERTED_AT_PRELOAD = path.join(
+  __dirname,
+  'src',
+  'mode3-inserted-at-preload.js'
+);
 
 const common = {
   cwd: __dirname,
@@ -166,6 +171,11 @@ module.exports = {
         'scripts',
         'recheck-superlike.js'
       ),
+      node_args: [
+        ...common.node_args,
+        '--require',
+        MODE3_INSERTED_AT_PRELOAD
+      ],
       env: {
         ...common.env,
         SUPERLIKE_RECHECK_MODE: '3'
