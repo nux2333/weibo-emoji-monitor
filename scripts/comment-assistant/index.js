@@ -15,7 +15,7 @@ const GOOD_PROXY_FILE = process.env.WEIBO_GOOD_PROXY_FILE
 const MIN_EXPERIENCE = Number(process.env.COMMENT_MIN_EXPERIENCE || 70);
 const LIMIT = Number(process.env.COMMENT_TARGET_LIMIT || 20);
 const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
-const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '[泪奔][泪奔][泪奔][泪奔][泪奔]';
+const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '法国人是世界上最严肃的人类因为他们见面就会互相说一句绷住';
 const COMMENT_FP = process.env.COMMENT_FP || '';
 
 function formatShanghaiDate(value) {
