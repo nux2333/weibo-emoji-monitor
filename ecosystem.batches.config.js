@@ -11,6 +11,11 @@ const POSTGRES_PRELOAD = path.join(
   'src',
   'postgres-preload.js'
 );
+const SKIP_DB_INIT_PRELOAD = path.join(
+  __dirname,
+  'src',
+  'skip-db-init-preload.js'
+);
 const MODE2_THRESHOLD_PRELOAD = path.join(
   __dirname,
   'src',
@@ -22,15 +27,21 @@ const common = {
   interpreter: NODE_EXE,
   /*
    * test/PG 版统一启用：
+   * - 临时跳过历史重型 initDatabase / migration
    * - PostgreSQL DatabaseSync 兼容层
    * - Playwright 防卡 watchdog
    */
   node_args: [
     '--require',
+    SKIP_DB_INIT_PRELOAD,
+    '--require',
     POSTGRES_PRELOAD,
     '--require',
     PLAYWRIGHT_GUARD
   ],
+  env: {
+    SKIP_DB_INIT: '1'
+  },
   windowsHide: true,
   autorestart: true,
   restart_delay: 10000,
@@ -53,6 +64,7 @@ function scanWorker(
       'start-superlike-workers.js'
     ),
     env: {
+      ...common.env,
       SUPERLIKE_WORKER_ONLY:
         workerOnly
     }
@@ -89,6 +101,7 @@ module.exports = {
         'fresh-superlike'
       ),
       env: {
+        ...common.env,
         SUPERLIKE_WORKER_ONLY:
           'fresh-superlike',
         SUPERLIKE_HEADLESS:
@@ -123,6 +136,7 @@ module.exports = {
         'recheck-superlike.js'
       ),
       env: {
+        ...common.env,
         SUPERLIKE_RECHECK_MODE: '1'
       }
     },
@@ -140,6 +154,7 @@ module.exports = {
         MODE2_THRESHOLD_PRELOAD
       ],
       env: {
+        ...common.env,
         SUPERLIKE_RECHECK_MODE: '2'
       }
     },
@@ -152,6 +167,7 @@ module.exports = {
         'recheck-superlike.js'
       ),
       env: {
+        ...common.env,
         SUPERLIKE_RECHECK_MODE: '3'
       }
     },
@@ -164,6 +180,7 @@ module.exports = {
         'recheck-superlike.js'
       ),
       env: {
+        ...common.env,
         SUPERLIKE_RECHECK_MODE: '4',
         /* 19:00 起晚高峰：每3分钟扫描一轮。 */
         SUPERLIKE_LIST_NIGHT_INTERVAL_MS: String(3 * 60 * 1000)
@@ -178,6 +195,7 @@ module.exports = {
         'backfill-today-jyz.js'
       ),
       env: {
+        ...common.env,
         /*
          * JYZ 专用收紧 watchdog：
          * 单次 goto 最多10秒、evaluate 最多12秒，最多2轮代理尝试。
