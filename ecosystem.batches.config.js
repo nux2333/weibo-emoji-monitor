@@ -27,15 +27,14 @@ const MODE3_INSERTED_AT_PRELOAD = path.join(
   'mode3-inserted-at-preload.js'
 );
 
+/*
+ * 仅供扫描 / 复检 / 补数等后台 Worker 使用。
+ * Web Server 已移到 ecosystem.server.config.js，避免 Server 与 Batch
+ * 共用 autorestart / watchdog / preload 配置。
+ */
 const common = {
   cwd: __dirname,
   interpreter: NODE_EXE,
-  /*
-   * test/PG 版统一启用：
-   * - 临时跳过历史重型 initDatabase / migration
-   * - PostgreSQL DatabaseSync 兼容层
-   * - Playwright 防卡 watchdog
-   */
   node_args: [
     '--require',
     SKIP_DB_INIT_PRELOAD,
@@ -78,15 +77,6 @@ function scanWorker(
 
 module.exports = {
   apps: [
-    {
-      ...common,
-      name: 'weibo-server',
-      script: path.join(
-        __dirname,
-        'server.js'
-      )
-    },
-
     /*
      * 五个 Fresh 来源完全独立：
      * 可单独启动，也可同时启动。
