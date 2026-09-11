@@ -18,6 +18,15 @@ const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
 const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '[泪奔][泪奔][泪奔][泪奔][泪奔]';
 const COMMENT_FP = process.env.COMMENT_FP || '';
 
+function getShanghaiToday() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(new Date());
+}
+
 function normalizeProxy(rawValue) {
   const raw = String(rawValue || '').split('#')[0].trim();
   if (!raw) return null;
@@ -39,6 +48,7 @@ async function createReadOnlyProxyContext(proxy) { if (!proxy) return null; retu
 async function readPostViaProxy(apiContext, url) { if (!apiContext) return null; try { const r = await apiContext.get(url, { timeout: 10000, failOnStatusCode: false }); return { status: r.status(), ok: r.ok() }; } catch (error) { return { status: null, ok: false, error: error.message }; } }
 
 function getTargets() {
+  const shanghaiToday = getShanghaiToday();
   return db.prepare(`
     SELECT post_id, uid, username, post_link, post_text, experience_7d,
            comments_count, initial_comments_count, post_created_at
@@ -50,10 +60,10 @@ function getTargets() {
       AND post_link IS NOT NULL
       AND TRIM(post_link) <> ''
       AND post_created_at IS NOT NULL
-      AND ((post_created_at::timestamptz) AT TIME ZONE 'Asia/Shanghai')::date = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date
+      AND SUBSTR(TRIM(post_created_at), 1, 10) = ?
     ORDER BY experience_7d DESC, post_created_at DESC, first_seen_at DESC
     LIMIT ?
-  `).all(MIN_EXPERIENCE, MAX_COMMENTS, LIMIT);
+  `).all(MIN_EXPERIENCE, MAX_COMMENTS, shanghaiToday, LIMIT);
 }
 
 async function getCurrentCommentCountFromApi(page, postId, uid) {
