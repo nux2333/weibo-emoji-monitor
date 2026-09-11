@@ -107,21 +107,53 @@ async function hasWeiboLogin(context) {
   return cookies.some(cookie => cookie.name === 'SUB' && cookie.value);
 }
 
-async function ensureLoggedIn() {
-  console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
-  let context = await launchBrowser(true);
-  if (await hasWeiboLogin(context)) {
-    console.log('[登录] 已检测到登录信息，Chrome 后台运行。');
-    return context;
-  }
+async function checkWeiboSession(context) {
+  if (!(await hasWeiboLogin(context))) return false;
+  try {
+    const response = await context.request.get('https://weibo.com/ajax/config/getConfig', {
+      timeout: 10000,
+      failOnStatusCode: false,
+      headers: {
+        Accept: 'application/json, text/plain, */*',
+        'X-Requested-With': 'XMLHttpRequest'
+      }
+    });
+    const finalUrl = String(response.url() || '');
+    const text = await response.text();
+    let json = null;
+    try { json = JSON.parse(text); } catch {}
 
-  await context.close();
-  console.log('[登录] 当前账号没有登录信息，正在打开 Chrome，请手动登录微博。');
-  context = await launchBrowser(false);
+    const code = Number(json?.ok ?? json?.code ?? json?.error_code);
+    const redirectUrl = String(json?.url || json?.redirect || '');
+    if (code === -100 || /newlogin|passport\.weibo|\/login/i.test(`${finalUrl} ${redirectUrl}`)) return false;
+
+    const config = json?.data || json || {};
+    if (config.login === false) return false;
+    if (config.login === true) return true;
+    if (config.uid !== undefined && String(config.uid || '').trim()) return true;
+
+    return response.ok();
+  } catch (error) {
+    console.warn(`[登录] 服务端登录态检查失败，暂按现有登录继续：${error.message}`);
+    return true;
+  }
+}
+
+async function interactiveLogin(oldContext, clearCookies, reason) {
+  if (oldContext) await oldContext.close().catch(() => {});
+
+  console.log(reason || '[登录] 正在打开 Chrome，请手动登录微博。');
+  let context = await launchBrowser(false);
+  if (clearCookies) await context.clearCookies().catch(() => {});
+
   const page = context.pages()[0] || await context.newPage();
   await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
 
-  while (!(await hasWeiboLogin(context))) {
+  while (true) {
+    if (await hasWeiboLogin(context)) {
+      await page.waitForTimeout(1200);
+      if (await checkWeiboSession(context)) break;
+    }
     await page.waitForTimeout(1000);
   }
 
@@ -129,13 +161,36 @@ async function ensureLoggedIn() {
   await context.close();
   context = await launchBrowser(true);
 
-  if (!(await hasWeiboLogin(context))) {
+  if (!(await checkWeiboSession(context))) {
     await context.close();
-    throw new Error('登录信息保存失败，请重新运行后再次登录');
+    throw new Error('登录信息保存后仍未通过服务端校验，请重新运行后再次登录');
   }
 
   console.log(`[登录] ${ACCOUNT} 登录信息确认完成。`);
   return context;
+}
+
+async function ensureLoggedIn() {
+  console.log(`[账号] ${ACCOUNT} | Profile=${PROFILE_DIR}`);
+  let context = await launchBrowser(true);
+
+  if (await hasWeiboLogin(context)) {
+    if (await checkWeiboSession(context)) {
+      console.log('[登录] 已检测到有效登录信息，Chrome 后台运行。');
+      return context;
+    }
+    return interactiveLogin(
+      context,
+      true,
+      '[登录] 检测到旧登录信息已失效，正在打开 Chrome，请重新登录微博。'
+    );
+  }
+
+  return interactiveLogin(
+    context,
+    false,
+    '[登录] 当前账号没有登录信息，正在打开 Chrome，请手动登录微博。'
+  );
 }
 
 async function getCurrentCommentCountFromApi(page, postId, uid) {
@@ -184,6 +239,12 @@ function isCommentSuccess(result) {
   if (body.error_code !== undefined) return Number(body.error_code) === 0;
   return false;
 }
+function isLoginExpiredResult(result) {
+  const body = result?.json || {};
+  const code = Number(body.ok ?? body.code ?? body.error_code);
+  const redirectUrl = String(body.url || body.redirect || '');
+  return code === -100 || /newlogin|passport\.weibo|\/login/i.test(redirectUrl);
+}
 function summarizeResult(result) {
   if (!result) return '没有返回结果';
   const body = result.json || {};
@@ -200,7 +261,7 @@ function summarizeResult(result) {
 async function main() {
   initDatabase();
 
-  const context = await ensureLoggedIn();
+  let context = await ensureLoggedIn();
   let readOnlyProxyContext = null;
   let rl = null;
 
@@ -226,7 +287,7 @@ async function main() {
       console.log(`[只读代理] 未找到健康代理：${GOOD_PROXY_FILE}`);
     }
 
-    const page = context.pages()[0] || await context.newPage();
+    let page = context.pages()[0] || await context.newPage();
     rl = readline.createInterface({ input, output });
 
     for (let i = 0; i < targets.length; i += 1) {
@@ -270,6 +331,19 @@ async function main() {
           else if (result?.json) console.log(`[微博返回] ${JSON.stringify(result.json)}`);
           else console.log('[微博返回] 无响应内容');
         }
+
+        if (isLoginExpiredResult(result)) {
+          console.log('[登录] 微博返回登录失效（ok=-100/newlogin），停止继续发送并要求重新登录。');
+          context = await interactiveLogin(
+            context,
+            true,
+            '[登录] 正在打开 Chrome，请重新登录微博。'
+          );
+          page = context.pages()[0] || await context.newPage();
+          console.log('[登录] 已恢复登录。当前帖子不会自动发送，将重新显示并再次等待你的确认。');
+          i -= 1;
+          continue;
+        }
       } catch (error) {
         console.error(`[评论失败] ${error.message}`);
       }
@@ -277,7 +351,7 @@ async function main() {
   } finally {
     if (rl) rl.close();
     if (readOnlyProxyContext) await readOnlyProxyContext.dispose().catch(() => {});
-    await context.close();
+    await context.close().catch(() => {});
   }
 }
 main().catch(error => { console.error('[comment-assistant] 异常：', error); process.exitCode = 1; });
