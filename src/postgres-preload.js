@@ -21,7 +21,7 @@ const { Worker } = require('worker_threads');
 const PATCHED = Symbol.for('weibo.postgres.databaseSync.patched');
 const MAX_RESPONSE_BYTES = Math.max(
   8 * 1024 * 1024,
-  Number(process.env.PG_SYNC_BUFFER_BYTES) || 8 * 1024 * 1024
+  Number(process.env.PG_SYNC_BUFFER_BYTES) || 16 * 1024 * 1024
 );
 const CALL_TIMEOUT_MS = Math.max(
   5000,
