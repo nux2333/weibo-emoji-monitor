@@ -29,6 +29,8 @@ const LIMIT = Number(process.env.COMMENT_TARGET_LIMIT || 20);
 const MAX_COMMENTS = Number(process.env.COMMENT_MAX_EXISTING_COMMENTS || 19);
 const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '法国人是世界上最严肃的人类因为他们见面就会互相说一句绷住';
 const COMMENT_FP = process.env.COMMENT_FP || '';
+const COMMENT_BROWSER_PROXY = String(process.env.COMMENT_BROWSER_PROXY || '').trim();
+let BROWSER_PROXY = null;
 
 fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
@@ -81,6 +83,28 @@ function maskProxy(rawValue) {
   } catch {
     return String(rawValue || '').replace(/\/\/[^@]+@/, '//***@');
   }
+}
+function initializeBrowserProxy() {
+  if (BROWSER_PROXY) return BROWSER_PROXY;
+
+  const override = normalizeProxy(COMMENT_BROWSER_PROXY);
+  if (override) {
+    BROWSER_PROXY = override;
+    console.log(`[浏览器代理] 使用 COMMENT_BROWSER_PROXY 固定代理：${maskProxy(BROWSER_PROXY)}`);
+    return BROWSER_PROXY;
+  }
+
+  const proxyPool = readGoodProxyPool();
+  if (!proxyPool.length) {
+    console.warn(`[浏览器代理] 健康代理池为空：${GOOD_PROXY_FILE}`);
+    console.warn('[浏览器代理] 将尝试直连；如果本机无法访问微博，请先补充健康代理或设置 COMMENT_BROWSER_PROXY。');
+    return null;
+  }
+
+  BROWSER_PROXY = proxyPool[Math.floor(Math.random() * proxyPool.length)];
+  console.log(`[浏览器代理] 本次运行固定使用：${maskProxy(BROWSER_PROXY)}`);
+  console.log('[浏览器代理] 登录、打开帖子、buildComments、CSRF 与评论 POST 全程使用该代理，不在评论之间切换。');
+  return BROWSER_PROXY;
 }
 async function createReadOnlyProxyContext(proxy) {
   if (!proxy) return null;
@@ -145,71 +169,17 @@ function getTargets() {
 }
 
 async function launchBrowser(headless) {
-  return chromium.launchPersistentContext(PROFILE_DIR, {
+  const options = {
     headless,
     viewport: { width: 1280, height: 900 }
-  });
+  };
+  if (BROWSER_PROXY) options.proxy = toPlaywrightProxy(BROWSER_PROXY);
+  return chromium.launchPersistentContext(PROFILE_DIR, options);
 }
 
 async function hasWeiboLogin(context) {
   const cookies = await context.cookies('https://weibo.com');
   return cookies.some(cookie => cookie.name === 'SUB' && cookie.value);
-}
-
-async function checkWeiboSession(context) {
-  if (!(await hasWeiboLogin(context))) return false;
-  try {
-    const page = context.pages()[0] || await context.newPage();
-    if (!/^https:\/\/weibo\.com\//i.test(page.url())) {
-      await page.goto('https://weibo.com/', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
-    }
-
-    const result = await page.evaluate(async () => {
-      try {
-        const response = await fetch('/ajax/config/getConfig', {
-          method: 'GET',
-          credentials: 'include',
-          headers: {
-            Accept: 'application/json, text/plain, */*',
-            'X-Requested-With': 'XMLHttpRequest'
-          }
-        });
-        const text = await response.text();
-        let json = null;
-        try { json = JSON.parse(text); } catch {}
-        return {
-          ok: response.ok,
-          status: response.status,
-          url: response.url,
-          json,
-          text: text.slice(0, 500)
-        };
-      } catch (error) {
-        return { ok: false, status: 0, url: '', json: null, text: '', error: error.message };
-      }
-    });
-
-    if (result.error) {
-      console.warn(`[登录] 页面登录态检查失败：${result.error}`);
-      return false;
-    }
-
-    const json = result.json || {};
-    const code = Number(json.ok ?? json.code ?? json.error_code);
-    const redirectUrl = String(json.url || json.redirect || '');
-    const combinedUrl = `${result.url || ''} ${redirectUrl}`;
-    if (code === -100 || /newlogin|passport\.weibo|\/login/i.test(combinedUrl)) return false;
-
-    const config = json.data || json;
-    if (config.login === false) return false;
-    if (config.login === true) return true;
-    if (config.uid !== undefined && String(config.uid || '').trim()) return true;
-
-    return result.ok && result.status === 200;
-  } catch (error) {
-    console.warn(`[登录] 页面登录态检查异常：${error.message}`);
-    return false;
-  }
 }
 
 async function interactiveLogin(oldContext, clearCookies, reason) {
@@ -323,6 +293,7 @@ function summarizeResult(result) {
 
 async function main() {
   initDatabase();
+  initializeBrowserProxy();
 
   let context = await ensureLoggedIn();
   let rl = null;
