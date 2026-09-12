@@ -51,6 +51,13 @@ const HTTP_FRESH_LATEST_PRELOAD =
     'superlike-http-latest-preload.js'
   );
 
+const QA_HTTP_ONLY_PRELOAD =
+  path.join(
+    ROOT,
+    'src',
+    'superlike-qa-http-only-preload.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -141,20 +148,10 @@ function startWorker(
     delete env.SUPERLIKE_SCAN_WORKER_SOURCE;
   }
 
-  /*
-   * 热门分区只保留前20页作为补漏来源。
-   * 避免每轮重复扫描80-100页的大量旧帖/重复UID，
-   * 同时减少Profile请求与代理消耗。
-   */
   if (spec.source === 'section-hot') {
     env.SUPERLIKE_HOT_PAGES = '20';
   }
 
-  /*
-   * 超like专区的高价值数据主要集中在前10页。
-   * 单独给这个worker覆盖通用分区页数，
-   * QA/一善水区等其他分区仍保持原配置。
-   */
   if (spec.source === 'section-superlike') {
     env.SUPERLIKE_TAG_SECTION_PAGES = '10';
   }
@@ -176,6 +173,8 @@ function startWorker(
         '--require',
         HTTP_FRESH_LATEST_PRELOAD,
         '--require',
+        QA_HTTP_ONLY_PRELOAD,
+        '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
       ],
@@ -183,14 +182,6 @@ function startWorker(
         cwd:
           ROOT,
         env,
-        /*
-         * 正常运行日志仍由子 worker 的 batch-logger 写入 logs/，
-         * 所以 stdout 继续忽略，避免 PM2 日志重复刷屏。
-         *
-         * stderr 必须继承给 Launcher/PM2：这样即使 PostgreSQL preload、
-         * Playwright preload、模块加载等在 batch-logger 初始化前失败，
-         * 也能直接从 pm2 logs 看到真实错误。
-         */
         stdio:
           [
             'ignore',
@@ -332,10 +323,13 @@ console.log(
   '# Checkpoint: 统一 superlike_scan_checkpoint(monitor_id, source_key)'
 );
 console.log(
-  '# fresh-latest: sort_time 后续分页使用 HTTP APIRequestContext'
+  '# Scan分页: HTTP APIRequestContext'
 );
 console.log(
-  '# Browser profile: 每个 worker 独立'
+  '# fresh-qa实验: QA初始化后关闭Chromium，分页+Profile全HTTP'
+);
+console.log(
+  '# Browser profile: 除fresh-qa外每个worker独立'
 );
 console.log(
   '# Playwright: 每个子worker启用共通防卡watchdog'
