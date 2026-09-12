@@ -4,6 +4,7 @@ const NODE_EXE = process.execPath;
 const PLAYWRIGHT_GUARD = path.join(__dirname, 'src', 'playwright-hardening.js');
 const POSTGRES_PRELOAD = path.join(__dirname, 'src', 'postgres-preload.js');
 const SKIP_DB_INIT_PRELOAD = path.join(__dirname, 'src', 'skip-db-init-preload.js');
+const UNIFIED_SCAN_RESUME_PRELOAD = path.join(__dirname, 'src', 'unified-scan-resume-preload.js');
 
 /* 仅供扫描 / 复检 / 补数等后台 Worker 使用。 */
 const common = {
@@ -21,7 +22,18 @@ const common = {
 };
 
 function scanWorker(name, workerOnly) {
-  return { ...common, name, script: path.join(__dirname, 'scripts', 'start-superlike-workers.js'), env: { ...common.env, SUPERLIKE_WORKER_ONLY: workerOnly } };
+  return {
+    ...common,
+    name,
+    script: path.join(__dirname, 'scripts', 'start-superlike-workers.js'),
+    node_args: [
+      '--require', SKIP_DB_INIT_PRELOAD,
+      '--require', POSTGRES_PRELOAD,
+      '--require', UNIFIED_SCAN_RESUME_PRELOAD,
+      '--require', PLAYWRIGHT_GUARD
+    ],
+    env: { ...common.env, SUPERLIKE_WORKER_ONLY: workerOnly }
+  };
 }
 
 const asyncModeNodeArgs = ['--require', SKIP_DB_INIT_PRELOAD, '--require', PLAYWRIGHT_GUARD];
