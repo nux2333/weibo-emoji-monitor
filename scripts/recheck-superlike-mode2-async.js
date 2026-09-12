@@ -29,6 +29,7 @@ function compact(text) { return String(text || '').replace(/\s+/g, ' ').trim().s
 function memoryMB(v) { return Math.round(Number(v || 0) / 1024 / 1024); }
 function logMemory(label) { const m = process.memoryUsage(); console.log(`[模式2][Memory][${label}] RSS=${memoryMB(m.rss)}MB | Heap=${memoryMB(m.heapUsed)}/${memoryMB(m.heapTotal)}MB | PG total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`); }
 function parseMonitorConfig(url) { const match = String(url || '').match(/100808([a-f0-9]{32})/i); if (!match) throw new Error(`无法从超话URL解析 page_id: ${url}`); return { pageId: `100808${match[1]}`, profileContainerId: `231140${match[1]}_-_profile_inpage` }; }
+function isHttp4xx(status) { const n = Number(status); return Number.isFinite(n) && n >= 400 && n < 500; }
 
 async function acquireProxy() { const a = await proxyPool.acquire(); if (!a?.configured || !a.raw || !a.proxy) throw new Error('健康代理池当前没有可用代理'); return a; }
 async function disposeSession(session) { try { await session?.apiContext?.dispose(); } catch {} }
@@ -44,13 +45,15 @@ async function bootstrapVisitorSession(reason = '建立Session') {
       context = await browser.newContext({ userAgent: USER_AGENT, locale: 'zh-CN' });
       const page = await context.newPage();
       const response = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-      console.log(`[模式2][Session] 首页 status=${response?.status() ?? '-'} | final=${page.url()} | IP=${assignment.masked}`);
-      if (response?.status() === 418) throw Object.assign(new Error('Chromium首页 HTTP 418'), { blocked: true });
+      const firstStatus = response?.status();
+      console.log(`[模式2][Session] 首页 status=${firstStatus ?? '-'} | final=${page.url()} | IP=${assignment.masked}`);
+      if (isHttp4xx(firstStatus)) throw Object.assign(new Error(`Chromium首页 HTTP ${firstStatus}`), { blocked: true });
       await page.waitForTimeout(2500);
       if (page.url().includes('visitor.passport.weibo.cn')) {
         await page.waitForTimeout(2000);
         const second = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-        if (second?.status() === 418) throw Object.assign(new Error('Chromium游客初始化 HTTP 418'), { blocked: true });
+        const secondStatus = second?.status();
+        if (isHttp4xx(secondStatus)) throw Object.assign(new Error(`Chromium游客初始化 HTTP ${secondStatus}`), { blocked: true });
         await page.waitForTimeout(1500);
       }
       const cookies = await context.cookies(['https://m.weibo.cn/', 'https://weibo.cn/', 'https://weibo.com/']);
@@ -88,7 +91,7 @@ async function refreshSession(reason, staleGeneration = null, retireCurrent = fa
   return sessionRefreshPromise;
 }
 async function ensureSession() { return visitorSession?.apiContext ? visitorSession : refreshSession('首次启动：从健康代理池建立Session'); }
-function isSessionFailure(result) { return !!result && !result.ok && (result.visitor || [403, 418, 432].includes(Number(result.status))); }
+function isSessionFailure(result) { return !!result && !result.ok && (result.visitor || isHttp4xx(result.status)); }
 
 function getCommentExperienceBonus(count) { count = Math.max(0, Number(count) || 0); if (count >= 20) return 10; if (count >= 15) return 6; if (count >= 10) return 3; if (count >= 5) return 1; return 0; }
 function getDeleteThreshold(post) {
@@ -170,6 +173,6 @@ async function runRound(round){
 }
 
 async function main(){
-  if(!process.env.DATABASE_URL)throw new Error('缺少 DATABASE_URL'); createBatchLogger('recheck-superlike','mode2'); console.log('[模式2] 新架构：不使用LOCAL；健康代理 → Chromium领取游客Cookie → Chromium关闭 → 同代理轻量HTTP → 403/418/432/visitor自动轮询代理'); console.log(`[模式2] HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认`); let round=0; while(true){round++;try{const elapsed=await runRound(round);await sleep(Math.max(0,ROUND_INTERVAL_MS-elapsed));}catch(e){console.error(`[模式2] 第${round}轮异常：`,e);await sleep(Math.min(ROUND_INTERVAL_MS,15000));}}
+  if(!process.env.DATABASE_URL)throw new Error('缺少 DATABASE_URL'); createBatchLogger('recheck-superlike','mode2'); console.log('[模式2] 新架构：不使用LOCAL；健康代理 → Chromium领取游客Cookie → Chromium关闭 → 同代理轻量HTTP → 任意4xx/visitor自动轮询代理'); console.log(`[模式2] HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认`); let round=0; while(true){round++;try{const elapsed=await runRound(round);await sleep(Math.max(0,ROUND_INTERVAL_MS-elapsed));}catch(e){console.error(`[模式2] 第${round}轮异常：`,e);await sleep(Math.min(ROUND_INTERVAL_MS,15000));}}
 }
 main().catch(async e=>{console.error('[模式2] 致命异常：',e);try{await disposeSession(visitorSession);}catch{}try{await pool.end();}catch{}process.exit(1);});
