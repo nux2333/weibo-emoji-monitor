@@ -37,6 +37,13 @@ const UNIFIED_SCAN_RESUME_PRELOAD =
     'unified-scan-resume-preload.js'
   );
 
+const UNIFIED_SCAN_CHECKPOINT_PRELOAD =
+  path.join(
+    ROOT,
+    'src',
+    'unified-scan-checkpoint-preload.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -157,6 +164,8 @@ function startWorker(
         POSTGRES_PRELOAD,
         '--require',
         UNIFIED_SCAN_RESUME_PRELOAD,
+        '--require',
+        UNIFIED_SCAN_CHECKPOINT_PRELOAD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -309,6 +318,9 @@ console.log(
 );
 console.log(
   '# Resume: 统一 superlike_scan_resume(monitor_id, source_key)'
+);
+console.log(
+  '# Checkpoint: 统一 superlike_scan_checkpoint(monitor_id, source_key)'
 );
 console.log(
   '# Browser profile: 每个 worker 独立'
