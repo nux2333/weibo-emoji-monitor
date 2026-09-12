@@ -110,6 +110,10 @@ function shortError(error) {
   const match = first.match(/(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_[A-Z_]+|socket hang up|Timeout[^:]*)/i);
   return match ? match[1] : first.replace(/^apiRequestContext\.(?:get|post):\s*/i, '').slice(0, 180);
 }
+function isHttp4xx(status) {
+  const code = Number(status);
+  return code >= 400 && code < 500;
+}
 async function testLoginProxy() {
   const options = { ignoreHTTPSErrors: true };
   if (ACCOUNT_PROXY) options.proxy = toPlaywrightProxy(ACCOUNT_PROXY);
@@ -377,7 +381,22 @@ async function main() {
       let warmError = null;
       for (let attempt = 1; attempt <= PROXY_RETRIES; attempt += 1) {
         try {
-          warm = await warmPost(api, row.post_link);
+          const candidateWarm = await warmPost(api, row.post_link);
+          if (isHttp4xx(candidateWarm.status)) {
+            console.warn(`[HTTP评论] 帖子GET HTTP ${candidateWarm.status}，自动切换代理`);
+            if (attempt >= PROXY_RETRIES) {
+              warmError = new Error(`HTTP ${candidateWarm.status}`);
+              break;
+            }
+            const nextApi = await rotateHttpSession(api, browserSession);
+            if (!nextApi) {
+              warmError = new Error(`HTTP ${candidateWarm.status}，没有可切换代理`);
+              break;
+            }
+            api = nextApi;
+            continue;
+          }
+          warm = candidateWarm;
           warmError = null;
           if (attempt > 1) console.log(`[HTTP评论] 重试成功 | HTTP=${warm.status}`);
           break;
@@ -417,6 +436,16 @@ async function main() {
           console.log(`[去重] 已记录 | 账号=${ACCOUNT} | Post=${row.post_id}`);
         }
         if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
+        if (!success && isHttp4xx(result?.status)) {
+          const nextApi = await rotateHttpSession(api, browserSession);
+          if (nextApi) {
+            api = nextApi;
+            console.log(`[HTTP评论] HTTP ${result.status} → 已切换代理；当前帖子重新显示，不会自动重发。`);
+            i -= 1;
+            continue;
+          }
+          console.warn(`[HTTP评论] HTTP ${result.status}，但没有其他可用代理可切换。`);
+        }
         if (isLoginExpiredResult(result)) {
           console.log('[登录] 微博返回登录失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
