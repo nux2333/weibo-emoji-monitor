@@ -111,6 +111,27 @@ function shortError(error) {
   return match ? match[1] : first.replace(/^apiRequestContext\.(?:get|post):\s*/i, '').slice(0, 180);
 }
 
+function initCommentHistory() {
+  db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
+    account TEXT NOT NULL,
+    post_id TEXT NOT NULL,
+    commented_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (account, post_id)
+  )`);
+}
+function hasCommented(postId) {
+  return Boolean(db.prepare('SELECT 1 FROM comment_assistant_history WHERE account = ? AND post_id = ? LIMIT 1').get(ACCOUNT, String(postId)));
+}
+function rememberCommented(postId) {
+  db.prepare(`INSERT INTO comment_assistant_history (account, post_id, commented_at)
+    VALUES (?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT (account, post_id) DO NOTHING`).run(ACCOUNT, String(postId));
+}
+function getCommentedCount() {
+  const row = db.prepare('SELECT COUNT(*) AS cnt FROM comment_assistant_history WHERE account = ?').get(ACCOUNT);
+  return Number(row?.cnt || 0);
+}
+
 function getTargets() {
   const today = getShanghaiToday();
   const rows = db.prepare(`SELECT post_id, uid, username, post_link, post_text, experience_7d,
@@ -130,7 +151,7 @@ function getTargets() {
     if (Number.isFinite(p) && p !== 0) return p;
     return new Date(b.first_seen_at || 0).getTime() - new Date(a.first_seen_at || 0).getTime();
   });
-  return todayRows.slice(0, LIMIT);
+  return todayRows.filter(row => !hasCommented(row.post_id)).slice(0, LIMIT);
 }
 
 async function launchBrowser(headless) {
@@ -279,6 +300,7 @@ async function rotateHttpSession(currentApi, browserSession) {
 
 async function main() {
   initDatabase();
+  initCommentHistory();
   initializeAccountProxy();
   const rl = readline.createInterface({ input, output });
   let api = null;
@@ -286,8 +308,10 @@ async function main() {
   try {
     ({ api, browserSession } = await rebuildHttpSession(rl, false));
     const targets = getTargets();
+    const commentedCount = getCommentedCount();
+    console.log(`[去重] 账号=${ACCOUNT} | 已评论记录=${commentedCount}`);
     if (!targets.length) {
-      console.log(`没有符合条件的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);
+      console.log(`没有符合条件且该账号未评论过的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);
       return;
     }
     console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`);
@@ -338,6 +362,10 @@ async function main() {
         const result = await sendCommentHttp(api, row.post_id, row.post_link, DEFAULT_COMMENT);
         const success = isCommentSuccess(result);
         console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
+        if (success) {
+          rememberCommented(row.post_id);
+          console.log(`[去重] 已记录 | 账号=${ACCOUNT} | Post=${row.post_id}`);
+        }
         if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
         if (isLoginExpiredResult(result)) {
           console.log('[登录] 微博返回登录失效，只为当前账号临时启动 Chromium 重新登录。');
