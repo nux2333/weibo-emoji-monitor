@@ -49,10 +49,6 @@ function safeAll(sql) {
 function migrateOnce() {
   initDatabase();
 
-  /*
-   * db.js 旧初始化逻辑仍可能临时创建 source_resume。
-   * 如果主表已经是统一结构，只需要把这个空/旧兼容表清掉。
-   */
   if (isUnifiedSchema()) {
     try {
       const rows = safeAll(`
@@ -159,7 +155,7 @@ function migrateOnce() {
         flow_id TEXT NOT NULL,
         template_url TEXT,
         checkpoint_post_id TEXT,
-        checkpoint_created_at_ms INTEGER,
+        checkpoint_created_at_ms BIGINT,
         next_page INTEGER,
         next_since_id TEXT,
         next_max_id TEXT,
@@ -482,10 +478,6 @@ function clearScanSourceResume(monitorId, sourceKey) {
   return Number(result.changes || 0);
 }
 
-/*
- * Node preload 先加载本模块，随后 scanner require('./db') 会命中同一份
- * module.exports，因此旧 Scanner 无需改函数签名即可使用统一表。
- */
 dbModule.getScanResume = getScanResume;
 dbModule.saveScanResume = saveScanResume;
 dbModule.clearScanResume = clearScanResume;
