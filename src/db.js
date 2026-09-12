@@ -1,4 +1,4 @@
-const fs = require('fs');
+﻿const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
@@ -8,17 +8,16 @@ const DB_FILE = process.env.DB_FILE
   : path.join(DATA_DIR, 'monitor.db');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
-console.log('SQLite DB:', DB_FILE);
 
 const db = new DatabaseSync(DB_FILE);
 
 /*
- * SQLite 并发设置：
- * - WAL：读写并发更友好，Scanner/Recheck/Web 同时运行时减少互相阻塞。
- * - busy_timeout：遇到其他 writer 时最多等待 10 秒，不立即抛 SQLITE_BUSY。
- * - synchronous=NORMAL：WAL 下兼顾可靠性与写入性能。
+ * SQLite 骞跺彂璁剧疆锛?
+ * - WAL锛氳鍐欏苟鍙戞洿鍙嬪ソ锛孲canner/Recheck/Web 鍚屾椂杩愯鏃跺噺灏戜簰鐩搁樆濉炪€?
+ * - busy_timeout锛氶亣鍒板叾浠?writer 鏃舵渶澶氱瓑寰?10 绉掞紝涓嶇珛鍗虫姏 SQLITE_BUSY銆?
+ * - synchronous=NORMAL锛歐AL 涓嬪吋椤惧彲闈犳€т笌鍐欏叆鎬ц兘銆?
  *
- * 这些是连接级/数据库级设置，每个 Node 进程启动时执行一次即可。
+ * 杩欎簺鏄繛鎺ョ骇/鏁版嵁搴撶骇璁剧疆锛屾瘡涓?Node 杩涚▼鍚姩鏃舵墽琛屼竴娆″嵆鍙€?
  */
 db.exec(`
   PRAGMA busy_timeout = 10000;
@@ -37,7 +36,7 @@ function tableHasColumn(tableName, columnName) {
 function ensureColumn(tableName, columnName, definition) {
   if (tableHasColumn(tableName, columnName)) return;
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
-  console.log(`数据库字段已补充：${tableName}.${columnName}`);
+  console.log(`鏁版嵁搴撳瓧娈靛凡琛ュ厖锛?{tableName}.${columnName}`);
 }
 
 function migrateSuperlikePostsIfNeeded() {
@@ -55,7 +54,7 @@ function migrateSuperlikePostsIfNeeded() {
 
   if (hasMonitorId && !hasOldUniquePostId) return;
 
-  console.log('升级 superlike_posts 表结构...');
+  console.log('鍗囩骇 superlike_posts 琛ㄧ粨鏋?..');
 
   db.exec(`
     PRAGMA foreign_keys = OFF;
@@ -77,7 +76,7 @@ function migrateSuperlikePostsIfNeeded() {
       experience_7d INTEGER,
       initial_experience_7d INTEGER,
       post_created_at TEXT,
-      /* 入库时间：固定保存中国时间（UTC+8），精确到秒；后续 UPDATE 不修改 */
+      /* 鍏ュ簱鏃堕棿锛氬浐瀹氫繚瀛樹腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮锛涘悗缁?UPDATE 涓嶄慨鏀?*/
       inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -129,16 +128,16 @@ function migrateSuperlikeUsersIfNeeded() {
     tableExists('superlike_users');
 
   /*
-   * 上一次迁移如果在 INSERT 阶段失败，
-   * SQLite 可能已经留下：
-   *   superlike_users_old = 原始数据
-   *   superlike_users     = 新建但为空的表
+   * 涓婁竴娆¤縼绉诲鏋滃湪 INSERT 闃舵澶辫触锛?
+   * SQLite 鍙兘宸茬粡鐣欎笅锛?
+   *   superlike_users_old = 鍘熷鏁版嵁
+   *   superlike_users     = 鏂板缓浣嗕负绌虹殑琛?
    *
-   * 这里先优先恢复这个“半迁移”状态。
+   * 杩欓噷鍏堜紭鍏堟仮澶嶈繖涓€滃崐杩佺Щ鈥濈姸鎬併€?
    */
   if (oldTableExists) {
     console.log(
-      '检测到上次 superlike_users 迁移未完成，正在自动恢复原数据...'
+      '妫€娴嬪埌涓婃 superlike_users 杩佺Щ鏈畬鎴愶紝姝ｅ湪鑷姩鎭㈠鍘熸暟鎹?..'
     );
 
     if (currentExists) {
@@ -172,7 +171,7 @@ function migrateSuperlikeUsersIfNeeded() {
   }
 
   console.log(
-    '整理 superlike_users 表结构：移除 first_seen_at / first_seen_date / last_seen_date...'
+    '鏁寸悊 superlike_users 琛ㄧ粨鏋勶細绉婚櫎 first_seen_at / first_seen_date / last_seen_date...'
   );
 
   const hasScanDate =
@@ -282,7 +281,7 @@ function migrateSuperlikeUsersIfNeeded() {
     db.exec('COMMIT');
 
     console.log(
-      'superlike_users 表结构整理完成。'
+      'superlike_users 琛ㄧ粨鏋勬暣鐞嗗畬鎴愩€?
     );
 
   } catch (error) {
@@ -378,7 +377,7 @@ function initDatabase() {
       icon_summary TEXT,
       experience_7d INTEGER,
       post_created_at TEXT,
-      /* 入库时间：固定保存中国时间（UTC+8），精确到秒；后续 UPDATE 不修改 */
+      /* 鍏ュ簱鏃堕棿锛氬浐瀹氫繚瀛樹腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮锛涘悗缁?UPDATE 涓嶄慨鏀?*/
       inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -422,9 +421,9 @@ function initDatabase() {
 
 
     /*
-     * Scan 断点续扫游标。
-     * 与正式 checkpoint 分离：正式 checkpoint 只在安全追到旧边界后推进；
-     * resume 只记录“下一页从哪里继续”，失败/达到50页时保留。
+     * Scan 鏂偣缁壂娓告爣銆?
+     * 涓庢寮?checkpoint 鍒嗙锛氭寮?checkpoint 鍙湪瀹夊叏杩藉埌鏃ц竟鐣屽悗鎺ㄨ繘锛?
+     * resume 鍙褰曗€滀笅涓€椤典粠鍝噷缁х画鈥濓紝澶辫触/杈惧埌50椤垫椂淇濈暀銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_scan_resume (
       monitor_id INTEGER PRIMARY KEY,
@@ -440,8 +439,8 @@ function initDatabase() {
     );
 
     /*
-     * 分区独立 Resume。
-     * 每个 monitor + source_key 单独保存 tag_status_sort 的下一页 cursor。
+     * 鍒嗗尯鐙珛 Resume銆?
+     * 姣忎釜 monitor + source_key 鍗曠嫭淇濆瓨 tag_status_sort 鐨勪笅涓€椤?cursor銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_scan_source_resume (
       monitor_id INTEGER NOT NULL,
@@ -458,9 +457,9 @@ function initDatabase() {
     );
 
     /*
-     * 分区 Fresh 边界：
-     * 记录每个分区上一轮“最新的一条 post_id”。
-     * 下一轮从第一页开始一直扫到碰见这个 post_id 为止。
+     * 鍒嗗尯 Fresh 杈圭晫锛?
+     * 璁板綍姣忎釜鍒嗗尯涓婁竴杞€滄渶鏂扮殑涓€鏉?post_id鈥濄€?
+     * 涓嬩竴杞粠绗竴椤靛紑濮嬩竴鐩存壂鍒扮瑙佽繖涓?post_id 涓烘銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_scan_source_checkpoint (
       monitor_id INTEGER NOT NULL,
@@ -474,8 +473,8 @@ function initDatabase() {
     );
 
     /*
-     * Fresh 每个来源最后一次“完整追到安全边界”的成功时间。
-     * 用于机器宕机后 Catch-up，避免只依赖 page/cursor。
+     * Fresh 姣忎釜鏉ユ簮鏈€鍚庝竴娆♀€滃畬鏁磋拷鍒板畨鍏ㄨ竟鐣屸€濈殑鎴愬姛鏃堕棿銆?
+     * 鐢ㄤ簬鏈哄櫒瀹曟満鍚?Catch-up锛岄伩鍏嶅彧渚濊禆 page/cursor銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_scan_success_state (
       monitor_id INTEGER NOT NULL,
@@ -498,8 +497,8 @@ function initDatabase() {
     );
 
     /*
-     * 候选池今日“毕业人数”累计。
-     * 不保存每个 UID，只保存每天累计人数。
+     * 鍊欓€夋睜浠婃棩鈥滄瘯涓氫汉鏁扳€濈疮璁°€?
+     * 涓嶄繚瀛樻瘡涓?UID锛屽彧淇濆瓨姣忓ぉ绱浜烘暟銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_pool_exit_daily (
       exit_date TEXT PRIMARY KEY,
@@ -508,9 +507,9 @@ function initDatabase() {
     );
 
     /*
-     * SuperLike 页面黑粉关键词。
-     * 页面“ 不显示猪 ”筛选会检查：
-     * username / post_text / icon_summary。
+     * SuperLike 椤甸潰榛戠矇鍏抽敭璇嶃€?
+     * 椤甸潰鈥?涓嶆樉绀虹尓 鈥濈瓫閫変細妫€鏌ワ細
+     * username / post_text / icon_summary銆?
      */
     CREATE TABLE IF NOT EXISTS superlike_black_keywords (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -521,8 +520,8 @@ function initDatabase() {
 
 
     /*
-     * 黑粉用户表。
-     * uid 作为稳定唯一标识；用户名和主页链接用于展示/人工确认。
+     * 榛戠矇鐢ㄦ埛琛ㄣ€?
+     * uid 浣滀负绋冲畾鍞竴鏍囪瘑锛涚敤鎴峰悕鍜屼富椤甸摼鎺ョ敤浜庡睍绀?浜哄伐纭銆?
      */
     CREATE TABLE IF NOT EXISTS black_fan_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -533,9 +532,9 @@ function initDatabase() {
     );
 
     /*
-     * 当天排除 UID：
-     * 某个用户任意候选帖评论达到 21 后，当天不再抓取该 UID 的其他帖子。
-     * 日期固定按中国时间（UTC+8）。
+     * 褰撳ぉ鎺掗櫎 UID锛?
+     * 鏌愪釜鐢ㄦ埛浠绘剰鍊欓€夊笘璇勮杈惧埌 21 鍚庯紝褰撳ぉ涓嶅啀鎶撳彇璇?UID 鐨勫叾浠栧笘瀛愩€?
+     * 鏃ユ湡鍥哄畾鎸変腑鍥芥椂闂达紙UTC+8锛夈€?
      */
     CREATE TABLE IF NOT EXISTS superlike_old_refresh_state (
       monitor_id INTEGER NOT NULL,
@@ -575,11 +574,11 @@ function initDatabase() {
   ensureColumn('superlike_list_state', 'scan_date', 'TEXT');
   ensureColumn('superlike_list_state', 'last_total', 'INTEGER');
 
-  // SuperLike 高效复检队列字段。
-  // 旧数据库会在启动时自动补列，不需要手工 migration。
-  // 入库时间固定为中国时间（UTC+8），精确到秒。
-  // SQLite ALTER TABLE 不能给新增列直接使用 datetime() 非常量默认值，
-  // 所以旧库先补列，再回填；新数据由 CREATE TABLE 的 DEFAULT 自动写入。
+  // SuperLike 楂樻晥澶嶆闃熷垪瀛楁銆?
+  // 鏃ф暟鎹簱浼氬湪鍚姩鏃惰嚜鍔ㄨˉ鍒楋紝涓嶉渶瑕佹墜宸?migration銆?
+  // 鍏ュ簱鏃堕棿鍥哄畾涓轰腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮銆?
+  // SQLite ALTER TABLE 涓嶈兘缁欐柊澧炲垪鐩存帴浣跨敤 datetime() 闈炲父閲忛粯璁ゅ€硷紝
+  // 鎵€浠ユ棫搴撳厛琛ュ垪锛屽啀鍥炲～锛涙柊鏁版嵁鐢?CREATE TABLE 鐨?DEFAULT 鑷姩鍐欏叆銆?
   ensureColumn('superlike_posts', 'inserted_at', 'TEXT');
 
   db.exec(`
@@ -602,9 +601,9 @@ function initDatabase() {
   ensureColumn('superlike_posts', 'initial_experience_7d', 'INTEGER');
 
   /*
-   * initial_comments_count 保留兼容回填。
-   * initial_experience_7d 不再由 initDatabase() 自动补；
-   * 只在补经验值脚本第一次取得经验值时写入。
+   * initial_comments_count 淇濈暀鍏煎鍥炲～銆?
+   * initial_experience_7d 涓嶅啀鐢?initDatabase() 鑷姩琛ワ紱
+   * 鍙湪琛ョ粡楠屽€艰剼鏈涓€娆″彇寰楃粡楠屽€兼椂鍐欏叆銆?
    */
   db.exec(`
     UPDATE superlike_posts
@@ -615,10 +614,10 @@ function initDatabase() {
   `);
 
   /*
-   * superlike_users 精简：
-   * inserted_at = 第一次入库中国时间（永不更新）
-   * last_seen_at = 最近一次确认中国时间（会更新）
-   * first_seen_at / first_seen_date / last_seen_date 不再保留。
+   * superlike_users 绮剧畝锛?
+   * inserted_at = 绗竴娆″叆搴撲腑鍥芥椂闂达紙姘镐笉鏇存柊锛?
+   * last_seen_at = 鏈€杩戜竴娆＄‘璁や腑鍥芥椂闂达紙浼氭洿鏂帮級
+   * first_seen_at / first_seen_date / last_seen_date 涓嶅啀淇濈暀銆?
    */
   migrateSuperlikeUsersIfNeeded();
 
@@ -629,8 +628,8 @@ function initDatabase() {
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'experience_7d', 'INTEGER');
 
-  // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
-  // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
+  // 鍏煎鏃у簱锛氫互鍓?superlike_users 浣跨敤 (monitor_id, uid) 澶嶅悎涓婚敭锛?
+  // 鐜板湪瑕佹眰 uid 鍏ㄥ眬鍞竴銆傚厛鍚堝苟/鍒犻櫎閲嶅 uid锛屽啀寤虹珛鍞竴绱㈠紩銆?
   db.exec(`
     DELETE FROM superlike_users
     WHERE rowid NOT IN (
@@ -645,7 +644,7 @@ function initDatabase() {
 
   migrateSuperlikePostsIfNeeded();
 
-  // 候选帖是否已经搬运到微博群。旧数据库启动时自动补列。
+  // 鍊欓€夊笘鏄惁宸茬粡鎼繍鍒板井鍗氱兢銆傛棫鏁版嵁搴撳惎鍔ㄦ椂鑷姩琛ュ垪銆?
   ensureColumn('superlike_posts', 'moved_flag', 'INTEGER NOT NULL DEFAULT 0');
   
   db.exec(`
@@ -702,8 +701,8 @@ function initDatabase() {
   `);
 
   /*
-   * 初始黑粉关键词。
-   * INSERT OR IGNORE：以后手工增加/修改关键词不会被启动过程覆盖。
+   * 鍒濆榛戠矇鍏抽敭璇嶃€?
+   * INSERT OR IGNORE锛氫互鍚庢墜宸ュ鍔?淇敼鍏抽敭璇嶄笉浼氳鍚姩杩囩▼瑕嗙洊銆?
    */
   const seedBlackKeyword =
     db.prepare(`
@@ -717,8 +716,8 @@ function initDatabase() {
   for (
     const keyword
     of [
-      '雷朋',
-      '渝',
+      '闆锋湅',
+      '娓?,
       'lp'
     ]
   ) {
@@ -728,9 +727,9 @@ function initDatabase() {
   }
 
   /*
-   * 只有完整初始化成功后才置为 true。
-   * 上面任意 migration / DDL 失败都会直接抛错，
-   * 下次调用仍会重新尝试初始化。
+   * 鍙湁瀹屾暣鍒濆鍖栨垚鍔熷悗鎵嶇疆涓?true銆?
+   * 涓婇潰浠绘剰 migration / DDL 澶辫触閮戒細鐩存帴鎶涢敊锛?
+   * 涓嬫璋冪敤浠嶄細閲嶆柊灏濊瘯鍒濆鍖栥€?
    */
   databaseInitialized = true;
 }
@@ -938,7 +937,7 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
   const normalizedUid = String(uid || '').trim();
 
   if (!Number.isFinite(normalizedMonitorId) || normalizedMonitorId <= 0) {
-    throw new Error('saveSuperLikeUser 缺少有效 monitorId');
+    throw new Error('saveSuperLikeUser 缂哄皯鏈夋晥 monitorId');
   }
 
   if (!normalizedUid) {
@@ -999,7 +998,7 @@ function saveSuperLikeTargetPost(data = {}) {
   const postLink = data.postLink || null;
   const postText = data.postText || '';
   const commentsCount = Number(data.commentsCount);
-  const iconSummary = data.iconSummary || '无';
+  const iconSummary = data.iconSummary || '鏃?;
   const postCreatedAt = data.postCreatedAt || null;
   const postCreatedAtMs = Number(data.postCreatedAtMs);
   const rawJson = data.rawJson || null;
@@ -1025,13 +1024,13 @@ function saveSuperLikeTargetPost(data = {}) {
       .toUpperCase();
 
   if (!Number.isFinite(monitorId) || monitorId <= 0) {
-    throw new Error('saveSuperLikeTargetPost 缺少有效 monitorId');
+    throw new Error('saveSuperLikeTargetPost 缂哄皯鏈夋晥 monitorId');
   }
   if (!postId) {
-    throw new Error('saveSuperLikeTargetPost 缺少 postId');
+    throw new Error('saveSuperLikeTargetPost 缂哄皯 postId');
   }
   if (!uid) {
-    throw new Error('saveSuperLikeTargetPost 缺少 uid');
+    throw new Error('saveSuperLikeTargetPost 缂哄皯 uid');
   }
 
   const existing = db.prepare(`
@@ -1092,12 +1091,12 @@ function saveSuperLikeTargetPost(data = {}) {
       : null;
 
     /*
-     * 同 UID 候选帖替换规则：
-     * 1) 不同自然日：优先日期更新的帖子，不比较评论数。
-     * 2) 同一自然日：优先评论数更多的帖子。
-     * 3) 同日且评论数相同：再用发帖时间更晚的帖子兜底。
+     * 鍚?UID 鍊欓€夊笘鏇挎崲瑙勫垯锛?
+     * 1) 涓嶅悓鑷劧鏃ワ細浼樺厛鏃ユ湡鏇存柊鐨勫笘瀛愶紝涓嶆瘮杈冭瘎璁烘暟銆?
+     * 2) 鍚屼竴鑷劧鏃ワ細浼樺厛璇勮鏁版洿澶氱殑甯栧瓙銆?
+     * 3) 鍚屾棩涓旇瘎璁烘暟鐩稿悓锛氬啀鐢ㄥ彂甯栨椂闂存洿鏅氱殑甯栧瓙鍏滃簳銆?
      *
-     * 日期按 post_created_at 所带时间解析后的本地日期比较。
+     * 鏃ユ湡鎸?post_created_at 鎵€甯︽椂闂磋В鏋愬悗鐨勬湰鍦版棩鏈熸瘮杈冦€?
      */
     const toDateKey =
       ms => {
@@ -1204,7 +1203,7 @@ function saveSuperLikeTargetPost(data = {}) {
 
     } else {
       /*
-       * 任一帖子时间无法解析时，退回旧规则，避免因为坏时间字段完全无法更新。
+       * 浠讳竴甯栧瓙鏃堕棿鏃犳硶瑙ｆ瀽鏃讹紝閫€鍥炴棫瑙勫垯锛岄伩鍏嶅洜涓哄潖鏃堕棿瀛楁瀹屽叏鏃犳硶鏇存柊銆?
        */
       shouldReplace =
         (
@@ -1366,7 +1365,7 @@ function setSuperLikePostMoved(postRowId, moved) {
 
   const id = Number(postRowId);
   if (!Number.isFinite(id) || id <= 0) {
-    throw new Error('setSuperLikePostMoved 缺少有效帖子ID');
+    throw new Error('setSuperLikePostMoved 缂哄皯鏈夋晥甯栧瓙ID');
   }
 
   const movedFlag = moved ? 1 : 0;
@@ -2172,7 +2171,7 @@ function resetHistoryProgress(monitorId, pageNum = 1) {
 function getInitialHistoryPage(monitorId) {
   initDatabase();
   const monitor = getMonitor(monitorId);
-  if (!monitor) throw new Error(`Monitor ${monitorId} 不存在`);
+  if (!monitor) throw new Error(`Monitor ${monitorId} 涓嶅瓨鍦╜);
 
   if (monitor.history_next_page != null && Number(monitor.history_next_page) >= 1) {
     return Number(monitor.history_next_page);
@@ -2201,7 +2200,7 @@ function getInitialHistoryPage(monitorId) {
 
   const nextPage = maxSuccessfulPage > 0 ? maxSuccessfulPage + 1 : 1;
   setHistoryNextPage(monitorId, nextPage);
-  console.log(`Monitor ${monitorId} 初始化 History 断点：${nextPage}`);
+  console.log(`Monitor ${monitorId} 鍒濆鍖?History 鏂偣锛?{nextPage}`);
   return nextPage;
 }
 
@@ -2430,7 +2429,7 @@ function saveDailyStats(monitorIdOrObject, maybeStats = null) {
     stats = maybeStats || {};
   }
 
-  if (!monitorId) throw new Error('saveDailyStats 缺少 monitorId');
+  if (!monitorId) throw new Error('saveDailyStats 缂哄皯 monitorId');
 
   const statDate = stats.statDate || new Date().toISOString().slice(0, 10);
 
@@ -2518,3 +2517,4 @@ module.exports = {
   addSuperLikePoolExitCount,
   getTodaySuperLikePoolExitCount
 };
+
