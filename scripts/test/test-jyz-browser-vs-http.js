@@ -14,7 +14,7 @@ const pool = new ProxyPool({
   rawPool: process.env.JYZ_BACKFILL_PROXY_POOL || '',
   fallback: process.env.JYZ_BACKFILL_PROXY || process.env.WEIBO_PROXY || '',
   cooldownMs: 30 * 60 * 1000,
-  name: 'jyz-ab-test'
+  name: 'jyz-abc-test'
 });
 
 function clip(text, max = 800) {
@@ -37,15 +37,38 @@ function cookieSummary(cookies) {
   return cookies.map(c => `${c.name}@${c.domain}`).join(',');
 }
 
+async function runRequest(label, api, url, headers) {
+  const started = Date.now();
+  try {
+    const response = await api.get(url, {
+      timeout: 15000,
+      headers
+    });
+    const text = await response.text();
+    console.log(`\n========== ${label} ==========`);
+    console.log(`status=${response.status()}`);
+    console.log(`finalUrl=${response.url()}`);
+    console.log(`elapsed=${Date.now() - started}ms`);
+    console.log(`headers=${JSON.stringify(selectedHeaders(response.headers()))}`);
+    console.log(`body=${clip(text)}`);
+    return { ok: true, status: response.status(), text, url: response.url() };
+  } catch (error) {
+    console.log(`\n========== ${label} ==========`);
+    console.log(`ERROR=${error?.message || String(error)}`);
+    console.log(`elapsed=${Date.now() - started}ms`);
+    return { ok: false, status: null, error: error?.message || String(error) };
+  }
+}
+
 (async () => {
   console.log('==============================================');
-  console.log(`[JYZ A/B] UID=${UID}`);
-  console.log('目的：同代理、同Cookie、同URL比较 Browser fetch 与 APIRequestContext');
+  console.log(`[JYZ A/B/C] UID=${UID}`);
+  console.log('A=Browser fetch / B=browserContext.request / C=standalone request.newContext');
   console.log('==============================================');
 
   const assignment = await pool.acquire();
   if (!assignment?.proxy) throw new Error('没有可用健康代理');
-  console.log(`[JYZ A/B] Proxy=${assignment.masked}`);
+  console.log(`[JYZ A/B/C] Proxy=${assignment.masked}`);
 
   const pageId = '100808' + TOPIC_HASH;
   const referer = new URL('https://huati.weibo.cn/super/setting/icon');
@@ -61,7 +84,7 @@ function cookieSummary(cookies) {
   apiUrl.searchParams.set('param_uid', UID);
 
   let context;
-  let api;
+  let standalone;
   try {
     context = await chromium.launchPersistentContext(PROFILE_DIR, {
       channel: 'chromium',
@@ -77,7 +100,7 @@ function cookieSummary(cookies) {
       timeout: 15000
     });
     await page.waitForTimeout(800);
-    console.log(`[JYZ A/B][Browser] 页面 HTTP=${nav?.status() ?? '-'} | finalUrl=${page.url()}`);
+    console.log(`[JYZ A/B/C][Browser] 页面 HTTP=${nav?.status() ?? '-'} | finalUrl=${page.url()}`);
 
     const browserResult = await page.evaluate(async ({ url }) => {
       const response = await fetch(url, {
@@ -108,60 +131,58 @@ function cookieSummary(cookies) {
 
     const cookies = await context.cookies();
     const xsrf = cookies.find(c => c.name === 'XSRF-TOKEN')?.value || '';
-    console.log(`\n[JYZ A/B] Cookie=${cookies.length} | XSRF=${xsrf ? 'YES' : 'NO'}`);
-    console.log(`[JYZ A/B] CookieNames=${cookieSummary(cookies)}`);
+    console.log(`\n[JYZ A/B/C] Cookie=${cookies.length} | XSRF=${xsrf ? 'YES' : 'NO'}`);
+    console.log(`[JYZ A/B/C] CookieNames=${cookieSummary(cookies)}`);
 
-    api = await request.newContext({
-      ignoreHTTPSErrors: true,
-      proxy: assignment.proxy,
-      userAgent: browserResult.userAgent,
-      extraHTTPHeaders: {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': browserResult.language || 'zh-CN',
-        Referer: referer.toString(),
-        'X-Requested-With': 'XMLHttpRequest',
-        ...(xsrf ? { 'X-XSRF-TOKEN': xsrf } : {})
-      }
-    });
-    await api.storageState({ path: undefined }).catch(() => null);
-    await api.dispose();
+    const commonHeaders = {
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': browserResult.language || 'zh-CN',
+      Referer: referer.toString(),
+      'X-Requested-With': 'XMLHttpRequest',
+      ...(xsrf ? { 'X-XSRF-TOKEN': xsrf } : {})
+    };
 
-    api = await request.newContext({
+    const contextRequestResult = await runRequest(
+      'B. browserContext.request',
+      context.request,
+      apiUrl.toString(),
+      commonHeaders
+    );
+
+    standalone = await request.newContext({
       ignoreHTTPSErrors: true,
       proxy: assignment.proxy,
       userAgent: browserResult.userAgent,
       storageState: { cookies, origins: [] },
-      extraHTTPHeaders: {
-        Accept: 'application/json, text/plain, */*',
-        'Accept-Language': browserResult.language || 'zh-CN',
-        Referer: referer.toString(),
-        'X-Requested-With': 'XMLHttpRequest',
-        ...(xsrf ? { 'X-XSRF-TOKEN': xsrf } : {})
-      }
+      extraHTTPHeaders: commonHeaders
     });
 
-    const httpResponse = await api.get(apiUrl.toString(), { timeout: 15000 });
-    const httpText = await httpResponse.text();
+    const standaloneResult = await runRequest(
+      'C. standalone request.newContext',
+      standalone,
+      apiUrl.toString(),
+      undefined
+    );
 
-    console.log('\n========== B. APIRequestContext ==========');
-    console.log(`status=${httpResponse.status()}`);
-    console.log(`finalUrl=${httpResponse.url()}`);
-    console.log(`headers=${JSON.stringify(selectedHeaders(httpResponse.headers()))}`);
-    console.log(`body=${clip(httpText)}`);
+    console.log('\n========== 对比结论 ==========' );
+    console.log(`A Browser=${browserResult.status}`);
+    console.log(`B context.request=${contextRequestResult.status ?? 'ERROR'}`);
+    console.log(`C standalone=${standaloneResult.status ?? 'ERROR'}`);
 
-    console.log('\n========== 对比结论 ==========');
-    if (browserResult.status === 200 && httpResponse.status() !== 200) {
-      console.log(`Browser=200 / HTTP=${httpResponse.status()}：HTTP请求仍缺浏览器特征，重点比较响应body/header。`);
-    } else if (browserResult.status === httpResponse.status()) {
-      console.log(`两边status相同=${browserResult.status}：更像服务端/代理当时状态，而不是单纯APIRequestContext差异。`);
+    if (browserResult.status === 200 && contextRequestResult.status === 200 && standaloneResult.status !== 200) {
+      console.log('结论：browserContext.request 可用，standalone HTTP 链路有问题。正式脚本应优先改为保留 BrowserContext + context.request。');
+    } else if (browserResult.status === 200 && contextRequestResult.status !== 200 && standaloneResult.status !== 200) {
+      console.log('结论：Browser fetch 可用，但 Playwright HTTP client 两条链路都异常。正式脚本应保留常驻 Page，用 page.evaluate(fetch)。');
+    } else if (browserResult.status === 200 && standaloneResult.status === 200) {
+      console.log('结论：standalone HTTP 本次可用；此前 503/timeout 更可能与代理节点或瞬时网络有关。');
     } else {
-      console.log(`Browser=${browserResult.status} / HTTP=${httpResponse.status()}：存在明确链路差异。`);
+      console.log('结论：结果混合，请把完整输出发来继续判断。');
     }
   } finally {
-    if (api) await api.dispose().catch(() => {});
+    if (standalone) await standalone.dispose().catch(() => {});
     if (context) await context.close().catch(() => {});
   }
 })().catch(error => {
-  console.error('[JYZ A/B] ERROR:', error);
+  console.error('[JYZ A/B/C] ERROR:', error);
   process.exitCode = 1;
 });
