@@ -111,6 +111,7 @@ function shortError(error) {
 }
 function isHttpProxyFailure(status) {
   const code = Number(status);
+  if (code === 400) return false;
   return (code >= 400 && code < 500) || (code >= 500 && code < 600);
 }
 function isLoginUrl(url) {
