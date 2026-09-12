@@ -135,9 +135,6 @@ async function bootstrapVisitorSession(reason = '首次启动', useProxy = false
       const cookie = cookieHeader(cookies);
       if (!cookie) throw new Error('Chromium 未取得游客 Cookie');
       const userAgent = await page.evaluate(() => navigator.userAgent);
-
-      // Playwright APIRequestContext 是轻量 HTTP 客户端；proxy 与 Chromium 完全相同。
-      // 这样 Cookie + 出口 IP 作为一个 Session 单元绑定使用，不需要继续保留 Chromium。
       const apiContext = await request.newContext({
         userAgent,
         ...(assignment?.proxy ? { proxy: assignment.proxy } : {}),
@@ -176,13 +173,30 @@ async function bootstrapVisitorSession(reason = '首次启动', useProxy = false
   throw lastError || new Error('游客 Session 建立失败');
 }
 
+async function createFreshSession(reason = 'Session失效', forceProxy = false) {
+  // 正常情况下先尝试本机 IP；一旦本机已经 418，本进程后续都优先代理，避免反复撞同一个受限 IP。
+  if (forceProxy || forceProxyAfter418) {
+    return bootstrapVisitorSession(reason, true);
+  }
+
+  try {
+    return await bootstrapVisitorSession(reason, false);
+  } catch (error) {
+    if (error?.blocked || /HTTP 418/i.test(String(error?.message || ''))) {
+      forceProxyAfter418 = true;
+      console.log(`[模式3][Session] LOCAL 已被 418 限制 → 立即切换代理池重新领取游客Session`);
+      return bootstrapVisitorSession('LOCAL 418，换IP+换Cookie', true);
+    }
+    throw error;
+  }
+}
+
 async function refreshVisitorSession(reason = 'Session失效', staleGeneration = null, forceProxy = false) {
   if (staleGeneration !== null && visitorSession && visitorSession.generation !== staleGeneration) return visitorSession;
   if (!sessionRefreshPromise) {
     sessionRefreshPromise = (async () => {
       const old = visitorSession;
-      const useProxy = forceProxy || forceProxyAfter418;
-      const fresh = await bootstrapVisitorSession(reason, useProxy);
+      const fresh = await createFreshSession(reason, forceProxy);
       visitorSession = fresh;
       await disposeSession(old);
       return fresh;
@@ -238,7 +252,7 @@ async function checkUser(config, uid, stats) {
     }
     console.log(`[模式3][Session] UID=${uid} | ${result.message} | generation=${usedGeneration} | IP=${session.proxyLabel} → ${is418 ? '418触发换IP+换Cookie' : '刷新Session'}后重试一次`);
     try {
-      session = await refreshVisitorSession(`${result.message}，${is418 ? '换IP+换Cookie' : '刷新'}`, usedGeneration, is418);
+      session = await refreshVisitorSession(`${result.message}，刷新`, usedGeneration, is418);
       stats.httpRetried++;
       stats.httpTried++;
       result = await fetchWithSession(config, uid, session);
@@ -268,6 +282,7 @@ async function runRound(round) {
   const startedAt = Date.now();
   const monitors = await getMonitors();
   const stats = { users: 0, httpTried: 0, httpOk: 0, httpRetried: 0, sessionFailures: 0, checked: 0, superlike: 0, deleted: 0, failed: 0 };
+
   console.log('');
   console.log(`[Recheck] ===== 模式3 Session-HTTP 第${round}轮开始 =====`);
   console.log(`[模式3] Chromium只领游客Session | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 418=换IP+换Cookie`);
@@ -280,8 +295,8 @@ async function runRound(round) {
     console.log(`[模式3] Monitor=${monitor.name} | UID=${users.length} | 条件=今天入库+jyz>=70 | 顺序=jyz DESC`);
     if (!users.length) continue;
     console.log('[模式3][队列TOP] ' + users.slice(0, 10).map(x => `${x.uid}(jyz=${x.experience_7d ?? '-'})`).join(' | '));
-    await ensureVisitorSession();
 
+    await ensureVisitorSession();
     const results = await mapLimit(users, HTTP_CONCURRENCY, async (user, index) => {
       const uid = String(user.uid || '').trim();
       const result = await checkUser(config, uid, stats);
@@ -294,7 +309,9 @@ async function runRound(round) {
       if (!result?.ok) {
         stats.failed++;
         console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | 失败 | ${result?.message || 'unknown'}`);
-        if (Number(result?.status) !== 403 && !String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED');
+        if (Number(result?.status) !== 403 && !String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) {
+          await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED');
+        }
         continue;
       }
       stats.checked++;
