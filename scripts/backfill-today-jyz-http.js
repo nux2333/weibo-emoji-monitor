@@ -4,6 +4,7 @@ const path = require('path');
 const { chromium, request } = require('playwright');
 const { createBatchLogger } = require('../src/batch-logger');
 const { ProxyPool } = require('../src/proxy-pool');
+const { shouldRotateProxy, shouldRotateProxyForNetworkError } = require('../src/proxy-http-policy');
 const { db, initDatabase, saveSuperLikeUser } = require('../src/db');
 const { deletePostsByUidWithLog } = require('../src/superlike/post-save');
 
@@ -44,10 +45,6 @@ function buildUrls(uid) {
   const apiUrl = new URL('https://huati.weibo.cn/aj/setting/icon/getconfig');
   apiUrl.searchParams.set('type', '1'); apiUrl.searchParams.set('union_id', 'chao_like'); apiUrl.searchParams.set('page_id', pageId); apiUrl.searchParams.set('param_uid', String(uid));
   return { referer: referer.toString(), apiUrl: apiUrl.toString() };
-}
-function isProxyConnectionError(message) {
-  const text = String(message || '');
-  return /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_CONNECTION_FAILED|ERR_SOCKS_CONNECTION_FAILED|ERR_CONNECTION_RESET|ERR_CONNECTION_CLOSED|ERR_CONNECTION_REFUSED|ERR_TIMED_OUT|ERR_EMPTY_RESPONSE|ERR_CERT_AUTHORITY_INVALID|ERR_CERT_COMMON_NAME_INVALID|ERR_CERT_DATE_INVALID|Failed to fetch|NetworkError|fetch failed|Timeout|AbortError|ECONN|proxy/i.test(text);
 }
 async function queryJyzService(uid) {
   try {
@@ -92,7 +89,6 @@ async function queryJyzHttp(uid) {
   try {
     const response = await bootstrap.context.get(urls.apiUrl, { headers: { Accept: 'application/json, text/plain, */*', 'X-Requested-With': 'XMLHttpRequest', Referer: urls.referer }, timeout: HTTP_TIMEOUT_MS, failOnStatusCode: false });
     const text = await response.text(); const status = response.status(); console.log('[JYZ补数][HTTP] UID=' + uid + ' | HTTP=' + status + ' | ' + (Date.now() - startedAt) + 'ms');
-    if (status === 403 || status === 418 || status === 432) return { ok: false, status, message: 'HTTP ' + status };
     if (status < 200 || status >= 300) return { ok: false, status, message: 'HTTP ' + status };
     if (text.trimStart().startsWith('<')) return { ok: false, sessionInvalid: true, message: '返回HTML，不是JSON' };
     let json; try { json = JSON.parse(text); } catch (error) { return { ok: false, message: 'JSON解析失败：' + error.message }; }
@@ -106,8 +102,16 @@ async function queryJyz(uid) {
   let lastResult = null;
   for (let attempt = 1; attempt <= MAX_PROXY_ATTEMPTS; attempt++) {
     const result = await queryJyzHttp(uid); lastResult = result; if (result.ok) return result;
-    if (Number(result.status) === 418 || Number(result.status) === 403 || Number(result.status) === 432 || result.sessionInvalid) { await rotateBackfillProxy(result.message || 'session blocked', false); console.log('[JYZ补数][重试] UID=' + uid + ' | ' + (result.message || 'session blocked') + ' → 换代理并重新初始化HTTP session | ' + attempt + '/' + MAX_PROXY_ATTEMPTS); continue; }
-    if (isProxyConnectionError(result.message)) { await rotateBackfillProxy(result.message || '代理连接失败', true); console.log('[JYZ补数][重试] UID=' + uid + ' | ' + (result.message || '代理连接失败') + ' → 淘汰当前代理并重试 | ' + attempt + '/' + MAX_PROXY_ATTEMPTS); continue; }
+    if (result.sessionInvalid || shouldRotateProxy({ status: result.status })) {
+      await rotateBackfillProxy(result.message || 'HTTP/session blocked', false);
+      console.log('[JYZ补数][重试] UID=' + uid + ' | ' + (result.message || 'HTTP/session blocked') + ' → 共通规则判定换代理并重新初始化HTTP session | ' + attempt + '/' + MAX_PROXY_ATTEMPTS);
+      continue;
+    }
+    if (shouldRotateProxyForNetworkError(result.message)) {
+      await rotateBackfillProxy(result.message || '代理连接失败', true);
+      console.log('[JYZ补数][重试] UID=' + uid + ' | ' + (result.message || '代理连接失败') + ' → 共通规则判定淘汰当前代理并重试 | ' + attempt + '/' + MAX_PROXY_ATTEMPTS);
+      continue;
+    }
     return result;
   }
   return lastResult || { ok: false, message: '代理重试次数已用完' };
