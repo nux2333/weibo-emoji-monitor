@@ -44,18 +44,11 @@ const UNIFIED_SCAN_CHECKPOINT_PRELOAD =
     'unified-scan-checkpoint-preload.js'
   );
 
-const HTTP_FRESH_LATEST_PRELOAD =
+const SCAN_HTTP_ONLY_PRELOAD =
   path.join(
     ROOT,
     'src',
-    'superlike-http-latest-preload.js'
-  );
-
-const QA_HTTP_ONLY_PRELOAD =
-  path.join(
-    ROOT,
-    'src',
-    'superlike-qa-http-only-preload.js'
+    'superlike-scan-http-only-preload.js'
   );
 
 const WORKER_STAGGER_MS =
@@ -171,9 +164,7 @@ function startWorker(
         '--require',
         UNIFIED_SCAN_CHECKPOINT_PRELOAD,
         '--require',
-        HTTP_FRESH_LATEST_PRELOAD,
-        '--require',
-        QA_HTTP_ONLY_PRELOAD,
+        SCAN_HTTP_ONLY_PRELOAD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -323,13 +314,10 @@ console.log(
   '# Checkpoint: 统一 superlike_scan_checkpoint(monitor_id, source_key)'
 );
 console.log(
-  '# Scan分页: HTTP APIRequestContext'
+  '# Scan架构: Chromium初始化 desktop/mobile Cookie -> 独立 HTTP session -> 关闭Chromium'
 );
 console.log(
-  '# fresh-qa实验: QA初始化后关闭Chromium，分页+Profile全HTTP'
-);
-console.log(
-  '# Browser profile: 除fresh-qa外每个worker独立'
+  '# 后续: 抓帖分页 + Profile 全部 HTTP，单次请求超时12秒'
 );
 console.log(
   '# Playwright: 每个子worker启用共通防卡watchdog'
