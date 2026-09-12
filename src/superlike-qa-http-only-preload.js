@@ -5,10 +5,10 @@
  *
  * 仅对 fresh-qa 生效：
  * 1. Chromium 完成真实首页 / 最新 / QA 分区初始化。
- * 2. 第一次进入 QA flow 的后续分页时，复制当前 Cookie + 当前代理到
- *    独立 Playwright APIRequestContext。
- * 3. 关闭 Chromium PersistentContext。
- * 4. 后续 QA 分页、Profile 校验全部使用独立 HTTP session。
+ * 2. 关闭 Chromium 前额外初始化一次 m.weibo.cn 游客会话。
+ * 3. 合并桌面端 + 移动端 Cookie，并复制当前代理到独立 Playwright APIRequestContext。
+ * 4. 关闭 Chromium PersistentContext。
+ * 5. 后续 QA 分页、Profile 校验全部使用独立 HTTP session。
  *
  * 其它 Fresh / History 完全不受影响。
  */
@@ -47,7 +47,6 @@ if (enabled) {
 
   let currentAssignment = null;
   let httpContext = null;
-  let chromiumClosed = false;
   let creatingSession = null;
 
   function sleep(ms) {
@@ -118,6 +117,97 @@ if (enabled) {
       return assignment;
     };
 
+  async function warmMobileVisitorSession(browserContext) {
+    let mobilePage = null;
+
+    try {
+      const beforeCookies =
+        await browserContext.cookies();
+
+      const beforeMobile =
+        beforeCookies.filter(
+          cookie =>
+            String(cookie?.domain || '')
+              .includes('weibo.cn')
+        );
+
+      console.log(
+        `[SuperLike][QA HTTP-only][MobileSession] 初始化前 Cookie=${beforeCookies.length} | m.weibo.cn域=${beforeMobile.length}`
+      );
+
+      mobilePage =
+        await browserContext.newPage();
+
+      /*
+       * 这里只做游客会话预热，不依赖具体 UID。
+       * m.weibo.cn 首页会建立移动端游客 Cookie / token；
+       * 即便最终被引导到 visitor/passport，也保留跳转前已写入的 Cookie。
+       */
+      const response =
+        await mobilePage.goto(
+          'https://m.weibo.cn/',
+          {
+            waitUntil: 'domcontentloaded',
+            timeout: 12000
+          }
+        )
+        .catch(
+          error => {
+            console.warn(
+              `[SuperLike][QA HTTP-only][MobileSession] m.weibo.cn 导航提示：${error?.message || error}`
+            );
+            return null;
+          }
+        );
+
+      await sleep(1500);
+
+      const afterCookies =
+        await browserContext.cookies();
+
+      const afterMobile =
+        afterCookies.filter(
+          cookie =>
+            String(cookie?.domain || '')
+              .includes('weibo.cn')
+        );
+
+      const mobileNames =
+        [...new Set(
+          afterMobile.map(
+            cookie => String(cookie?.name || '')
+          ).filter(Boolean)
+        )]
+        .slice(0, 20)
+        .join(',');
+
+      console.log(
+        `[SuperLike][QA HTTP-only][MobileSession] 初始化完成 | HTTP=${response?.status?.() ?? '-'} | Cookie=${afterCookies.length} | m.weibo.cn域=${afterMobile.length} | names=${mobileNames || '-'}`
+      );
+
+      return afterCookies;
+
+    } catch (error) {
+      console.warn(
+        `[SuperLike][QA HTTP-only][MobileSession] 初始化失败，继续沿用已有Cookie：${error?.message || error}`
+      );
+
+      return browserContext.cookies();
+
+    } finally {
+      if (
+        mobilePage
+        && !mobilePage.isClosed()
+      ) {
+        try {
+          await mobilePage.close();
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
   async function ensureHttpOnlySession(page) {
     if (httpContext) {
       return httpContext;
@@ -138,14 +228,30 @@ if (enabled) {
       }
 
       const cookies =
-        await browserContext.cookies();
+        await warmMobileVisitorSession(
+          browserContext
+        );
 
       const proxy =
         currentAssignment?.proxy
         || null;
 
+      const desktopCookieCount =
+        cookies.filter(
+          cookie =>
+            String(cookie?.domain || '')
+              .includes('weibo.com')
+        ).length;
+
+      const mobileCookieCount =
+        cookies.filter(
+          cookie =>
+            String(cookie?.domain || '')
+              .includes('weibo.cn')
+        ).length;
+
       console.log(
-        `[SuperLike][QA HTTP-only] 准备脱离 Chromium | Cookie=${cookies.length} | Proxy=${currentAssignment?.masked || 'LOCAL'}`
+        `[SuperLike][QA HTTP-only] 准备脱离 Chromium | Cookie=${cookies.length} | desktop=${desktopCookieCount} | mobile=${mobileCookieCount} | Proxy=${currentAssignment?.masked || 'LOCAL'}`
       );
 
       const independent =
@@ -177,7 +283,6 @@ if (enabled) {
 
       try {
         await browserContext.close();
-        chromiumClosed = true;
 
         console.log(
           '[SuperLike][QA HTTP-only] Chromium 已关闭；后续 QA 分页 + Profile 全部走独立 HTTP session。'
@@ -469,6 +574,6 @@ if (enabled) {
   );
 
   console.log(
-    '[SuperLike][QA HTTP-only] 已启用试验：QA 初始化完成后关闭 Chromium，后续分页 + Profile 使用独立 HTTP session。'
+    '[SuperLike][QA HTTP-only] 已启用试验：关闭 Chromium 前预热 m.weibo.cn 游客会话；之后 QA 分页 + Profile 使用独立 HTTP session。'
   );
 }
