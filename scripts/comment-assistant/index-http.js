@@ -457,7 +457,16 @@ async function main() {
           i -= 1;
         }
       } catch (error) {
-        console.error(`[评论失败] ${shortError(error)}`);
+        const reason = shortError(error);
+        console.error(`[评论失败] ${reason}`);
+        const nextApi = await rotateHttpSession(api, browserSession);
+        if (nextApi) {
+          api = nextApi;
+          console.log(`[HTTP评论] POST ${reason} → 已切换代理；当前帖子重新显示，不会自动重发。`);
+          i -= 1;
+          continue;
+        }
+        console.warn(`[HTTP评论] POST ${reason}，但没有其他可用代理可切换。`);
       }
     }
   } finally {
