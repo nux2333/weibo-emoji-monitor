@@ -48,10 +48,6 @@ function migrateOnce() {
   initDatabase();
 
   if (isUnifiedSchema()) {
-    /*
-     * 旧 db.js 每次初始化仍可能创建兼容表。
-     * 如果里面存在数据，先并回主表再删除。
-     */
     const sourceRows = safeAll(`
       SELECT
         monitor_id,
@@ -87,12 +83,8 @@ function migrateOnce() {
           Number(row.monitor_id),
           String(row.source_key),
           String(row.latest_post_id),
-          row.latest_created_at == null
-            ? null
-            : String(row.latest_created_at),
-          row.latest_created_at_ms == null
-            ? null
-            : Number(row.latest_created_at_ms),
+          row.latest_created_at == null ? null : String(row.latest_created_at),
+          row.latest_created_at_ms == null ? null : Number(row.latest_created_at_ms),
           row.updated_at || new Date().toISOString()
         );
       }
@@ -134,7 +126,7 @@ function migrateOnce() {
         source_key TEXT NOT NULL,
         latest_post_id TEXT NOT NULL,
         latest_created_at TEXT,
-        latest_created_at_ms INTEGER,
+        latest_created_at_ms BIGINT,
         updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY(monitor_id, source_key),
         FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
@@ -166,12 +158,8 @@ function migrateOnce() {
         Number(row.monitor_id),
         LATEST_SOURCE_KEY,
         String(row.latest_post_id),
-        row.latest_created_at == null
-          ? null
-          : String(row.latest_created_at),
-        row.latest_created_at_ms == null
-          ? null
-          : Number(row.latest_created_at_ms),
+        row.latest_created_at == null ? null : String(row.latest_created_at),
+        row.latest_created_at_ms == null ? null : Number(row.latest_created_at_ms),
         row.updated_at || new Date().toISOString()
       );
     }
@@ -183,12 +171,8 @@ function migrateOnce() {
         Number(row.monitor_id),
         String(row.source_key),
         String(row.latest_post_id),
-        row.latest_created_at == null
-          ? null
-          : String(row.latest_created_at),
-        row.latest_created_at_ms == null
-          ? null
-          : Number(row.latest_created_at_ms),
+        row.latest_created_at == null ? null : String(row.latest_created_at),
+        row.latest_created_at_ms == null ? null : Number(row.latest_created_at_ms),
         row.updated_at || new Date().toISOString()
       );
     }
@@ -261,11 +245,7 @@ function saveCheckpointBySource(
   latestCreatedAt,
   latestCreatedAtMs
 ) {
-  if (
-    !monitorId
-    || !sourceKey
-    || !latestPostId
-  ) {
+  if (!monitorId || !sourceKey || !latestPostId) {
     return false;
   }
 
@@ -299,11 +279,7 @@ function saveCheckpointBySource(
 }
 
 function getScanCheckpoint(monitorId) {
-  const row = getCheckpointBySource(
-    monitorId,
-    LATEST_SOURCE_KEY
-  );
-
+  const row = getCheckpointBySource(monitorId, LATEST_SOURCE_KEY);
   if (!row) return null;
 
   return {
@@ -321,10 +297,7 @@ function saveScanCheckpoint(
   latestCreatedAt,
   latestCreatedAtMs
 ) {
-  if (
-    !latestPostId
-    || !Number.isFinite(Number(latestCreatedAtMs))
-  ) {
+  if (!latestPostId || !Number.isFinite(Number(latestCreatedAtMs))) {
     return false;
   }
 
@@ -337,14 +310,8 @@ function saveScanCheckpoint(
   );
 }
 
-function getScanSourceCheckpoint(
-  monitorId,
-  sourceKey
-) {
-  return getCheckpointBySource(
-    monitorId,
-    sourceKey
-  );
+function getScanSourceCheckpoint(monitorId, sourceKey) {
+  return getCheckpointBySource(monitorId, sourceKey);
 }
 
 function saveScanSourceCheckpoint(
@@ -363,10 +330,6 @@ function saveScanSourceCheckpoint(
   );
 }
 
-/*
- * Scanner 后续 require('./db') 命中同一份 module.exports，
- * 所以保持旧函数签名即可切换到统一 checkpoint 表。
- */
 dbModule.getScanCheckpoint = getScanCheckpoint;
 dbModule.saveScanCheckpoint = saveScanCheckpoint;
 dbModule.getScanSourceCheckpoint = getScanSourceCheckpoint;
