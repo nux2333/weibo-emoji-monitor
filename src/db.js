@@ -3,30 +3,11 @@ const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = path.join(__dirname, '..', 'data');
-const DB_FILE = process.env.DB_FILE
-  ? path.resolve(process.env.DB_FILE)
-  : path.join(DATA_DIR, 'monitor.db');
+const DB_FILE = path.join(DATA_DIR, 'monitor.db');
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const db = new DatabaseSync(DB_FILE);
-
-/*
- * SQLite 骞跺彂璁剧疆锛?
- * - WAL锛氳鍐欏苟鍙戞洿鍙嬪ソ锛孲canner/Recheck/Web 鍚屾椂杩愯鏃跺噺灏戜簰鐩搁樆濉炪€?
- * - busy_timeout锛氶亣鍒板叾浠?writer 鏃舵渶澶氱瓑寰?10 绉掞紝涓嶇珛鍗虫姏 SQLITE_BUSY銆?
- * - synchronous=NORMAL锛歐AL 涓嬪吋椤惧彲闈犳€т笌鍐欏叆鎬ц兘銆?
- *
- * 杩欎簺鏄繛鎺ョ骇/鏁版嵁搴撶骇璁剧疆锛屾瘡涓?Node 杩涚▼鍚姩鏃舵墽琛屼竴娆″嵆鍙€?
- */
-db.exec(`
-  PRAGMA busy_timeout = 10000;
-  PRAGMA journal_mode = WAL;
-  PRAGMA synchronous = NORMAL;
-  PRAGMA foreign_keys = ON;
-`);
-
-let databaseInitialized = false;
 
 function tableHasColumn(tableName, columnName) {
   return db.prepare(`PRAGMA table_info(${tableName})`).all()
@@ -36,7 +17,7 @@ function tableHasColumn(tableName, columnName) {
 function ensureColumn(tableName, columnName, definition) {
   if (tableHasColumn(tableName, columnName)) return;
   db.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
-  console.log(`鏁版嵁搴撳瓧娈靛凡琛ュ厖锛?{tableName}.${columnName}`);
+  console.log(`数据库字段已补充：${tableName}.${columnName}`);
 }
 
 function migrateSuperlikePostsIfNeeded() {
@@ -54,7 +35,7 @@ function migrateSuperlikePostsIfNeeded() {
 
   if (hasMonitorId && !hasOldUniquePostId) return;
 
-  console.log('鍗囩骇 superlike_posts 琛ㄧ粨鏋?..');
+  console.log('升级 superlike_posts 表结构...');
 
   db.exec(`
     PRAGMA foreign_keys = OFF;
@@ -69,21 +50,12 @@ function migrateSuperlikePostsIfNeeded() {
       post_link TEXT,
       post_text TEXT,
       comments_count INTEGER NOT NULL DEFAULT 0,
-      initial_comments_count INTEGER,
       current_has_superlike INTEGER NOT NULL DEFAULT 0,
-      moved_flag INTEGER NOT NULL DEFAULT 0,
       icon_summary TEXT,
       experience_7d INTEGER,
-      initial_experience_7d INTEGER,
       post_created_at TEXT,
-      /* 鍏ュ簱鏃堕棿锛氬浐瀹氫繚瀛樹腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮锛涘悗缁?UPDATE 涓嶄慨鏀?*/
-      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      comment_last_checked_at TEXT,
-      comment_next_check_at TEXT,
-      profile_last_checked_at TEXT,
-      profile_status TEXT NOT NULL DEFAULT 'UNKNOWN',
       raw_json TEXT,
       UNIQUE(monitor_id, post_id),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
@@ -107,200 +79,11 @@ function migrateSuperlikePostsIfNeeded() {
   `);
 }
 
-function migrateSuperlikeUsersIfNeeded() {
-  const tableExists = name =>
-    !!db.prepare(`
-      SELECT 1
-      FROM sqlite_master
-      WHERE type = 'table'
-        AND name = ?
-      LIMIT 1
-    `).get(name);
-
-  const getColumns = name =>
-    db.prepare(`PRAGMA table_info(${name})`).all()
-      .map(item => String(item.name));
-
-  const oldTableExists =
-    tableExists('superlike_users_old');
-
-  const currentExists =
-    tableExists('superlike_users');
-
-  /*
-   * 涓婁竴娆¤縼绉诲鏋滃湪 INSERT 闃舵澶辫触锛?
-   * SQLite 鍙兘宸茬粡鐣欎笅锛?
-   *   superlike_users_old = 鍘熷鏁版嵁
-   *   superlike_users     = 鏂板缓浣嗕负绌虹殑琛?
-   *
-   * 杩欓噷鍏堜紭鍏堟仮澶嶈繖涓€滃崐杩佺Щ鈥濈姸鎬併€?
-   */
-  if (oldTableExists) {
-    console.log(
-      '妫€娴嬪埌涓婃 superlike_users 杩佺Щ鏈畬鎴愶紝姝ｅ湪鑷姩鎭㈠鍘熸暟鎹?..'
-    );
-
-    if (currentExists) {
-      db.exec('DROP TABLE superlike_users');
-    }
-
-    db.exec(
-      'ALTER TABLE superlike_users_old RENAME TO superlike_users'
-    );
-  }
-
-  if (!tableExists('superlike_users')) {
-    return;
-  }
-
-  const columns =
-    getColumns('superlike_users');
-
-  const obsoleteColumns = [
-    'first_seen_at',
-    'first_seen_date',
-    'last_seen_date'
-  ];
-
-  if (
-    obsoleteColumns.every(
-      column => !columns.includes(column)
-    )
-  ) {
-    return;
-  }
-
-  console.log(
-    '鏁寸悊 superlike_users 琛ㄧ粨鏋勶細绉婚櫎 first_seen_at / first_seen_date / last_seen_date...'
-  );
-
-  const hasScanDate =
-    columns.includes('scan_date');
-
-  const hasFirstSeenDate =
-    columns.includes('first_seen_date');
-
-  const hasFirstSeenAt =
-    columns.includes('first_seen_at');
-
-  const hasInsertedAt =
-    columns.includes('inserted_at');
-
-  const hasLastSeenAt =
-    columns.includes('last_seen_at');
-
-  const hasFirstSeenRank =
-    columns.includes('first_seen_rank');
-
-  const hasLastSeenRank =
-    columns.includes('last_seen_rank');
-
-  const scanDateExpr =
-    [
-      hasScanDate
-        ? "NULLIF(scan_date, '')"
-        : null,
-      hasFirstSeenDate
-        ? "NULLIF(first_seen_date, '')"
-        : null,
-      hasFirstSeenAt
-        ? "date(first_seen_at, '+8 hours')"
-        : null,
-      "date('now', '+8 hours')"
-    ]
-      .filter(Boolean)
-      .join(', ');
-
-  const insertedExpr =
-    [
-      hasInsertedAt
-        ? "NULLIF(inserted_at, '')"
-        : null,
-      hasFirstSeenAt
-        ? "datetime(first_seen_at, '+8 hours')"
-        : null,
-      "datetime('now', '+8 hours')"
-    ]
-      .filter(Boolean)
-      .join(', ');
-
-  const lastSeenExpr =
-    [
-      hasLastSeenAt
-        ? "CASE WHEN last_seen_at IS NOT NULL AND last_seen_at <> '' THEN datetime(last_seen_at, '+8 hours') END"
-        : null,
-      "datetime('now', '+8 hours')"
-    ]
-      .filter(Boolean)
-      .join(', ');
-
-  db.exec('BEGIN IMMEDIATE');
-
-  try {
-    db.exec(`
-      PRAGMA foreign_keys = OFF;
-
-      ALTER TABLE superlike_users
-        RENAME TO superlike_users_old;
-
-      CREATE TABLE superlike_users (
-        monitor_id INTEGER NOT NULL,
-        uid TEXT PRIMARY KEY,
-        scan_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
-        inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-        last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-        first_seen_rank INTEGER,
-        last_seen_rank INTEGER,
-        FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-      );
-
-      INSERT INTO superlike_users(
-        monitor_id,
-        uid,
-        scan_date,
-        inserted_at,
-        last_seen_at,
-        first_seen_rank,
-        last_seen_rank
-      )
-      SELECT
-        monitor_id,
-        uid,
-        COALESCE(${scanDateExpr}),
-        COALESCE(${insertedExpr}),
-        COALESCE(${lastSeenExpr}),
-        ${hasFirstSeenRank ? 'first_seen_rank' : 'NULL'},
-        ${hasLastSeenRank ? 'last_seen_rank' : 'NULL'}
-      FROM superlike_users_old;
-
-      DROP TABLE superlike_users_old;
-
-      PRAGMA foreign_keys = ON;
-    `);
-
-    db.exec('COMMIT');
-
-    console.log(
-      'superlike_users 琛ㄧ粨鏋勬暣鐞嗗畬鎴愩€?
-    );
-
-  } catch (error) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // ignore
-    }
-
-    throw error;
-  }
-}
-
 function initDatabase() {
-  if (databaseInitialized) {
-    return;
-  }
-
   db.exec(`
+    PRAGMA foreign_keys = ON;
+    PRAGMA busy_timeout = 10000;
+
     CREATE TABLE IF NOT EXISTS monitors (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -377,8 +160,6 @@ function initDatabase() {
       icon_summary TEXT,
       experience_7d INTEGER,
       post_created_at TEXT,
-      /* 鍏ュ簱鏃堕棿锛氬浐瀹氫繚瀛樹腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮锛涘悗缁?UPDATE 涓嶄慨鏀?*/
-      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
       first_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       raw_json TEXT,
@@ -400,12 +181,11 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS superlike_users (
       monitor_id INTEGER NOT NULL,
       uid TEXT PRIMARY KEY,
-      scan_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
-      inserted_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      last_seen_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
+      scan_date TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
       first_seen_rank INTEGER,
       last_seen_rank INTEGER,
-      experience_7d INTEGER,
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
 
@@ -416,143 +196,6 @@ function initDatabase() {
       latest_created_at TEXT,
       latest_created_at_ms INTEGER,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-
-    /*
-     * Scan 鏂偣缁壂娓告爣銆?
-     * 涓庢寮?checkpoint 鍒嗙锛氭寮?checkpoint 鍙湪瀹夊叏杩藉埌鏃ц竟鐣屽悗鎺ㄨ繘锛?
-     * resume 鍙褰曗€滀笅涓€椤典粠鍝噷缁х画鈥濓紝澶辫触/杈惧埌50椤垫椂淇濈暀銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_scan_resume (
-      monitor_id INTEGER PRIMARY KEY,
-      checkpoint_post_id TEXT,
-      checkpoint_created_at_ms INTEGER,
-      sort_time_flow_id TEXT NOT NULL,
-      template_url TEXT NOT NULL,
-      next_page INTEGER NOT NULL,
-      next_since_id TEXT,
-      next_max_id TEXT,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    /*
-     * 鍒嗗尯鐙珛 Resume銆?
-     * 姣忎釜 monitor + source_key 鍗曠嫭淇濆瓨 tag_status_sort 鐨勪笅涓€椤?cursor銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_scan_source_resume (
-      monitor_id INTEGER NOT NULL,
-      source_key TEXT NOT NULL,
-      flow_id TEXT NOT NULL,
-      next_page INTEGER,
-      next_since_id TEXT,
-      next_max_id TEXT,
-      next_count TEXT,
-      next_page_common_ext TEXT,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(monitor_id, source_key),
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    /*
-     * 鍒嗗尯 Fresh 杈圭晫锛?
-     * 璁板綍姣忎釜鍒嗗尯涓婁竴杞€滄渶鏂扮殑涓€鏉?post_id鈥濄€?
-     * 涓嬩竴杞粠绗竴椤靛紑濮嬩竴鐩存壂鍒扮瑙佽繖涓?post_id 涓烘銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_scan_source_checkpoint (
-      monitor_id INTEGER NOT NULL,
-      source_key TEXT NOT NULL,
-      latest_post_id TEXT NOT NULL,
-      latest_created_at TEXT,
-      latest_created_at_ms INTEGER,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(monitor_id, source_key),
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    /*
-     * Fresh 姣忎釜鏉ユ簮鏈€鍚庝竴娆♀€滃畬鏁磋拷鍒板畨鍏ㄨ竟鐣屸€濈殑鎴愬姛鏃堕棿銆?
-     * 鐢ㄤ簬鏈哄櫒瀹曟満鍚?Catch-up锛岄伩鍏嶅彧渚濊禆 page/cursor銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_scan_success_state (
-      monitor_id INTEGER NOT NULL,
-      source_key TEXT NOT NULL,
-      last_successful_scan_at_ms INTEGER NOT NULL,
-      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-      PRIMARY KEY(monitor_id, source_key),
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS superlike_pool_exit_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      monitor_id INTEGER NOT NULL,
-      uid TEXT NOT NULL,
-      exit_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
-      reason TEXT NOT NULL DEFAULT 'BECAME_SUPERLIKE',
-      exited_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      UNIQUE(uid, exit_date, reason),
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    /*
-     * 鍊欓€夋睜浠婃棩鈥滄瘯涓氫汉鏁扳€濈疮璁°€?
-     * 涓嶄繚瀛樻瘡涓?UID锛屽彧淇濆瓨姣忓ぉ绱浜烘暟銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_pool_exit_daily (
-      exit_date TEXT PRIMARY KEY,
-      user_count INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours'))
-    );
-
-    /*
-     * SuperLike 椤甸潰榛戠矇鍏抽敭璇嶃€?
-     * 椤甸潰鈥?涓嶆樉绀虹尓 鈥濈瓫閫変細妫€鏌ワ細
-     * username / post_text / icon_summary銆?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_black_keywords (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      keyword TEXT NOT NULL UNIQUE,
-      enabled INTEGER NOT NULL DEFAULT 1,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-
-    /*
-     * 榛戠矇鐢ㄦ埛琛ㄣ€?
-     * uid 浣滀负绋冲畾鍞竴鏍囪瘑锛涚敤鎴峰悕鍜屼富椤甸摼鎺ョ敤浜庡睍绀?浜哄伐纭銆?
-     */
-    CREATE TABLE IF NOT EXISTS black_fan_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      uid TEXT UNIQUE,
-      username TEXT,
-      profile_link TEXT,
-      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-    );
-
-    /*
-     * 褰撳ぉ鎺掗櫎 UID锛?
-     * 鏌愪釜鐢ㄦ埛浠绘剰鍊欓€夊笘璇勮杈惧埌 21 鍚庯紝褰撳ぉ涓嶅啀鎶撳彇璇?UID 鐨勫叾浠栧笘瀛愩€?
-     * 鏃ユ湡鍥哄畾鎸変腑鍥芥椂闂达紙UTC+8锛夈€?
-     */
-    CREATE TABLE IF NOT EXISTS superlike_old_refresh_state (
-      monitor_id INTEGER NOT NULL,
-      uid TEXT NOT NULL,
-      checked_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
-      result TEXT,
-      checked_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      PRIMARY KEY(monitor_id, uid, checked_date),
-      FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS superlike_daily_excluded_users (
-      monitor_id INTEGER NOT NULL,
-      uid TEXT NOT NULL,
-      exclude_date TEXT NOT NULL DEFAULT (date('now', '+8 hours')),
-      reason TEXT NOT NULL DEFAULT 'COMMENTS_21',
-      created_at TEXT NOT NULL DEFAULT (datetime('now', '+8 hours')),
-      PRIMARY KEY(monitor_id, uid, exclude_date),
       FOREIGN KEY(monitor_id) REFERENCES monitors(id) ON DELETE CASCADE
     );
   `);
@@ -574,62 +217,14 @@ function initDatabase() {
   ensureColumn('superlike_list_state', 'scan_date', 'TEXT');
   ensureColumn('superlike_list_state', 'last_total', 'INTEGER');
 
-  // SuperLike 楂樻晥澶嶆闃熷垪瀛楁銆?
-  // 鏃ф暟鎹簱浼氬湪鍚姩鏃惰嚜鍔ㄨˉ鍒楋紝涓嶉渶瑕佹墜宸?migration銆?
-  // 鍏ュ簱鏃堕棿鍥哄畾涓轰腑鍥芥椂闂达紙UTC+8锛夛紝绮剧‘鍒扮銆?
-  // SQLite ALTER TABLE 涓嶈兘缁欐柊澧炲垪鐩存帴浣跨敤 datetime() 闈炲父閲忛粯璁ゅ€硷紝
-  // 鎵€浠ユ棫搴撳厛琛ュ垪锛屽啀鍥炲～锛涙柊鏁版嵁鐢?CREATE TABLE 鐨?DEFAULT 鑷姩鍐欏叆銆?
-  ensureColumn('superlike_posts', 'inserted_at', 'TEXT');
-
-  db.exec(`
-    UPDATE superlike_posts
-    SET inserted_at = CASE
-      WHEN first_seen_at IS NOT NULL
-        THEN datetime(first_seen_at, '+8 hours')
-      ELSE datetime('now', '+8 hours')
-    END
-    WHERE inserted_at IS NULL
-       OR TRIM(inserted_at) = ''
-  `);
-
-    ensureColumn('superlike_posts', 'comment_last_checked_at', 'TEXT');
-  ensureColumn('superlike_posts', 'comment_next_check_at', 'TEXT');
-  ensureColumn('superlike_posts', 'profile_last_checked_at', 'TEXT');
-  ensureColumn('superlike_posts', 'profile_status', "TEXT NOT NULL DEFAULT 'UNKNOWN'");
-  ensureColumn('superlike_posts', 'experience_7d', 'INTEGER');
-  ensureColumn('superlike_posts', 'initial_comments_count', 'INTEGER');
-  ensureColumn('superlike_posts', 'initial_experience_7d', 'INTEGER');
-
-  /*
-   * initial_comments_count 淇濈暀鍏煎鍥炲～銆?
-   * initial_experience_7d 涓嶅啀鐢?initDatabase() 鑷姩琛ワ紱
-   * 鍙湪琛ョ粡楠屽€艰剼鏈涓€娆″彇寰楃粡楠屽€兼椂鍐欏叆銆?
-   */
-  db.exec(`
-    UPDATE superlike_posts
-    SET
-      initial_comments_count =
-        COALESCE(initial_comments_count, comments_count)
-    WHERE initial_comments_count IS NULL
-  `);
-
-  /*
-   * superlike_users 绮剧畝锛?
-   * inserted_at = 绗竴娆″叆搴撲腑鍥芥椂闂达紙姘镐笉鏇存柊锛?
-   * last_seen_at = 鏈€杩戜竴娆＄‘璁や腑鍥芥椂闂达紙浼氭洿鏂帮級
-   * first_seen_at / first_seen_date / last_seen_date 涓嶅啀淇濈暀銆?
-   */
-  migrateSuperlikeUsersIfNeeded();
-
   ensureColumn('superlike_users', 'scan_date', 'TEXT');
-  ensureColumn('superlike_users', 'inserted_at', 'TEXT');
+  ensureColumn('superlike_users', 'first_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'last_seen_at', 'TEXT');
   ensureColumn('superlike_users', 'first_seen_rank', 'INTEGER');
   ensureColumn('superlike_users', 'last_seen_rank', 'INTEGER');
-  ensureColumn('superlike_users', 'experience_7d', 'INTEGER');
 
-  // 鍏煎鏃у簱锛氫互鍓?superlike_users 浣跨敤 (monitor_id, uid) 澶嶅悎涓婚敭锛?
-  // 鐜板湪瑕佹眰 uid 鍏ㄥ眬鍞竴銆傚厛鍚堝苟/鍒犻櫎閲嶅 uid锛屽啀寤虹珛鍞竴绱㈠紩銆?
+  // 兼容旧库：以前 superlike_users 使用 (monitor_id, uid) 复合主键，
+  // 现在要求 uid 全局唯一。先合并/删除重复 uid，再建立唯一索引。
   db.exec(`
     DELETE FROM superlike_users
     WHERE rowid NOT IN (
@@ -643,9 +238,6 @@ function initDatabase() {
   `);
 
   migrateSuperlikePostsIfNeeded();
-
-  // 鍊欓€夊笘鏄惁宸茬粡鎼繍鍒板井鍗氱兢銆傛棫鏁版嵁搴撳惎鍔ㄦ椂鑷姩琛ュ垪銆?
-  ensureColumn('superlike_posts', 'moved_flag', 'INTEGER NOT NULL DEFAULT 0');
   
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_monitors_type_enabled
@@ -676,62 +268,13 @@ function initDatabase() {
       ON superlike_posts(current_has_superlike);
     CREATE INDEX IF NOT EXISTS idx_superlike_posts_last_seen
       ON superlike_posts(last_seen_at);
-    CREATE INDEX IF NOT EXISTS idx_superlike_posts_comment_due
-      ON superlike_posts(comment_next_check_at, comments_count);
-    CREATE INDEX IF NOT EXISTS idx_superlike_posts_profile_due
-      ON superlike_posts(profile_last_checked_at, first_seen_at, uid);
 
 
     CREATE INDEX IF NOT EXISTS idx_superlike_users_scan_date
       ON superlike_users(scan_date);
     CREATE INDEX IF NOT EXISTS idx_superlike_users_uid
       ON superlike_users(uid);
-
-    CREATE INDEX IF NOT EXISTS idx_superlike_black_keywords_enabled
-      ON superlike_black_keywords(enabled, keyword);
-
-    CREATE INDEX IF NOT EXISTS idx_black_fan_users_uid
-      ON black_fan_users(uid);
-
-    CREATE INDEX IF NOT EXISTS idx_superlike_daily_excluded_date_uid
-      ON superlike_daily_excluded_users(exclude_date, uid);
-
-    CREATE INDEX IF NOT EXISTS idx_black_fan_users_username
-      ON black_fan_users(username);
   `);
-
-  /*
-   * 鍒濆榛戠矇鍏抽敭璇嶃€?
-   * INSERT OR IGNORE锛氫互鍚庢墜宸ュ鍔?淇敼鍏抽敭璇嶄笉浼氳鍚姩杩囩▼瑕嗙洊銆?
-   */
-  const seedBlackKeyword =
-    db.prepare(`
-      INSERT OR IGNORE INTO superlike_black_keywords(
-        keyword,
-        enabled
-      )
-      VALUES(?,1)
-    `);
-
-  for (
-    const keyword
-    of [
-      '闆锋湅',
-      '娓?,
-      'lp'
-    ]
-  ) {
-    seedBlackKeyword.run(
-      keyword
-    );
-  }
-
-  /*
-   * 鍙湁瀹屾暣鍒濆鍖栨垚鍔熷悗鎵嶇疆涓?true銆?
-   * 涓婇潰浠绘剰 migration / DDL 澶辫触閮戒細鐩存帴鎶涢敊锛?
-   * 涓嬫璋冪敤浠嶄細閲嶆柊灏濊瘯鍒濆鍖栥€?
-   */
-  databaseInitialized = true;
 }
 
 
@@ -802,142 +345,14 @@ function getLocalDateString(date = new Date()) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
-function isSuperLikeUser(uid) {
-  initDatabase();
-
-  const normalizedUid =
-    String(uid || '').trim();
-
-  if (!normalizedUid) {
-    return false;
-  }
-
-  return !!db.prepare(`
-    SELECT 1
-    FROM superlike_users
-    WHERE uid = ?
-    LIMIT 1
-  `).get(
-    normalizedUid
-  );
-}
-
-function getRecentSuperLikeProfileStatus(
-  monitorId,
-  uid,
-  cacheMinutes = 15
-) {
-  initDatabase();
-
-  const normalizedMonitorId =
-    Number(monitorId);
-
-  const normalizedUid =
-    String(uid || '').trim();
-
-  const minutes =
-    Math.max(
-      0,
-      Number(cacheMinutes) || 0
-    );
-
-  if (
-    !Number.isFinite(normalizedMonitorId)
-    ||
-    normalizedMonitorId <= 0
-    ||
-    !normalizedUid
-  ) {
-    return null;
-  }
-
-  const row =
-    db.prepare(`
-      SELECT
-        profile_status,
-        profile_last_checked_at
-      FROM superlike_posts
-      WHERE monitor_id = ?
-        AND uid = ?
-        AND profile_last_checked_at IS NOT NULL
-        AND datetime(profile_last_checked_at)
-            >= datetime('now', '-' || ? || ' minutes')
-      ORDER BY datetime(profile_last_checked_at) DESC
-      LIMIT 1
-    `).get(
-      normalizedMonitorId,
-      normalizedUid,
-      minutes
-    );
-
-  return row
-    ? {
-        status:
-          String(
-            row.profile_status
-            || 'UNKNOWN'
-          ),
-
-        checkedAt:
-          row.profile_last_checked_at
-          || null
-      }
-    : null;
-}
-
-function markSuperLikeProfileChecked(
-  monitorId,
-  uid,
-  status
-) {
-  initDatabase();
-
-  const normalizedMonitorId =
-    Number(monitorId);
-
-  const normalizedUid =
-    String(uid || '').trim();
-
-  const normalizedStatus =
-    String(status || 'UNKNOWN')
-      .trim()
-      .toUpperCase();
-
-  if (
-    !Number.isFinite(normalizedMonitorId)
-    ||
-    normalizedMonitorId <= 0
-    ||
-    !normalizedUid
-  ) {
-    return 0;
-  }
-
-  const result =
-    db.prepare(`
-      UPDATE superlike_posts
-      SET
-        profile_last_checked_at = CURRENT_TIMESTAMP,
-        profile_status = ?
-      WHERE monitor_id = ?
-        AND uid = ?
-    `).run(
-      normalizedStatus,
-      normalizedMonitorId,
-      normalizedUid
-    );
-
-  return result.changes || 0;
-}
-
-function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null) {
+function saveSuperLikeUser(monitorId, uid, scanDate = null) {
   initDatabase();
 
   const normalizedMonitorId = Number(monitorId);
   const normalizedUid = String(uid || '').trim();
 
   if (!Number.isFinite(normalizedMonitorId) || normalizedMonitorId <= 0) {
-    throw new Error('saveSuperLikeUser 缂哄皯鏈夋晥 monitorId');
+    throw new Error('saveSuperLikeUser 缺少有效 monitorId');
   }
 
   if (!normalizedUid) {
@@ -945,11 +360,6 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
   }
 
   const date = scanDate || getLocalDateString();
-
-  const normalizedExperience7d =
-    Number.isFinite(Number(experience7d))
-      ? Number(experience7d)
-      : null;
 
   const existed = !!db.prepare(`
     SELECT 1
@@ -963,471 +373,26 @@ function saveSuperLikeUser(monitorId, uid, scanDate = null, experience7d = null)
       monitor_id,
       uid,
       scan_date,
-      inserted_at,
-      last_seen_at,
-      experience_7d
+      first_seen_at,
+      last_seen_at
     )
     VALUES(
       ?, ?, ?,
-      datetime('now', '+8 hours'),
-      datetime('now', '+8 hours'),
-      ?
+      CURRENT_TIMESTAMP,
+      CURRENT_TIMESTAMP
     )
     ON CONFLICT(uid)
     DO UPDATE SET
       scan_date = excluded.scan_date,
-      last_seen_at = datetime('now', '+8 hours'),
-      experience_7d = COALESCE(excluded.experience_7d, superlike_users.experience_7d)
+      last_seen_at = CURRENT_TIMESTAMP
   `).run(
     normalizedMonitorId,
     normalizedUid,
-    date,
-    normalizedExperience7d
+    date
   );
 
   return !existed;
 }
-
-function saveSuperLikeTargetPost(data = {}) {
-  initDatabase();
-
-  const monitorId = Number(data.monitorId);
-  const postId = String(data.postId || '').trim();
-  const uid = String(data.uid || '').trim();
-  const username = data.username || '';
-  const postLink = data.postLink || null;
-  const postText = data.postText || '';
-  const commentsCount = Number(data.commentsCount);
-  const iconSummary = data.iconSummary || '鏃?;
-  const postCreatedAt = data.postCreatedAt || null;
-  const postCreatedAtMs = Number(data.postCreatedAtMs);
-  const rawJson = data.rawJson || null;
-  const experience7d =
-    data.experience7d !== null
-    &&
-    data.experience7d !== undefined
-    &&
-    data.experience7d !== ''
-    &&
-    Number.isFinite(
-      Number(
-        data.experience7d
-      )
-    )
-      ? Number(
-          data.experience7d
-        )
-      : null;
-  const profileStatus =
-    String(data.profileStatus || 'UNKNOWN')
-      .trim()
-      .toUpperCase();
-
-  if (!Number.isFinite(monitorId) || monitorId <= 0) {
-    throw new Error('saveSuperLikeTargetPost 缂哄皯鏈夋晥 monitorId');
-  }
-  if (!postId) {
-    throw new Error('saveSuperLikeTargetPost 缂哄皯 postId');
-  }
-  if (!uid) {
-    throw new Error('saveSuperLikeTargetPost 缂哄皯 uid');
-  }
-
-  const existing = db.prepare(`
-    SELECT
-      id,
-      post_id,
-      comments_count,
-      post_created_at,
-      initial_comments_count,
-      initial_experience_7d
-    FROM superlike_posts
-    WHERE monitor_id = ?
-      AND uid = ?
-    ORDER BY id DESC
-    LIMIT 1
-  `).get(monitorId, uid);
-
-  const initialCommentsCount =
-    existing
-    &&
-    Number.isFinite(
-      Number(
-        existing.initial_comments_count
-      )
-    )
-      ? Number(
-          existing.initial_comments_count
-        )
-      : (
-          Number.isFinite(
-            commentsCount
-          )
-            ? commentsCount
-            : null
-        );
-
-  const initialExperience7d =
-    existing
-    &&
-    existing.initial_experience_7d !== null
-    &&
-    existing.initial_experience_7d !== undefined
-    &&
-    Number.isFinite(
-      Number(
-        existing.initial_experience_7d
-      )
-    )
-      ? Number(
-          existing.initial_experience_7d
-        )
-      : experience7d;
-
-  if (existing) {
-    const existingComments = Number(existing.comments_count);
-    const existingMs = existing.post_created_at
-      ? Date.parse(existing.post_created_at)
-      : null;
-
-    /*
-     * 鍚?UID 鍊欓€夊笘鏇挎崲瑙勫垯锛?
-     * 1) 涓嶅悓鑷劧鏃ワ細浼樺厛鏃ユ湡鏇存柊鐨勫笘瀛愶紝涓嶆瘮杈冭瘎璁烘暟銆?
-     * 2) 鍚屼竴鑷劧鏃ワ細浼樺厛璇勮鏁版洿澶氱殑甯栧瓙銆?
-     * 3) 鍚屾棩涓旇瘎璁烘暟鐩稿悓锛氬啀鐢ㄥ彂甯栨椂闂存洿鏅氱殑甯栧瓙鍏滃簳銆?
-     *
-     * 鏃ユ湡鎸?post_created_at 鎵€甯︽椂闂磋В鏋愬悗鐨勬湰鍦版棩鏈熸瘮杈冦€?
-     */
-    const toDateKey =
-      ms => {
-        if (
-          !Number.isFinite(
-            Number(ms)
-          )
-        ) {
-          return null;
-        }
-
-        return new Intl.DateTimeFormat(
-          'en-CA',
-          {
-            timeZone:
-              'Asia/Shanghai',
-            year:
-              'numeric',
-            month:
-              '2-digit',
-            day:
-              '2-digit'
-          }
-        ).format(
-          new Date(
-            Number(ms)
-          )
-        );
-      };
-
-    const existingDateKey =
-      toDateKey(
-        existingMs
-      );
-
-    const newDateKey =
-      toDateKey(
-        postCreatedAtMs
-      );
-
-    let shouldReplace =
-      false;
-
-    if (
-      newDateKey
-      &&
-      existingDateKey
-      &&
-      newDateKey !== existingDateKey
-    ) {
-      shouldReplace =
-        newDateKey > existingDateKey;
-
-    } else if (
-      newDateKey
-      &&
-      existingDateKey
-      &&
-      newDateKey === existingDateKey
-    ) {
-      shouldReplace =
-        (
-          Number.isFinite(
-            commentsCount
-          )
-          &&
-          (
-            !Number.isFinite(
-              existingComments
-            )
-            ||
-            commentsCount
-            >
-            existingComments
-          )
-        )
-        ||
-        (
-          Number.isFinite(
-            commentsCount
-          )
-          &&
-          Number.isFinite(
-            existingComments
-          )
-          &&
-          commentsCount
-          === existingComments
-          &&
-          Number.isFinite(
-            postCreatedAtMs
-          )
-          &&
-          (
-            !Number.isFinite(
-              existingMs
-            )
-            ||
-            postCreatedAtMs
-            >
-            existingMs
-          )
-        );
-
-    } else {
-      /*
-       * 浠讳竴甯栧瓙鏃堕棿鏃犳硶瑙ｆ瀽鏃讹紝閫€鍥炴棫瑙勫垯锛岄伩鍏嶅洜涓哄潖鏃堕棿瀛楁瀹屽叏鏃犳硶鏇存柊銆?
-       */
-      shouldReplace =
-        (
-          Number.isFinite(
-            commentsCount
-          )
-          &&
-          (
-            !Number.isFinite(
-              existingComments
-            )
-            ||
-            commentsCount
-            >
-            existingComments
-          )
-        )
-        ||
-        (
-          Number.isFinite(
-            commentsCount
-          )
-          &&
-          Number.isFinite(
-            existingComments
-          )
-          &&
-          commentsCount
-          === existingComments
-          &&
-          Number.isFinite(
-            postCreatedAtMs
-          )
-          &&
-          (
-            !Number.isFinite(
-              existingMs
-            )
-            ||
-            postCreatedAtMs
-            >
-            existingMs
-          )
-        );
-    }
-
-    if (!shouldReplace) {
-      if (
-        profileStatus !== 'UNKNOWN'
-        ||
-        experience7d !== null
-      ) {
-        db.prepare(`
-          UPDATE superlike_posts
-          SET
-            profile_status = CASE
-              WHEN ? = 'UNKNOWN' THEN profile_status
-              ELSE ?
-            END,
-            profile_last_checked_at = CASE
-              WHEN ? = 'UNKNOWN' THEN profile_last_checked_at
-              ELSE CURRENT_TIMESTAMP
-            END,
-            experience_7d = COALESCE(?, experience_7d)
-          WHERE monitor_id = ?
-            AND uid = ?
-        `).run(
-          profileStatus,
-          profileStatus,
-          profileStatus,
-          experience7d,
-          monitorId,
-          uid
-        );
-      }
-
-      return {
-        status: 'kept_existing',
-        postId: String(existing.post_id),
-        uid
-      };
-    }
-
-    db.prepare(`
-      DELETE FROM superlike_posts
-      WHERE monitor_id = ?
-        AND uid = ?
-    `).run(monitorId, uid);
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_posts(
-      monitor_id,
-      post_id,
-      uid,
-      username,
-      post_link,
-      post_text,
-      comments_count,
-      initial_comments_count,
-      current_has_superlike,
-      icon_summary,
-      experience_7d,
-      initial_experience_7d,
-      post_created_at,
-      inserted_at,
-      first_seen_at,
-      last_seen_at,
-      profile_last_checked_at,
-      profile_status,
-      raw_json
-    )
-    VALUES(
-      ?,?,?,?,?,?,?,?,
-      0,
-      ?,
-      ?,
-      ?,
-      ?,
-      datetime('now', '+8 hours'),
-      CURRENT_TIMESTAMP,
-      CURRENT_TIMESTAMP,
-      CASE WHEN ? = 'UNKNOWN' THEN NULL ELSE CURRENT_TIMESTAMP END,
-      ?,
-      ?
-    )
-  `).run(
-    monitorId,
-    postId,
-    uid,
-    username,
-    postLink,
-    postText,
-    commentsCount,
-    initialCommentsCount,
-    iconSummary,
-    experience7d,
-    initialExperience7d,
-    postCreatedAt,
-    profileStatus,
-    profileStatus,
-    rawJson
-  );
-
-  return {
-    status: existing ? 'replaced' : 'inserted',
-    postId,
-    uid,
-    username,
-    postLink,
-    commentsCount,
-    iconSummary,
-    experience7d
-  };
-}
-
-function setSuperLikePostMoved(postRowId, moved) {
-  initDatabase();
-
-  const id = Number(postRowId);
-  if (!Number.isFinite(id) || id <= 0) {
-    throw new Error('setSuperLikePostMoved 缂哄皯鏈夋晥甯栧瓙ID');
-  }
-
-  const movedFlag = moved ? 1 : 0;
-
-  const result = db.prepare(`
-    UPDATE superlike_posts
-    SET moved_flag = ?
-    WHERE id = ?
-  `).run(movedFlag, id);
-
-  return Number(result.changes || 0);
-}
-
-
-function setSuperLikePostsMoved(postRowIds, moved = true) {
-  initDatabase();
-
-  const ids = Array.from(
-    new Set(
-      (postRowIds || [])
-        .map(id => Number(id))
-        .filter(id => Number.isFinite(id) && id > 0)
-    )
-  );
-
-  if (ids.length === 0) {
-    return 0;
-  }
-
-  const movedFlag = moved ? 1 : 0;
-  const CHUNK_SIZE = 500;
-  let changed = 0;
-
-  db.exec('BEGIN');
-
-  try {
-    for (let i = 0; i < ids.length; i += CHUNK_SIZE) {
-      const chunk = ids.slice(i, i + CHUNK_SIZE);
-      const placeholders = chunk.map(() => '?').join(',');
-
-      const result = db.prepare(`
-        UPDATE superlike_posts
-        SET moved_flag = ?
-        WHERE id IN (${placeholders})
-      `).run(movedFlag, ...chunk);
-
-      changed += Number(result.changes || 0);
-    }
-
-    db.exec('COMMIT');
-  } catch (error) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // ignore rollback error
-    }
-    throw error;
-  }
-
-  return changed;
-}
-
 
 function deletePostsByUidSet(uidSet) {
   initDatabase();
@@ -1471,111 +436,16 @@ function deletePostsByUidSet(uidSet) {
   return deleted;
 }
 
-function markDailyExcludedUser(
-  monitorId,
-  uid,
-  reason = 'COMMENTS_21'
-) {
-  initDatabase();
-
-  if (!monitorId || !uid) {
-    return false;
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_daily_excluded_users(
-      monitor_id,
-      uid,
-      exclude_date,
-      reason,
-      created_at
-    )
-    VALUES(
-      ?, ?,
-      date('now', '+8 hours'),
-      ?,
-      datetime('now', '+8 hours')
-    )
-    ON CONFLICT(monitor_id, uid, exclude_date)
-    DO UPDATE SET
-      reason = excluded.reason
-  `).run(
-    Number(monitorId),
-    String(uid),
-    String(reason || 'COMMENTS_21')
-  );
-
-  return true;
-}
-
-function isDailyExcludedUser(
-  monitorId,
-  uid
-) {
-  initDatabase();
-
-  if (!monitorId || !uid) {
-    return false;
-  }
-
-  return !!db.prepare(`
-    SELECT 1
-    FROM superlike_daily_excluded_users
-    WHERE monitor_id = ?
-      AND uid = ?
-      AND exclude_date = date('now', '+8 hours')
-    LIMIT 1
-  `).get(
-    Number(monitorId),
-    String(uid)
-  );
-}
-
-function cleanupOldDailyExcludedUsers() {
-  initDatabase();
-
-  const result = db.prepare(`
-    DELETE FROM superlike_daily_excluded_users
-    WHERE exclude_date < date('now', '+8 hours', '-7 days')
-  `).run();
-
-  return Number(result.changes || 0);
-}
-
-
 function cleanupSuperLikePostsByUsersTable() {
   initDatabase();
 
-  const matched =
-    db.prepare(`
-      SELECT
-        COUNT(DISTINCT uid) AS user_count
-      FROM superlike_posts
-      WHERE uid IN (
-        SELECT uid
-        FROM superlike_users
-      )
-    `).get();
-
-  const result =
-    db.prepare(`
-      DELETE FROM superlike_posts
-      WHERE uid IN (
-        SELECT uid
-        FROM superlike_users
-      )
-    `).run();
-
-  const deletedUsers =
-    Number(
-      matched?.user_count || 0
-    );
-
-  if (deletedUsers > 0) {
-    addSuperLikePoolExitCount(
-      deletedUsers
-    );
-  }
+  const result = db.prepare(`
+    DELETE FROM superlike_posts
+    WHERE uid IN (
+      SELECT uid
+      FROM superlike_users
+    )
+  `).run();
 
   return result.changes || 0;
 }
@@ -1636,422 +506,6 @@ function saveScanCheckpoint(
 
   return true;
 }
-
-function getScanResume(monitorId) {
-  initDatabase();
-
-  return db.prepare(`
-    SELECT
-      monitor_id,
-      checkpoint_post_id,
-      checkpoint_created_at_ms,
-      sort_time_flow_id,
-      template_url,
-      next_page,
-      next_since_id,
-      next_max_id,
-      updated_at
-    FROM superlike_scan_resume
-    WHERE monitor_id = ?
-  `).get(monitorId) || null;
-}
-
-
-function saveScanResume(
-  monitorId,
-  checkpoint,
-  sortTimeFlowId,
-  templateUrl,
-  nextParams
-) {
-  initDatabase();
-
-  if (
-    !monitorId
-    || !sortTimeFlowId
-    || !templateUrl
-    || !nextParams
-    || Number(nextParams.page) < 1
-  ) {
-    return false;
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_scan_resume(
-      monitor_id,
-      checkpoint_post_id,
-      checkpoint_created_at_ms,
-      sort_time_flow_id,
-      template_url,
-      next_page,
-      next_since_id,
-      next_max_id,
-      updated_at
-    )
-    VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(monitor_id)
-    DO UPDATE SET
-      checkpoint_post_id=excluded.checkpoint_post_id,
-      checkpoint_created_at_ms=excluded.checkpoint_created_at_ms,
-      sort_time_flow_id=excluded.sort_time_flow_id,
-      template_url=excluded.template_url,
-      next_page=excluded.next_page,
-      next_since_id=excluded.next_since_id,
-      next_max_id=excluded.next_max_id,
-      updated_at=CURRENT_TIMESTAMP
-  `).run(
-    Number(monitorId),
-    checkpoint?.latest_post_id
-      ? String(checkpoint.latest_post_id)
-      : null,
-    Number.isFinite(Number(checkpoint?.latest_created_at_ms))
-      ? Number(checkpoint.latest_created_at_ms)
-      : null,
-    String(sortTimeFlowId),
-    String(templateUrl),
-    Number(nextParams.page),
-    nextParams.since_id == null
-      ? null
-      : String(nextParams.since_id),
-    nextParams.max_id == null
-      ? '0'
-      : String(nextParams.max_id)
-  );
-
-  return true;
-}
-
-
-function clearScanResume(monitorId) {
-  initDatabase();
-
-  const result =
-    db.prepare(`
-      DELETE FROM superlike_scan_resume
-      WHERE monitor_id = ?
-    `).run(Number(monitorId));
-
-  return Number(result.changes || 0);
-}
-
-
-function getScanSourceCheckpoint(
-  monitorId,
-  sourceKey
-) {
-  initDatabase();
-
-  return db.prepare(`
-    SELECT
-      monitor_id,
-      source_key,
-      latest_post_id,
-      latest_created_at,
-      latest_created_at_ms,
-      updated_at
-    FROM superlike_scan_source_checkpoint
-    WHERE monitor_id = ?
-      AND source_key = ?
-  `).get(
-    Number(monitorId),
-    String(sourceKey)
-  ) || null;
-}
-
-
-function saveScanSourceCheckpoint(
-  monitorId,
-  sourceKey,
-  latestPostId,
-  latestCreatedAt,
-  latestCreatedAtMs
-) {
-  initDatabase();
-
-  if (
-    !monitorId
-    ||
-    !sourceKey
-    ||
-    !latestPostId
-  ) {
-    return false;
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_scan_source_checkpoint(
-      monitor_id,
-      source_key,
-      latest_post_id,
-      latest_created_at,
-      latest_created_at_ms,
-      updated_at
-    )
-    VALUES(?,?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(monitor_id, source_key)
-    DO UPDATE SET
-      latest_post_id = excluded.latest_post_id,
-      latest_created_at = excluded.latest_created_at,
-      latest_created_at_ms = excluded.latest_created_at_ms,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
-    Number(monitorId),
-    String(sourceKey),
-    String(latestPostId),
-    latestCreatedAt || null,
-    Number.isFinite(
-      Number(latestCreatedAtMs)
-    )
-      ? Number(latestCreatedAtMs)
-      : null
-  );
-
-  return true;
-}
-
-
-function getScanSuccessState(
-  monitorId,
-  sourceKey
-) {
-  initDatabase();
-
-  return db.prepare(`
-    SELECT
-      monitor_id,
-      source_key,
-      last_successful_scan_at_ms,
-      updated_at
-    FROM superlike_scan_success_state
-    WHERE monitor_id = ?
-      AND source_key = ?
-  `).get(
-    Number(monitorId),
-    String(sourceKey)
-  ) || null;
-}
-
-
-function saveScanSuccessState(
-  monitorId,
-  sourceKey,
-  successfulAtMs = Date.now()
-) {
-  initDatabase();
-
-  const value =
-    Number(successfulAtMs);
-
-  if (
-    !monitorId
-    ||
-    !sourceKey
-    ||
-    !Number.isFinite(value)
-  ) {
-    return false;
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_scan_success_state(
-      monitor_id,
-      source_key,
-      last_successful_scan_at_ms,
-      updated_at
-    )
-    VALUES(?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(monitor_id, source_key)
-    DO UPDATE SET
-      last_successful_scan_at_ms =
-        excluded.last_successful_scan_at_ms,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
-    Number(monitorId),
-    String(sourceKey),
-    Math.floor(value)
-  );
-
-  return true;
-}
-
-
-function getScanSourceResume(
-  monitorId,
-  sourceKey
-) {
-  initDatabase();
-
-  return db.prepare(`
-    SELECT
-      monitor_id,
-      source_key,
-      flow_id,
-      next_page,
-      next_since_id,
-      next_max_id,
-      next_count,
-      next_page_common_ext,
-      updated_at
-    FROM superlike_scan_source_resume
-    WHERE monitor_id = ?
-      AND source_key = ?
-  `).get(
-    Number(monitorId),
-    String(sourceKey)
-  ) || null;
-}
-
-
-function saveScanSourceResume(
-  monitorId,
-  sourceKey,
-  flowId,
-  nextParams
-) {
-  initDatabase();
-
-  if (
-    !monitorId
-    ||
-    !sourceKey
-    ||
-    !flowId
-    ||
-    !nextParams
-    ||
-    !nextParams.since_id
-  ) {
-    return false;
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_scan_source_resume(
-      monitor_id,
-      source_key,
-      flow_id,
-      next_page,
-      next_since_id,
-      next_max_id,
-      next_count,
-      next_page_common_ext,
-      updated_at
-    )
-    VALUES(?,?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
-    ON CONFLICT(monitor_id, source_key)
-    DO UPDATE SET
-      flow_id = excluded.flow_id,
-      next_page = excluded.next_page,
-      next_since_id = excluded.next_since_id,
-      next_max_id = excluded.next_max_id,
-      next_count = excluded.next_count,
-      next_page_common_ext = excluded.next_page_common_ext,
-      updated_at = CURRENT_TIMESTAMP
-  `).run(
-    Number(monitorId),
-    String(sourceKey),
-    String(flowId),
-    Number.isFinite(
-      Number(nextParams.page)
-    )
-      ? Number(nextParams.page)
-      : null,
-    String(nextParams.since_id),
-    nextParams.max_id == null
-      ? '0'
-      : String(nextParams.max_id),
-    nextParams.count == null
-      ? '15'
-      : String(nextParams.count),
-    nextParams.page_common_ext == null
-      ? 'topicPrompt:1|page:tag_status_sort=1|hide_page:1'
-      : String(nextParams.page_common_ext)
-  );
-
-  return true;
-}
-
-
-function clearScanSourceResume(
-  monitorId,
-  sourceKey
-) {
-  initDatabase();
-
-  const result =
-    db.prepare(`
-      DELETE FROM superlike_scan_source_resume
-      WHERE monitor_id = ?
-        AND source_key = ?
-    `).run(
-      Number(monitorId),
-      String(sourceKey)
-    );
-
-  return Number(
-    result.changes || 0
-  );
-}
-
-
-function addSuperLikePoolExitCount(
-  count
-) {
-  initDatabase();
-
-  const value =
-    Math.max(
-      0,
-      Math.floor(
-        Number(count) || 0
-      )
-    );
-
-  if (value <= 0) {
-    return getTodaySuperLikePoolExitCount();
-  }
-
-  db.prepare(`
-    INSERT INTO superlike_pool_exit_daily(
-      exit_date,
-      user_count,
-      updated_at
-    )
-    VALUES(
-      date('now', '+8 hours'),
-      ?,
-      datetime('now', '+8 hours')
-    )
-    ON CONFLICT(exit_date)
-    DO UPDATE SET
-      user_count =
-        superlike_pool_exit_daily.user_count
-        + excluded.user_count,
-      updated_at =
-        datetime('now', '+8 hours')
-  `).run(
-    value
-  );
-
-  return getTodaySuperLikePoolExitCount();
-}
-
-
-function getTodaySuperLikePoolExitCount() {
-  initDatabase();
-
-  const row =
-    db.prepare(`
-      SELECT user_count
-      FROM superlike_pool_exit_daily
-      WHERE exit_date =
-        date('now', '+8 hours')
-    `).get();
-
-  return Number(
-    row?.user_count || 0
-  );
-}
-
 
 function getMonitors(onlyEnabled = true) {
   initDatabase();
@@ -2171,7 +625,7 @@ function resetHistoryProgress(monitorId, pageNum = 1) {
 function getInitialHistoryPage(monitorId) {
   initDatabase();
   const monitor = getMonitor(monitorId);
-  if (!monitor) throw new Error(`Monitor ${monitorId} 涓嶅瓨鍦╜);
+  if (!monitor) throw new Error(`Monitor ${monitorId} 不存在`);
 
   if (monitor.history_next_page != null && Number(monitor.history_next_page) >= 1) {
     return Number(monitor.history_next_page);
@@ -2200,7 +654,7 @@ function getInitialHistoryPage(monitorId) {
 
   const nextPage = maxSuccessfulPage > 0 ? maxSuccessfulPage + 1 : 1;
   setHistoryNextPage(monitorId, nextPage);
-  console.log(`Monitor ${monitorId} 鍒濆鍖?History 鏂偣锛?{nextPage}`);
+  console.log(`Monitor ${monitorId} 初始化 History 断点：${nextPage}`);
   return nextPage;
 }
 
@@ -2429,7 +883,7 @@ function saveDailyStats(monitorIdOrObject, maybeStats = null) {
     stats = maybeStats || {};
   }
 
-  if (!monitorId) throw new Error('saveDailyStats 缂哄皯 monitorId');
+  if (!monitorId) throw new Error('saveDailyStats 缺少 monitorId');
 
   const statDate = stats.statDate || new Date().toISOString().slice(0, 10);
 
@@ -2490,31 +944,9 @@ module.exports = {
   getSuperLikeMonitors,
   superLikePostIdExists,
   getExistingSuperLikeUids,
-  isSuperLikeUser,
-  getRecentSuperLikeProfileStatus,
-  markSuperLikeProfileChecked,
   saveSuperLikeUser,
-  saveSuperLikeTargetPost,
-  setSuperLikePostMoved,
-  setSuperLikePostsMoved,
   deletePostsByUidSet,
-  markDailyExcludedUser,
-  isDailyExcludedUser,
-  cleanupOldDailyExcludedUsers,
   cleanupSuperLikePostsByUsersTable,
   getScanCheckpoint,
-  saveScanCheckpoint,
-  getScanResume,
-  saveScanResume,
-  clearScanResume,
-  getScanSourceCheckpoint,
-  saveScanSourceCheckpoint,
-  getScanSuccessState,
-  saveScanSuccessState,
-  getScanSourceResume,
-  saveScanSourceResume,
-  clearScanSourceResume,
-  addSuperLikePoolExitCount,
-  getTodaySuperLikePoolExitCount
+  saveScanCheckpoint
 };
-
