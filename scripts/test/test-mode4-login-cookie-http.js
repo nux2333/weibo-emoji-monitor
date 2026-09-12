@@ -2,7 +2,6 @@
 
 const path = require('path');
 const { chromium, request } = require('playwright');
-const { parseTopicHomepage } = require('../../src/superlike-scanner');
 const { db, initDatabase } = require('../../src/db');
 
 const TIMEOUT_MS = Number(process.env.MODE4_LOGIN_HTTP_TIMEOUT_MS) || 15000;
@@ -16,6 +15,23 @@ const USER_DATA_DIR = path.resolve(
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseMode4Topic(topicUrl) {
+  const text = String(topicUrl || '').trim();
+  const match = text.match(/(100808[a-f0-9]{32})/i);
+  if (!match) {
+    throw new Error(`无法从 Monitor URL 提取超话 containerId: ${text}`);
+  }
+
+  const containerId = match[1];
+  const topicHash = containerId.replace(/^100808/i, '');
+
+  return {
+    containerId,
+    topicHash,
+    chaoLikeListContainerId: `231140${topicHash}_-_chaolikenew`
+  };
 }
 
 function getMonitor() {
@@ -54,8 +70,11 @@ function cookiesToHeader(cookies) {
 }
 
 async function main() {
+  console.log('[启动] Mode4 登录Cookie HTTP测试');
+
+  console.log('[1/4] 读取 Monitor 配置...');
   const monitor = getMonitor();
-  const config = parseTopicHomepage(monitor.url);
+  const config = parseMode4Topic(monitor.url);
 
   console.log('');
   console.log('############################################');
@@ -67,7 +86,7 @@ async function main() {
   console.log(`测试页数: ${MAX_PAGES}`);
 
   console.log('');
-  console.log('========== 1. 读取 Persistent Profile 登录Cookie ==========');
+  console.log('[2/4] 启动 Persistent Chromium，读取登录Cookie...');
 
   const context = await chromium.launchPersistentContext(USER_DATA_DIR, {
     headless: true
@@ -78,6 +97,7 @@ async function main() {
   try {
     const page = context.pages()[0] || await context.newPage();
     try {
+      console.log('[Chromium] 打开 https://m.weibo.cn/ ...');
       await page.goto('https://m.weibo.cn/', {
         waitUntil: 'domcontentloaded',
         timeout: TIMEOUT_MS
@@ -111,7 +131,7 @@ async function main() {
   const cookieHeader = cookiesToHeader(cookies);
 
   console.log('');
-  console.log('========== 2. 使用登录Cookie进行纯HTTP分页 ==========');
+  console.log('[3/4] 使用登录Cookie进行纯HTTP分页...');
 
   const api = await request.newContext({
     userAgent,
@@ -182,7 +202,7 @@ async function main() {
   }
 
   console.log('');
-  console.log('================ 结论 ================');
+  console.log('[4/4] 结论');
   console.log(`成功页数: ${successPages}/${MAX_PAGES}`);
   console.log(`累计唯一UID: ${uniqueUids.size}`);
 
