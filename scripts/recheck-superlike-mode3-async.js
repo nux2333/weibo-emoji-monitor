@@ -1,6 +1,8 @@
+const path = require('path');
 const { Pool } = require('pg');
-const { chromium } = require('playwright');
+const { chromium, request } = require('playwright');
 const { createBatchLogger } = require('../src/batch-logger');
+const { ProxyPool } = require('../src/proxy-pool');
 const { buildLightProfileApiUrl, profileTextHasSuperLike } = require('../src/superlike/mode3-profile');
 
 const ROUND_INTERVAL_MS = Number(process.env.SUPERLIKE_MODE3_ROUND_INTERVAL_MS) || 2 * 60 * 1000;
@@ -8,6 +10,7 @@ const BATCH_SIZE = Number(process.env.SUPERLIKE_PROFILE_VERIFY_BATCH_SIZE) || 30
 const REQUEST_TIMEOUT_MS = Number(process.env.SUPERLIKE_LIGHT_REQUEST_TIMEOUT_MS) || 10000;
 const HTTP_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.SUPERLIKE_MODE3_HTTP_CONCURRENCY) || 8));
 const SESSION_BOOTSTRAP_TIMEOUT_MS = Number(process.env.SUPERLIKE_MODE3_SESSION_BOOTSTRAP_TIMEOUT_MS) || 15000;
+const SESSION_PROXY_RETRIES = Math.max(1, Math.min(10, Number(process.env.SUPERLIKE_MODE3_SESSION_PROXY_RETRIES) || 5));
 const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 
 const pool = new Pool({
@@ -18,9 +21,16 @@ const pool = new Pool({
   allowExitOnIdle: false
 });
 
+const proxyPool = new ProxyPool({
+  filePath: process.env.WEIBO_GOOD_PROXY_FILE || path.join(__dirname, '..', 'data', 'weibo-good-proxies.txt'),
+  cooldownMs: Number(process.env.SUPERLIKE_PROXY_COOLDOWN_MS) || 30 * 60 * 1000,
+  name: 'mode3-session'
+});
+
 let visitorSession = null;
 let sessionRefreshPromise = null;
 let sessionGeneration = 0;
+let forceProxyAfter418 = false;
 
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function memoryMB(value) { return Math.round(Number(value || 0) / 1024 / 1024); }
@@ -73,9 +83,7 @@ async function graduateUser(monitorId, uid) {
     await client.query('BEGIN');
     await client.query(`INSERT INTO superlike_users(monitor_id, uid, scan_date) VALUES($1, $2, (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text) ON CONFLICT(uid) DO NOTHING`, [monitorId, uid]);
     const deleted = await client.query(`DELETE FROM superlike_posts WHERE monitor_id = $1 AND uid = $2 RETURNING id`, [monitorId, uid]);
-    if (deleted.rowCount > 0) {
-      await client.query(`INSERT INTO superlike_pool_exit_events(monitor_id, uid, exit_date, reason, exited_at) VALUES($1, $2, (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text, 'BECAME_SUPERLIKE', CURRENT_TIMESTAMP)`, [monitorId, uid]);
-    }
+    if (deleted.rowCount > 0) await client.query(`INSERT INTO superlike_pool_exit_events(monitor_id, uid, exit_date, reason, exited_at) VALUES($1, $2, (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text, 'BECAME_SUPERLIKE', CURRENT_TIMESTAMP)`, [monitorId, uid]);
     await client.query('COMMIT');
     return deleted.rowCount;
   } catch (error) {
@@ -84,59 +92,110 @@ async function graduateUser(monitorId, uid) {
   } finally { client.release(); }
 }
 
-async function bootstrapVisitorSession(reason = '首次启动') {
-  console.log(`[模式3][Session] ${reason} → 启动 Chromium 领取游客身份`);
-  const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ userAgent: USER_AGENT, locale: 'zh-CN' });
-  const page = await context.newPage();
-  try {
-    const response = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-    console.log(`[模式3][Session] 首页 status=${response?.status() ?? '-'} | final=${page.url()}`);
-    await page.waitForTimeout(2500);
-    if (page.url().includes('visitor.passport.weibo.cn')) {
-      console.log('[模式3][Session] 进入 Visitor System，等待游客初始化...');
-      await page.waitForTimeout(2000);
-      await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-      await page.waitForTimeout(1500);
-    }
-    const cookies = await context.cookies(['https://m.weibo.cn/', 'https://weibo.cn/', 'https://weibo.com/']);
-    const cookie = cookieHeader(cookies);
-    if (!cookie) throw new Error('Chromium 未取得游客 Cookie');
-    const session = {
-      cookie,
-      userAgent: await page.evaluate(() => navigator.userAgent),
-      cookieNames: cookies.map(c => c.name),
-      createdAt: Date.now(),
-      generation: ++sessionGeneration
-    };
-    console.log(`[模式3][Session] 建立成功 generation=${session.generation} | Cookie=${cookies.length} | names=${session.cookieNames.join(',')}`);
-    return session;
-  } finally {
-    await context.close().catch(() => {});
-    await browser.close().catch(() => {});
-    console.log('[模式3][Session] Chromium已关闭');
-  }
+async function disposeSession(session) {
+  if (!session) return;
+  try { await session.apiContext?.dispose(); } catch {}
 }
 
-async function refreshVisitorSession(reason = 'Session失效', staleGeneration = null) {
-  if (staleGeneration !== null && visitorSession && visitorSession.generation !== staleGeneration) {
-    return visitorSession;
+async function acquireProxy() {
+  const assignment = await proxyPool.acquire();
+  if (!assignment?.configured || !assignment.raw || !assignment.proxy) throw new Error('没有可用代理');
+  return assignment;
+}
+
+async function bootstrapVisitorSession(reason = '首次启动', useProxy = false) {
+  let lastError = null;
+  const maxAttempts = useProxy ? SESSION_PROXY_RETRIES : 1;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    let assignment = null;
+    let browser = null;
+    let context = null;
+    try {
+      if (useProxy) assignment = await acquireProxy();
+      const proxyLabel = assignment?.masked || 'LOCAL';
+      console.log(`[模式3][Session] ${reason} → Chromium领取游客身份 | IP=${proxyLabel}${useProxy ? ` | ${attempt}/${maxAttempts}` : ''}`);
+
+      browser = await chromium.launch({ headless: true, ...(assignment?.proxy ? { proxy: assignment.proxy } : {}) });
+      context = await browser.newContext({ userAgent: USER_AGENT, locale: 'zh-CN' });
+      const page = await context.newPage();
+      const response = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
+      console.log(`[模式3][Session] 首页 status=${response?.status() ?? '-'} | final=${page.url()} | IP=${proxyLabel}`);
+
+      if (response?.status() === 418) throw Object.assign(new Error('Chromium首页 HTTP 418'), { blocked: true });
+      await page.waitForTimeout(2500);
+      if (page.url().includes('visitor.passport.weibo.cn')) {
+        await page.waitForTimeout(2000);
+        const second = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
+        if (second?.status() === 418) throw Object.assign(new Error('Chromium游客初始化 HTTP 418'), { blocked: true });
+        await page.waitForTimeout(1500);
+      }
+
+      const cookies = await context.cookies(['https://m.weibo.cn/', 'https://weibo.cn/', 'https://weibo.com/']);
+      const cookie = cookieHeader(cookies);
+      if (!cookie) throw new Error('Chromium 未取得游客 Cookie');
+      const userAgent = await page.evaluate(() => navigator.userAgent);
+
+      // Playwright APIRequestContext 是轻量 HTTP 客户端；proxy 与 Chromium 完全相同。
+      // 这样 Cookie + 出口 IP 作为一个 Session 单元绑定使用，不需要继续保留 Chromium。
+      const apiContext = await request.newContext({
+        userAgent,
+        ...(assignment?.proxy ? { proxy: assignment.proxy } : {}),
+        extraHTTPHeaders: {
+          Accept: 'application/json,text/plain,*/*',
+          Referer: 'https://m.weibo.cn/',
+          Cookie: cookie
+        }
+      });
+
+      const session = {
+        cookie,
+        userAgent,
+        cookieNames: cookies.map(c => c.name),
+        createdAt: Date.now(),
+        generation: ++sessionGeneration,
+        assignment,
+        proxyLabel,
+        apiContext
+      };
+      console.log(`[模式3][Session] 建立成功 generation=${session.generation} | IP=${proxyLabel} | Cookie=${cookies.length}`);
+      return session;
+    } catch (error) {
+      lastError = error;
+      if (assignment?.raw) {
+        if (error?.blocked || /418|ERR_|Failed to fetch|timeout|代理|Cookie/i.test(String(error?.message || ''))) proxyPool.markBlocked(assignment.raw);
+        console.log(`[模式3][Session] 代理失败，切换下一个 | ${assignment.masked} | ${error.message}`);
+      }
+      if (!useProxy) throw error;
+    } finally {
+      try { await context?.close(); } catch {}
+      try { await browser?.close(); } catch {}
+      console.log('[模式3][Session] Chromium已关闭');
+    }
   }
+  throw lastError || new Error('游客 Session 建立失败');
+}
+
+async function refreshVisitorSession(reason = 'Session失效', staleGeneration = null, forceProxy = false) {
+  if (staleGeneration !== null && visitorSession && visitorSession.generation !== staleGeneration) return visitorSession;
   if (!sessionRefreshPromise) {
     sessionRefreshPromise = (async () => {
-      const fresh = await bootstrapVisitorSession(reason);
+      const old = visitorSession;
+      const useProxy = forceProxy || forceProxyAfter418;
+      const fresh = await bootstrapVisitorSession(reason, useProxy);
       visitorSession = fresh;
+      await disposeSession(old);
       return fresh;
     })().finally(() => { sessionRefreshPromise = null; });
   } else {
-    console.log('[模式3][Session] 已有刷新任务进行中，本请求等待共用结果');
+    console.log('[模式3][Session] 已有换IP/刷新任务进行中，本请求等待共用结果');
   }
   return sessionRefreshPromise;
 }
 
 async function ensureVisitorSession() {
-  if (visitorSession?.cookie) return visitorSession;
-  return refreshVisitorSession('首次启动');
+  if (visitorSession?.cookie && visitorSession?.apiContext) return visitorSession;
+  return refreshVisitorSession('首次启动', null, forceProxyAfter418);
 }
 
 function isSessionFailure(result) {
@@ -147,29 +206,20 @@ function isSessionFailure(result) {
 
 async function fetchWithSession(config, uid, session) {
   const url = buildLightProfileApiUrl(config, uid);
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    const response = await fetch(url, {
-      redirect: 'follow', signal: controller.signal,
-      headers: {
-        Accept: 'application/json,text/plain,*/*',
-        'User-Agent': session.userAgent || USER_AGENT,
-        Referer: 'https://m.weibo.cn/',
-        Cookie: session.cookie
-      }
-    });
+    const response = await session.apiContext.get(url, { timeout: REQUEST_TIMEOUT_MS, failOnStatusCode: false });
     const text = await response.text();
-    const finalUrl = String(response.url || url);
-    if (finalUrl.includes('visitor.passport.weibo.cn')) return { ok: false, visitor: true, status: response.status, message: '跳转visitor.passport', finalUrl, bodySample: compactBody(text) };
-    if (!response.ok) return { ok: false, visitor: false, status: response.status, message: `HTTP ${response.status}`, finalUrl, bodySample: compactBody(text) };
+    const finalUrl = String(response.url() || url);
+    const status = response.status();
+    if (finalUrl.includes('visitor.passport.weibo.cn')) return { ok: false, visitor: true, status, message: '跳转visitor.passport', finalUrl, bodySample: compactBody(text) };
+    if (status < 200 || status >= 300) return { ok: false, visitor: false, status, message: `HTTP ${status}`, finalUrl, bodySample: compactBody(text) };
     let json = null;
     try { json = JSON.parse(text); } catch {}
-    if (Number(json?.ok ?? 0) !== 1) return { ok: false, visitor: false, status: response.status, message: `API ok=${json?.ok ?? '非JSON'}`, finalUrl, bodySample: compactBody(text) };
-    return { ok: true, source: 'HTTP_SESSION', status: response.status, hasSuperLike: profileTextHasSuperLike(text), finalUrl };
+    if (Number(json?.ok ?? 0) !== 1) return { ok: false, visitor: false, status, message: `API ok=${json?.ok ?? '非JSON'}`, finalUrl, bodySample: compactBody(text) };
+    return { ok: true, source: 'HTTP_SESSION', status, hasSuperLike: profileTextHasSuperLike(text), finalUrl };
   } catch (error) {
-    return { ok: false, visitor: false, status: null, message: error?.name === 'AbortError' ? 'HTTP超时' : `HTTP异常: ${error.message}` };
-  } finally { clearTimeout(timer); }
+    return { ok: false, visitor: false, status: null, message: `HTTP异常: ${error.message}` };
+  }
 }
 
 async function checkUser(config, uid, stats) {
@@ -181,9 +231,14 @@ async function checkUser(config, uid, stats) {
 
   if (isSessionFailure(result)) {
     stats.sessionFailures++;
-    console.log(`[模式3][Session] UID=${uid} | ${result.message} | generation=${usedGeneration} → 刷新游客身份后重试一次`);
+    const is418 = Number(result.status) === 418;
+    if (is418) {
+      forceProxyAfter418 = true;
+      if (session.assignment?.raw) proxyPool.markBlocked(session.assignment.raw);
+    }
+    console.log(`[模式3][Session] UID=${uid} | ${result.message} | generation=${usedGeneration} | IP=${session.proxyLabel} → ${is418 ? '418触发换IP+换Cookie' : '刷新Session'}后重试一次`);
     try {
-      session = await refreshVisitorSession(`${result.message}，刷新`, usedGeneration);
+      session = await refreshVisitorSession(`${result.message}，${is418 ? '换IP+换Cookie' : '刷新'}`, usedGeneration, is418);
       stats.httpRetried++;
       stats.httpTried++;
       result = await fetchWithSession(config, uid, session);
@@ -213,10 +268,9 @@ async function runRound(round) {
   const startedAt = Date.now();
   const monitors = await getMonitors();
   const stats = { users: 0, httpTried: 0, httpOk: 0, httpRetried: 0, sessionFailures: 0, checked: 0, superlike: 0, deleted: 0, failed: 0 };
-
   console.log('');
   console.log(`[Recheck] ===== 模式3 Session-HTTP 第${round}轮开始 =====`);
-  console.log(`[模式3] Chromium只负责领取游客Session | Node fetch并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE}`);
+  console.log(`[模式3] Chromium只领游客Session | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 418=换IP+换Cookie`);
   logMemory('ROUND_START');
 
   for (const monitor of monitors) {
@@ -226,8 +280,8 @@ async function runRound(round) {
     console.log(`[模式3] Monitor=${monitor.name} | UID=${users.length} | 条件=今天入库+jyz>=70 | 顺序=jyz DESC`);
     if (!users.length) continue;
     console.log('[模式3][队列TOP] ' + users.slice(0, 10).map(x => `${x.uid}(jyz=${x.experience_7d ?? '-'})`).join(' | '));
-
     await ensureVisitorSession();
+
     const results = await mapLimit(users, HTTP_CONCURRENCY, async (user, index) => {
       const uid = String(user.uid || '').trim();
       const result = await checkUser(config, uid, stats);
@@ -240,9 +294,7 @@ async function runRound(round) {
       if (!result?.ok) {
         stats.failed++;
         console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | 失败 | ${result?.message || 'unknown'}`);
-        if (Number(result?.status) !== 403 && !String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) {
-          await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED');
-        }
+        if (Number(result?.status) !== 403 && !String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED');
         continue;
       }
       stats.checked++;
@@ -262,7 +314,7 @@ async function runRound(round) {
   logMemory('ROUND_END');
   console.log(`========== 模式3 Session-HTTP 第${round}轮完成 ==========`);
   console.log(`UID=${stats.users} | HTTP请求=${stats.httpTried} | HTTP成功=${stats.httpOk} | Session失效=${stats.sessionFailures} | Session重试=${stats.httpRetried} | 检查成功=${stats.checked} | SuperLike=${stats.superlike} | 删除=${stats.deleted} | 失败=${stats.failed}`);
-  console.log(`耗时=${Math.round(elapsed / 1000)}秒 | HTTP成功率=${stats.httpTried ? (stats.httpOk * 100 / stats.httpTried).toFixed(1) : '0.0'}% | Session generation=${visitorSession?.generation ?? 0}`);
+  console.log(`耗时=${Math.round(elapsed / 1000)}秒 | HTTP成功率=${stats.httpTried ? (stats.httpOk * 100 / stats.httpTried).toFixed(1) : '0.0'}% | Session generation=${visitorSession?.generation ?? 0} | IP=${visitorSession?.proxyLabel || '-'}`);
   console.log('==============================================');
   return elapsed;
 }
@@ -270,8 +322,8 @@ async function runRound(round) {
 async function main() {
   if (!process.env.DATABASE_URL) throw new Error('缺少 DATABASE_URL');
   createBatchLogger('recheck-superlike', 'mode3');
-  console.log('[模式3] 新架构：Chromium一次性领取游客Session → 关闭 Chromium → Node HTTP批量检查');
-  console.log(`[模式3] PG pool max=${pool.options.max} | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | round=${ROUND_INTERVAL_MS / 1000}s`);
+  console.log('[模式3] 新架构：Cookie + 出口IP绑定为Session；418自动换IP并重新领取游客Cookie');
+  console.log(`[模式3] PG pool max=${pool.options.max} | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS / 1000}s`);
   let round = 0;
   while (true) {
     round++;
@@ -288,6 +340,7 @@ async function main() {
 
 main().catch(async error => {
   console.error('[模式3] 致命异常：', error);
+  try { await disposeSession(visitorSession); } catch {}
   try { await pool.end(); } catch {}
   process.exit(1);
 });
