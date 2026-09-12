@@ -34,7 +34,6 @@ const COMMENT_BROWSER_PROXY = String(process.env.COMMENT_BROWSER_PROXY || '').tr
 const HTTP_TIMEOUT_MS = Number(process.env.COMMENT_HTTP_TIMEOUT_MS || 15000);
 const PROXY_RETRIES = Math.max(1, Number(process.env.COMMENT_PROXY_RETRIES || 3));
 const LOGIN_TEST_URL = 'https://weibo.com/newlogin?tabtype=weibo&gid=102803&openLoginLayer=0&url=https://weibo.com/';
-const LOGIN_PROXY_TEST_TIMEOUT_MS = Number(process.env.COMMENT_LOGIN_PROXY_TEST_TIMEOUT_MS || 12000);
 let ACCOUNT_PROXY = null;
 let PROXY_POOL = [];
 let PROXY_INDEX = -1;
@@ -114,53 +113,6 @@ function isHttp4xx(status) {
   const code = Number(status);
   return code >= 400 && code < 500;
 }
-async function testLoginProxy() {
-  const options = { ignoreHTTPSErrors: true };
-  if (ACCOUNT_PROXY) options.proxy = toPlaywrightProxy(ACCOUNT_PROXY);
-  const api = await request.newContext(options);
-  try {
-    const response = await api.get(LOGIN_TEST_URL, {
-      timeout: LOGIN_PROXY_TEST_TIMEOUT_MS,
-      failOnStatusCode: false,
-      headers: {
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'zh-CN,zh;q=0.9',
-        Referer: 'https://weibo.com/'
-      }
-    });
-    const status = response.status();
-    return { ok: status >= 200 && status < 400, status, url: response.url() };
-  } finally {
-    await api.dispose().catch(() => {});
-  }
-}
-async function ensureLoginProxyReachable() {
-  if (!ACCOUNT_PROXY && !PROXY_POOL.length) {
-    console.log('[登录代理检查] DIRECT');
-    const result = await testLoginProxy();
-    if (!result.ok) throw new Error(`直连登录页不可用 HTTP ${result.status}`);
-    console.log(`[登录代理检查] 可用 | DIRECT | HTTP=${result.status}`);
-    return;
-  }
-
-  const maxAttempts = Math.max(1, PROXY_POOL.length);
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const label = ACCOUNT_PROXY ? maskProxy(ACCOUNT_PROXY) : 'DIRECT';
-    console.log(`[登录代理检查] ${attempt}/${maxAttempts} | ${label}`);
-    try {
-      const result = await testLoginProxy();
-      if (result.ok) {
-        console.log(`[登录代理检查] 可用 | ${label} | HTTP=${result.status}`);
-        return;
-      }
-      console.warn(`[登录代理检查] 不可用 | ${label} | HTTP=${result.status}`);
-    } catch (error) {
-      console.warn(`[登录代理检查] 失败 | ${label} | ${shortError(error)}`);
-    }
-    if (attempt < maxAttempts && !rotateAccountProxy()) break;
-  }
-  throw new Error(`没有代理能访问微博登录页：${LOGIN_TEST_URL}`);
-}
 
 function initCommentHistory() {
   db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
@@ -205,9 +157,9 @@ function getTargets() {
   return todayRows.filter(row => !hasCommented(row.post_id)).slice(0, LIMIT);
 }
 
-async function launchBrowser(headless) {
+async function launchBrowser(headless, useProxy = true) {
   const options = { headless, viewport: { width: 1280, height: 900 }, ignoreHTTPSErrors: true };
-  if (ACCOUNT_PROXY) options.proxy = toPlaywrightProxy(ACCOUNT_PROXY);
+  if (useProxy && ACCOUNT_PROXY) options.proxy = toPlaywrightProxy(ACCOUNT_PROXY);
   return chromium.launchPersistentContext(PROFILE_DIR, options);
 }
 async function hasWeiboLogin(context) {
@@ -243,15 +195,13 @@ async function browserLoginSession(rl, forceLogin = false) {
     }
   } finally { await context.close().catch(() => {}); }
 
-  console.log('[登录] 登录态不存在或已失效，先检查代理能否访问微博登录页。');
-  await ensureLoginProxyReachable();
-  console.log('[登录] 代理检查通过，临时打开可见 Chromium。');
-  context = await launchBrowser(false);
+  console.log('[登录] 登录态不存在或已失效，使用本地IP直接打开登录页。');
+  context = await launchBrowser(false, false);
   try {
     if (forceLogin) await context.clearCookies().catch(() => {});
     const page = context.pages()[0] || await context.newPage();
     await page.goto(LOGIN_TEST_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    console.log(`[登录] 登录页已打开 | Proxy=${ACCOUNT_PROXY ? maskProxy(ACCOUNT_PROXY) : 'DIRECT'}`);
+    console.log('[登录] 登录页已打开 | Proxy=DIRECT');
     await waitForManualLogin(context, rl);
     const session = await collectBrowserSession(context);
     console.log(`[登录] 已取得 Cookie=${session.cookies.length}，关闭 Chromium。`);
