@@ -30,6 +30,7 @@ function logMemory(label) { const m = process.memoryUsage(); console.log(`[模�
 function compactBody(text) { return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 180); }
 function cookieHeader(cookies) { return cookies.map(c => `${c.name}=${c.value}`).join('; '); }
 function parseMonitorConfig(url) { const match = String(url || '').match(/100808([a-f0-9]{32})/i); if (!match) throw new Error(`无法从超话URL解析 page_id: ${url}`); return { pageId: `100808${match[1]}`, profileContainerId: `231140${match[1]}_-_profile_inpage` }; }
+function isHttp4xx(status) { const n = Number(status); return Number.isFinite(n) && n >= 400 && n < 500; }
 async function getMonitors() { return (await pool.query(`SELECT id, name, url FROM monitors WHERE COALESCE(enabled, 1) <> 0 AND monitor_type = 'superlike' ORDER BY id`)).rows; }
 async function getUsers(monitorId) {
   return (await pool.query(`SELECT p.uid, MAX(p.username) AS username, COUNT(*)::int AS post_count, MAX(COALESCE(p.moved_flag, 0)) AS has_moved_post, MAX(p.id) AS latest_id, MIN(p.first_seen_at) AS first_seen_at, MAX(p.profile_last_checked_at) AS profile_last_checked_at, MAX(p.experience_7d) AS experience_7d FROM superlike_posts p WHERE p.monitor_id = $1 AND p.uid IS NOT NULL AND p.uid <> '' AND CAST(p.first_seen_at AS date) = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date AND NOT EXISTS (SELECT 1 FROM superlike_users su WHERE su.uid = p.uid) GROUP BY p.uid HAVING MAX(p.experience_7d) >= 70 ORDER BY MAX(p.experience_7d) DESC, CASE WHEN MAX(p.profile_last_checked_at) IS NULL THEN 0 ELSE 1 END ASC, CAST(MAX(p.profile_last_checked_at) AS timestamp) ASC NULLS FIRST, CAST(MIN(p.first_seen_at) AS timestamp) ASC, MAX(p.id) DESC LIMIT $2`, [monitorId, BATCH_SIZE])).rows;
@@ -54,13 +55,15 @@ async function bootstrapVisitorSession(reason = '建立Session') {
       context = await browser.newContext({ userAgent: USER_AGENT, locale: 'zh-CN' });
       const page = await context.newPage();
       const response = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-      console.log(`[模式3][Session] 首页 status=${response?.status() ?? '-'} | final=${page.url()} | IP=${assignment.masked}`);
-      if (response?.status() === 418) throw Object.assign(new Error('Chromium首页 HTTP 418'), { blocked: true });
+      const firstStatus = response?.status();
+      console.log(`[模式3][Session] 首页 status=${firstStatus ?? '-'} | final=${page.url()} | IP=${assignment.masked}`);
+      if (isHttp4xx(firstStatus)) throw Object.assign(new Error(`Chromium首页 HTTP ${firstStatus}`), { blocked: true });
       await page.waitForTimeout(2500);
       if (page.url().includes('visitor.passport.weibo.cn')) {
         await page.waitForTimeout(2000);
         const second = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
-        if (second?.status() === 418) throw Object.assign(new Error('Chromium游客初始化 HTTP 418'), { blocked: true });
+        const secondStatus = second?.status();
+        if (isHttp4xx(secondStatus)) throw Object.assign(new Error(`Chromium游客初始化 HTTP ${secondStatus}`), { blocked: true });
         await page.waitForTimeout(1500);
       }
       const cookies = await context.cookies(['https://m.weibo.cn/', 'https://weibo.cn/', 'https://weibo.com/']);
@@ -104,7 +107,7 @@ async function refreshVisitorSession(reason = 'Session失效', staleGeneration =
   return sessionRefreshPromise;
 }
 async function ensureVisitorSession() { if (visitorSession?.cookie && visitorSession?.apiContext) return visitorSession; return refreshVisitorSession('首次启动：从健康代理池建立Session'); }
-function isSessionFailure(result) { if (!result || result.ok) return false; if (result.visitor) return true; return [403, 418, 432].includes(Number(result.status)); }
+function isSessionFailure(result) { if (!result || result.ok) return false; if (result.visitor) return true; return isHttp4xx(result.status); }
 async function fetchWithSession(config, uid, session) {
   const url = buildLightProfileApiUrl(config, uid);
   try {
@@ -129,14 +132,14 @@ async function checkUser(config, uid, stats) {
 async function mapLimit(items, limit, fn) { const results = new Array(items.length); let cursor = 0; async function worker() { while (true) { const index = cursor++; if (index >= items.length) return; results[index] = await fn(items[index], index); } } await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker)); return results; }
 async function runRound(round) {
   const startedAt = Date.now(); const monitors = await getMonitors(); const stats = { users: 0, httpTried: 0, httpOk: 0, httpRetried: 0, sessionFailures: 0, checked: 0, superlike: 0, deleted: 0, failed: 0 };
-  console.log(''); console.log(`[Recheck] ===== 模式3 Proxy-Session 第${round}轮开始 =====`); console.log(`[模式3] 只使用健康代理 | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 403/418/432/visitor=轮换代理+Cookie`); logMemory('ROUND_START');
+  console.log(''); console.log(`[Recheck] ===== 模式3 Proxy-Session 第${round}轮开始 =====`); console.log(`[模式3] 只使用健康代理 | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 任意4xx/visitor=轮换代理+Cookie`); logMemory('ROUND_START');
   for (const monitor of monitors) {
     const config = parseMonitorConfig(monitor.url); const users = await getUsers(monitor.id); stats.users += users.length; console.log(`[模式3] Monitor=${monitor.name} | UID=${users.length} | 条件=今天入库+jyz>=70 | 顺序=jyz DESC`); if (!users.length) continue; console.log('[模式3][队列TOP] ' + users.slice(0, 10).map(x => `${x.uid}(jyz=${x.experience_7d ?? '-'})`).join(' | '));
     await ensureVisitorSession();
     const results = await mapLimit(users, HTTP_CONCURRENCY, async (user, index) => { const uid = String(user.uid || '').trim(); const result = await checkUser(config, uid, stats); console.log(`[模式3][HTTP ${index + 1}/${users.length}] UID=${uid} | ${result?.ok ? '成功' : '失败'} | ${result?.ok ? `status=${result.status} | IP=${visitorSession?.proxyLabel || '-'}` : (result?.message || 'unknown')}`); return { uid, result, index }; });
     for (const item of results) {
       const { uid, result, index } = item;
-      if (!result?.ok) { stats.failed++; console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | 失败 | ${result?.message || 'unknown'}`); if (Number(result?.status) !== 403 && !String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED'); continue; }
+      if (!result?.ok) { stats.failed++; console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | 失败 | ${result?.message || 'unknown'}`); if (!String(result?.message || '').includes('visitor.passport') && !isSessionFailure(result)) await markProfileChecked(monitor.id, uid, 'PROFILE_FAILED'); continue; }
       stats.checked++; await markProfileChecked(monitor.id, uid, result.hasSuperLike ? 'SUPERLIKE' : 'NO_SUPERLIKE');
       if (result.hasSuperLike) { stats.superlike++; const deleted = await graduateUser(monitor.id, uid); stats.deleted += deleted; console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | SuperLike=是 | 删除=${deleted}`); }
       else console.log(`[模式3][RESULT ${index + 1}/${users.length}] UID=${uid} | SuperLike=否 | 保留`);
