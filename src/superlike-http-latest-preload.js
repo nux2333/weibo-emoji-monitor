@@ -1,7 +1,7 @@
 'use strict';
 
 /*
- * Fresh Scan HTTP 扫描切换层
+ * Scan HTTP 扫描切换层
  *
  * 适用：
  *   - fresh-latest
@@ -9,8 +9,7 @@
  *   - fresh-superlike
  *   - fresh-yishanshui
  *   - fresh-qa
- *
- * History 暂不切换，继续沿用原来的页面内 fetch 逻辑。
+ *   - history（latest Resume + 分区 Resume）
  *
  * 页面仍负责：
  *   - 打开真实超话首页
@@ -18,7 +17,7 @@
  *   - 建立游客 Cookie / 会话
  *   - 后续 Profile 检查
  *
- * Fresh 后续分页统一改为：
+ * 后续分页统一改为：
  *   BrowserContext APIRequestContext -> HTTP GET
  *
  * BrowserContext.request 与浏览器 Context 共用 Cookie Storage，
@@ -35,19 +34,29 @@ const workerSource = String(
   process.env.SUPERLIKE_SCAN_WORKER_SOURCE || ''
 ).trim();
 
+const freshSources = [
+  'latest-posts',
+  'section-hot',
+  'section-superlike',
+  'section-yishanshui',
+  'section-qa'
+];
+
 const enabled =
-  workerMode === 'fresh'
-  && [
-    'latest-posts',
-    'section-hot',
-    'section-superlike',
-    'section-yishanshui',
-    'section-qa'
-  ].includes(workerSource);
+  workerMode === 'history'
+  || (
+    workerMode === 'fresh'
+    && freshSources.includes(workerSource)
+  );
 
 if (enabled) {
   const originalFetchChaohuaInPage =
     chaohuaApi.fetchChaohuaInPage;
+
+  const workerLabel =
+    workerMode === 'history'
+      ? 'history'
+      : (workerSource || 'fresh');
 
   function sanitizeHeaders(headers) {
     const input =
@@ -113,7 +122,7 @@ if (enabled) {
       || typeof requestContext.get !== 'function'
     ) {
       console.warn(
-        '[SuperLike][HTTP Fresh] BrowserContext.request 不可用，临时回退 page.fetch。'
+        `[SuperLike][HTTP Scan] mode=${workerMode} source=${workerLabel} | BrowserContext.request 不可用，临时回退 page.fetch。`
       );
 
       return originalFetchChaohuaInPage(
@@ -186,7 +195,7 @@ if (enabled) {
       }
 
       console.log(
-        `[SuperLike][HTTP Fresh] source=${workerSource} | attempt=${attempt}/${maxAttempts} | HTTP=${lastResult.httpStatus ?? '-'} | ${lastResult.elapsedMs}ms | ${url}`
+        `[SuperLike][HTTP Scan] mode=${workerMode} source=${workerLabel} | attempt=${attempt}/${maxAttempts} | HTTP=${lastResult.httpStatus ?? '-'} | ${lastResult.elapsedMs}ms | ${url}`
       );
 
       if (lastResult.ok) {
@@ -228,7 +237,7 @@ if (enabled) {
       finalUrl: url,
       text: '',
       json: null,
-      error: 'HTTP fresh request returned no result',
+      error: 'HTTP scan request returned no result',
       attempt: 0,
       elapsedMs: 0,
       transport: 'http-api-request'
@@ -254,6 +263,6 @@ if (enabled) {
     };
 
   console.log(
-    `[SuperLike][HTTP Fresh] ${workerSource} 已启用 HTTP APIRequestContext；后续分页不再使用 page.evaluate(fetch)；单次超时=12秒。`
+    `[SuperLike][HTTP Scan] mode=${workerMode} source=${workerLabel} 已启用 HTTP APIRequestContext；后续分页不再使用 page.evaluate(fetch)；单次超时=12秒。`
   );
 }
