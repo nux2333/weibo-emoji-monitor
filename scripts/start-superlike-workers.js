@@ -51,6 +51,13 @@ const SCAN_HTTP_ONLY_PRELOAD =
     'superlike-scan-http-only-preload.js'
   );
 
+const HTTP_STATUS_PROXY_PRELOAD =
+  path.join(
+    ROOT,
+    'src',
+    'superlike-http-status-proxy-preload.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -165,6 +172,8 @@ function startWorker(
         UNIFIED_SCAN_CHECKPOINT_PRELOAD,
         '--require',
         SCAN_HTTP_ONLY_PRELOAD,
+        '--require',
+        HTTP_STATUS_PROXY_PRELOAD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -318,6 +327,9 @@ console.log(
 );
 console.log(
   '# 后续: 抓帖分页 + Profile 全部 HTTP，单次请求超时12秒'
+);
+console.log(
+  '# HTTP状态: 4xx/5xx + 网络故障统一交给外层切换代理'
 );
 console.log(
   '# Playwright: 每个子worker启用共通防卡watchdog'
