@@ -149,6 +149,10 @@ function getTargets() {
       AND COALESCE(comments_count, 0) <= ?
       AND post_link IS NOT NULL AND TRIM(post_link) <> ''
       AND post_created_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM black_fan_users b
+        WHERE CAST(b.uid AS TEXT) = CAST(superlike_posts.uid AS TEXT)
+      )
     ORDER BY experience_7d DESC, first_seen_at DESC`).all(MIN_EXPERIENCE, MAX_COMMENTS);
   const todayRows = rows.filter(row => formatShanghaiDate(row.post_created_at) === today);
   todayRows.sort((a, b) => {
