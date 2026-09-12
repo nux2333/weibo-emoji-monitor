@@ -113,6 +113,9 @@ function isHttp4xx(status) {
   const code = Number(status);
   return code >= 400 && code < 500;
 }
+function isLoginUrl(url) {
+  return /newlogin|passport\.weibo|\/login/i.test(String(url || ''));
+}
 
 function initCommentHistory() {
   db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
@@ -241,14 +244,10 @@ async function warmPost(api, postLink) {
   return { status: response.status(), url: response.url(), ok: response.ok() };
 }
 async function sendCommentHttp(api, postId, postLink, commentText) {
-  let cookies = await getHttpCookies(api);
-  let csrf = findCsrfToken(cookies);
+  const csrf = findCsrfToken(await getHttpCookies(api));
   if (!csrf) {
-    await warmPost(api, postLink).catch(() => {});
-    cookies = await getHttpCookies(api);
-    csrf = findCsrfToken(cookies);
+    return { ok: false, status: null, json: null, text: 'CSRF token unavailable before comment POST', csrfSource: null, csrfMissing: true };
   }
-  if (!csrf) return { ok: false, status: 0, json: null, text: 'CSRF token not found', csrfSource: null };
   const form = { id: String(postId), comment: commentText, pic_id: '', is_repost: '0', comment_ori: '0', is_comment: '0' };
   if (COMMENT_FP) form.fp = COMMENT_FP;
   const response = await api.post('https://weibo.com/ajax/comments/create', {
@@ -279,13 +278,15 @@ function isCommentSuccess(result) {
   return false;
 }
 function isLoginExpiredResult(result) {
+  if (result?.csrfMissing) return true;
   const body = result?.json || {};
   const code = Number(body.ok ?? body.code ?? body.error_code);
   const redirectUrl = String(body.url || body.redirect || result?.finalUrl || '');
-  return code === -100 || /newlogin|passport\.weibo|\/login/i.test(redirectUrl);
+  return code === -100 || isLoginUrl(redirectUrl);
 }
 function summarizeResult(result) {
   if (!result) return '没有返回结果';
+  if (result.csrfMissing) return 'CSRF token unavailable';
   const body = result.json || {}, code = getBusinessCode(result), message = body.msg || body.message || body.error || '';
   return [`HTTP ${result.status}`, code !== null ? `code=${code}` : '', message ? `msg=${message}` : '',
     result.csrfSource ? `csrf=${result.csrfSource}` : ''].filter(Boolean).join(' | ');
@@ -300,6 +301,52 @@ async function rotateHttpSession(currentApi, browserSession) {
   if (!rotateAccountProxy()) return null;
   if (currentApi) await currentApi.dispose().catch(() => {});
   return createHttpContext(browserSession);
+}
+
+async function refreshCsrfBeforePrompt(api, browserSession, postLink) {
+  let currentApi = api;
+  let lastWarm = null;
+  let lastError = null;
+
+  let csrf = findCsrfToken(await getHttpCookies(currentApi));
+  if (csrf) return { api: currentApi, csrf, loginExpired: false, error: null };
+
+  console.log('[CSRF] HTTP Cookie中未找到 token，刷新帖子Cookie。');
+  for (let attempt = 1; attempt <= PROXY_RETRIES; attempt += 1) {
+    try {
+      lastWarm = await warmPost(currentApi, postLink);
+      if (isLoginUrl(lastWarm.url)) {
+        return { api: currentApi, csrf: null, loginExpired: true, error: null };
+      }
+      if (isHttp4xx(lastWarm.status)) {
+        console.warn(`[CSRF] 刷新帖子 HTTP ${lastWarm.status}，自动切换代理`);
+        if (attempt >= PROXY_RETRIES) break;
+        const nextApi = await rotateHttpSession(currentApi, browserSession);
+        if (!nextApi) {
+          lastError = new Error(`HTTP ${lastWarm.status}，没有可切换代理`);
+          break;
+        }
+        currentApi = nextApi;
+        continue;
+      }
+
+      csrf = findCsrfToken(await getHttpCookies(currentApi));
+      if (csrf) {
+        if (attempt > 1) console.log(`[CSRF] 刷新成功 | HTTP=${lastWarm.status}`);
+        return { api: currentApi, csrf, loginExpired: false, error: null };
+      }
+      lastError = new Error('刷新帖子后仍未取得 CSRF token');
+    } catch (error) {
+      lastError = error;
+      console.warn(`[CSRF] 刷新帖子失败：${shortError(error)}`);
+      if (attempt >= PROXY_RETRIES) break;
+      const nextApi = await rotateHttpSession(currentApi, browserSession);
+      if (!nextApi) break;
+      currentApi = nextApi;
+    }
+  }
+
+  return { api: currentApi, csrf: null, loginExpired: true, error: lastError || new Error(`HTTP ${lastWarm?.status ?? '-'}`) };
 }
 
 async function main() {
@@ -363,7 +410,7 @@ async function main() {
         console.warn(`[HTTP评论] 重试后仍失败，跳过本条${warmError ? `：${shortError(warmError)}` : ''}`);
         continue;
       }
-      if (/passport\.weibo|\/login|newlogin/i.test(String(warm.url || ''))) {
+      if (isLoginUrl(warm.url)) {
         console.log('[登录] HTTP会话已失效，只为当前账号临时启动 Chromium 重新登录。');
         await api.dispose().catch(() => {});
         ({ api, browserSession } = await rebuildHttpSession(rl, true));
@@ -371,8 +418,17 @@ async function main() {
         continue;
       }
 
-      const csrf = findCsrfToken(await getHttpCookies(api));
-      if (!csrf) console.log('[CSRF] HTTP Cookie中未找到 token');
+      const csrfState = await refreshCsrfBeforePrompt(api, browserSession, row.post_link);
+      api = csrfState.api;
+      if (!csrfState.csrf) {
+        console.log(`[登录] CSRF 无法恢复${csrfState.error ? `：${shortError(csrfState.error)}` : ''}，重新登录。`);
+        await api.dispose().catch(() => {});
+        ({ api, browserSession } = await rebuildHttpSession(rl, true));
+        console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动发表评论。');
+        i -= 1;
+        continue;
+      }
+
       const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
       if (answer === 'q') break;
       if (answer !== 'y') continue;
@@ -394,7 +450,7 @@ async function main() {
           console.warn(`[HTTP评论] HTTP ${result.status}，但没有其他可用代理可切换。`);
         }
         if (isLoginExpiredResult(result)) {
-          console.log('[登录] 微博返回登录失效，只为当前账号临时启动 Chromium 重新登录。');
+          console.log('[登录] 微博会话失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
           ({ api, browserSession } = await rebuildHttpSession(rl, true));
           console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动重发。');
