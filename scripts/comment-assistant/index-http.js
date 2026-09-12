@@ -431,10 +431,7 @@ async function main() {
         const result = await sendCommentHttp(api, row.post_id, row.post_link, DEFAULT_COMMENT);
         const success = isCommentSuccess(result);
         console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
-        if (success) {
-          rememberCommented(row.post_id);
-          console.log(`[去重] 已记录 | 账号=${ACCOUNT} | Post=${row.post_id}`);
-        }
+        if (success) rememberCommented(row.post_id);
         if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
         if (!success && isHttp4xx(result?.status)) {
           const nextApi = await rotateHttpSession(api, browserSession);
