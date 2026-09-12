@@ -1,17 +1,24 @@
 'use strict';
 
 /*
- * fresh-latest HTTP 扫描切换层
+ * Fresh Scan HTTP 扫描切换层
  *
- * 目标：先只改 fresh-latest，不影响其它 Fresh / History。
+ * 适用：
+ *   - fresh-latest
+ *   - fresh-hot
+ *   - fresh-superlike
+ *   - fresh-yishanshui
+ *   - fresh-qa
+ *
+ * History 暂不切换，继续沿用原来的页面内 fetch 逻辑。
  *
  * 页面仍负责：
  *   - 打开真实超话首页
- *   - 点击“最新 -> 最新发帖”
+ *   - 点击/初始化目标分区
  *   - 建立游客 Cookie / 会话
  *   - 后续 Profile 检查
  *
- * sort_time 后续分页改为：
+ * Fresh 后续分页统一改为：
  *   BrowserContext APIRequestContext -> HTTP GET
  *
  * BrowserContext.request 与浏览器 Context 共用 Cookie Storage，
@@ -30,7 +37,13 @@ const workerSource = String(
 
 const enabled =
   workerMode === 'fresh'
-  && workerSource === 'latest-posts';
+  && [
+    'latest-posts',
+    'section-hot',
+    'section-superlike',
+    'section-yishanshui',
+    'section-qa'
+  ].includes(workerSource);
 
 if (enabled) {
   const originalFetchChaohuaInPage =
@@ -89,7 +102,7 @@ if (enabled) {
     {
       maxAttempts = 3,
       retryDelaysMs = [500, 1000],
-      timeoutMs = 30000
+      timeoutMs = 12000
     } = {}
   ) {
     const requestContext =
@@ -130,7 +143,7 @@ if (enabled) {
               headers: requestHeaders,
               timeout: Math.max(
                 1000,
-                Number(timeoutMs || 30000)
+                Number(timeoutMs || 12000)
               ),
               failOnStatusCode: false
             }
@@ -173,7 +186,7 @@ if (enabled) {
       }
 
       console.log(
-        `[SuperLike][HTTP Fresh] attempt=${attempt}/${maxAttempts} | HTTP=${lastResult.httpStatus ?? '-'} | ${lastResult.elapsedMs}ms | ${url}`
+        `[SuperLike][HTTP Fresh] source=${workerSource} | attempt=${attempt}/${maxAttempts} | HTTP=${lastResult.httpStatus ?? '-'} | ${lastResult.elapsedMs}ms | ${url}`
       );
 
       if (lastResult.ok) {
@@ -235,12 +248,12 @@ if (enabled) {
         {
           maxAttempts: 3,
           retryDelaysMs: [500, 1000],
-          timeoutMs: 30000
+          timeoutMs: 12000
         }
       );
     };
 
   console.log(
-    '[SuperLike][HTTP Fresh] fresh-latest 已启用 HTTP APIRequestContext；sort_time 后续分页不再使用 page.evaluate(fetch)。'
+    `[SuperLike][HTTP Fresh] ${workerSource} 已启用 HTTP APIRequestContext；后续分页不再使用 page.evaluate(fetch)；单次超时=12秒。`
   );
 }
