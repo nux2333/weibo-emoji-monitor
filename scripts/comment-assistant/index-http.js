@@ -32,7 +32,10 @@ const DEFAULT_COMMENT = process.env.COMMENT_TEXT || '法国人是世界上最严
 const COMMENT_FP = process.env.COMMENT_FP || '';
 const COMMENT_BROWSER_PROXY = String(process.env.COMMENT_BROWSER_PROXY || '').trim();
 const HTTP_TIMEOUT_MS = Number(process.env.COMMENT_HTTP_TIMEOUT_MS || 15000);
+const PROXY_RETRIES = Math.max(1, Number(process.env.COMMENT_PROXY_RETRIES || 3));
 let ACCOUNT_PROXY = null;
+let PROXY_POOL = [];
+let PROXY_INDEX = -1;
 
 fs.mkdirSync(PROFILE_DIR, { recursive: true });
 
@@ -76,21 +79,36 @@ function maskProxy(rawValue) {
   } catch { return String(rawValue || '').replace(/\/\/[^@]+@/, '//***@'); }
 }
 function initializeAccountProxy() {
-  if (ACCOUNT_PROXY) return ACCOUNT_PROXY;
   const override = normalizeProxy(COMMENT_BROWSER_PROXY);
   if (override) {
+    PROXY_POOL = [override];
+    PROXY_INDEX = 0;
     ACCOUNT_PROXY = override;
     console.log(`[账号代理] 使用固定代理：${maskProxy(ACCOUNT_PROXY)}`);
     return ACCOUNT_PROXY;
   }
-  const pool = readGoodProxyPool();
-  if (!pool.length) {
+  PROXY_POOL = readGoodProxyPool();
+  if (!PROXY_POOL.length) {
     console.warn('[账号代理] 健康代理池为空，本次尝试直连。');
     return null;
   }
-  ACCOUNT_PROXY = pool[Math.floor(Math.random() * pool.length)];
-  console.log(`[账号代理] 本次固定：${maskProxy(ACCOUNT_PROXY)}`);
+  PROXY_INDEX = Math.floor(Math.random() * PROXY_POOL.length);
+  ACCOUNT_PROXY = PROXY_POOL[PROXY_INDEX];
+  console.log(`[账号代理] 本次使用：${maskProxy(ACCOUNT_PROXY)} | 健康池=${PROXY_POOL.length}`);
   return ACCOUNT_PROXY;
+}
+function rotateAccountProxy() {
+  if (COMMENT_BROWSER_PROXY || PROXY_POOL.length <= 1) return false;
+  PROXY_INDEX = (PROXY_INDEX + 1) % PROXY_POOL.length;
+  ACCOUNT_PROXY = PROXY_POOL[PROXY_INDEX];
+  console.log(`[代理切换] → ${maskProxy(ACCOUNT_PROXY)}`);
+  return true;
+}
+function shortError(error) {
+  const text = String(error?.message || error || 'unknown error');
+  const first = text.split(/\r?\n/)[0];
+  const match = first.match(/(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_[A-Z_]+|socket hang up|Timeout[^:]*)/i);
+  return match ? match[1] : first.replace(/^apiRequestContext\.(?:get|post):\s*/i, '').slice(0, 180);
 }
 
 function getTargets() {
@@ -134,9 +152,7 @@ async function waitForManualLogin(context, rl) {
 async function collectBrowserSession(context) {
   const page = context.pages()[0] || await context.newPage();
   let browserInfo = null;
-  try {
-    browserInfo = await page.evaluate(() => ({ userAgent: navigator.userAgent, language: navigator.language }));
-  } catch {}
+  try { browserInfo = await page.evaluate(() => ({ userAgent: navigator.userAgent, language: navigator.language })); } catch {}
   return {
     cookies: await context.cookies(),
     userAgent: browserInfo?.userAgent || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36',
@@ -153,9 +169,7 @@ async function browserLoginSession(rl, forceLogin = false) {
       console.log(`[登录] 已读取 Cookie=${session.cookies.length}，关闭 Chromium。`);
       return session;
     }
-  } finally {
-    await context.close().catch(() => {});
-  }
+  } finally { await context.close().catch(() => {}); }
 
   console.log('[登录] 登录态不存在或已失效，临时打开可见 Chromium。');
   context = await launchBrowser(false);
@@ -167,19 +181,14 @@ async function browserLoginSession(rl, forceLogin = false) {
     const session = await collectBrowserSession(context);
     console.log(`[登录] 已取得 Cookie=${session.cookies.length}，关闭 Chromium。`);
     return session;
-  } finally {
-    await context.close().catch(() => {});
-  }
+  } finally { await context.close().catch(() => {}); }
 }
 async function createHttpContext(session) {
   const options = {
     ignoreHTTPSErrors: true,
     userAgent: session.userAgent,
     storageState: { cookies: session.cookies, origins: [] },
-    extraHTTPHeaders: {
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': session.language || 'zh-CN'
-    }
+    extraHTTPHeaders: { Accept: 'application/json, text/plain, */*', 'Accept-Language': session.language || 'zh-CN' }
   };
   if (ACCOUNT_PROXY) options.proxy = toPlaywrightProxy(ACCOUNT_PROXY);
   return request.newContext(options);
@@ -215,27 +224,19 @@ async function sendCommentHttp(api, postId, postLink, commentText) {
     csrf = findCsrfToken(cookies);
   }
   if (!csrf) return { ok: false, status: 0, json: null, text: 'CSRF token not found', csrfSource: null };
-
-  const form = {
-    id: String(postId), comment: commentText, pic_id: '', is_repost: '0', comment_ori: '0', is_comment: '0'
-  };
+  const form = { id: String(postId), comment: commentText, pic_id: '', is_repost: '0', comment_ori: '0', is_comment: '0' };
   if (COMMENT_FP) form.fp = COMMENT_FP;
-
   const response = await api.post('https://weibo.com/ajax/comments/create', {
     timeout: HTTP_TIMEOUT_MS,
     failOnStatusCode: false,
     form,
     headers: {
-      Accept: 'application/json, text/plain, */*',
-      Referer: postLink,
-      'X-Requested-With': 'XMLHttpRequest',
-      'X-XSRF-TOKEN': csrf.token,
-      'X-CSRF-TOKEN': csrf.token
+      Accept: 'application/json, text/plain, */*', Referer: postLink, 'X-Requested-With': 'XMLHttpRequest',
+      'X-XSRF-TOKEN': csrf.token, 'X-CSRF-TOKEN': csrf.token
     }
   });
   const text = await response.text();
-  let json = null;
-  try { json = JSON.parse(text); } catch {}
+  let json = null; try { json = JSON.parse(text); } catch {}
   return { ok: response.ok(), status: response.status(), json, text, csrfSource: csrf.source, finalUrl: response.url() };
 }
 function getBusinessCode(result) {
@@ -260,18 +261,20 @@ function isLoginExpiredResult(result) {
 }
 function summarizeResult(result) {
   if (!result) return '没有返回结果';
-  const body = result.json || {};
-  const code = getBusinessCode(result);
-  const message = body.msg || body.message || body.error || '';
+  const body = result.json || {}, code = getBusinessCode(result), message = body.msg || body.message || body.error || '';
   return [`HTTP ${result.status}`, code !== null ? `code=${code}` : '', message ? `msg=${message}` : '',
     result.csrfSource ? `csrf=${result.csrfSource}` : ''].filter(Boolean).join(' | ');
 }
-async function rebuildHttpSession(rl, forceLogin = false) {
-  const browserSession = await browserLoginSession(rl, forceLogin);
+async function rebuildHttpSession(rl, forceLogin = false, existingSession = null) {
+  const browserSession = existingSession || await browserLoginSession(rl, forceLogin);
   const api = await createHttpContext(browserSession);
   console.log(`[HTTP评论] 会话创建完成 | Proxy=${ACCOUNT_PROXY ? maskProxy(ACCOUNT_PROXY) : 'DIRECT'}`);
-  console.log('[HTTP评论] Chromium已关闭；下面全部使用 APIRequestContext。');
-  return api;
+  return { api, browserSession };
+}
+async function rotateHttpSession(currentApi, browserSession) {
+  if (!rotateAccountProxy()) return null;
+  if (currentApi) await currentApi.dispose().catch(() => {});
+  return createHttpContext(browserSession);
 }
 
 async function main() {
@@ -279,45 +282,54 @@ async function main() {
   initializeAccountProxy();
   const rl = readline.createInterface({ input, output });
   let api = null;
+  let browserSession = null;
   try {
-    api = await rebuildHttpSession(rl, false);
+    ({ api, browserSession } = await rebuildHttpSession(rl, false));
     const targets = getTargets();
     if (!targets.length) {
       console.log(`没有符合条件的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);
       return;
     }
     console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`);
-    console.log('每条评论发送前都会要求你确认。');
     console.log(`默认评论：${DEFAULT_COMMENT}`);
 
     for (let i = 0; i < targets.length; i += 1) {
       const row = targets[i];
       console.log('\n==============================================');
-      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'}`);
-      console.log(`UID=${row.uid || '-'} | ${row.username || '-'}`);
-      console.log(`Post=${row.post_id}`);
+      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'} | UID=${row.uid || '-'} | ${row.username || '-'}`);
       console.log(`Link=${row.post_link}`);
-      if (row.post_text) console.log(`文案=${String(row.post_text).replace(/\s+/g, ' ').slice(0, 160)}`);
 
-      let warm;
-      try {
-        warm = await warmPost(api, row.post_link);
-        console.log(`[HTTP评论] 帖子GET=${warm.status} | finalUrl=${warm.url}`);
-      } catch (error) {
-        console.warn(`[HTTP评论] 帖子GET失败：${error.message}`);
+      let warm = null;
+      let warmError = null;
+      for (let attempt = 1; attempt <= PROXY_RETRIES; attempt += 1) {
+        try {
+          warm = await warmPost(api, row.post_link);
+          warmError = null;
+          if (attempt > 1) console.log(`[HTTP评论] 重试成功 | HTTP=${warm.status}`);
+          break;
+        } catch (error) {
+          warmError = error;
+          console.warn(`[HTTP评论] 帖子GET失败：${shortError(error)}`);
+          if (attempt >= PROXY_RETRIES) break;
+          const nextApi = await rotateHttpSession(api, browserSession);
+          if (!nextApi) break;
+          api = nextApi;
+        }
+      }
+      if (!warm) {
+        console.warn(`[HTTP评论] 重试后仍失败，跳过本条${warmError ? `：${shortError(warmError)}` : ''}`);
         continue;
       }
       if (/passport\.weibo|\/login|newlogin/i.test(String(warm.url || ''))) {
         console.log('[登录] HTTP会话已失效，只为当前账号临时启动 Chromium 重新登录。');
         await api.dispose().catch(() => {});
-        api = await rebuildHttpSession(rl, true);
+        ({ api, browserSession } = await rebuildHttpSession(rl, true));
         i -= 1;
         continue;
       }
 
       const csrf = findCsrfToken(await getHttpCookies(api));
-      console.log(`[评论] 初始=${row.initial_comments_count ?? '-'} | 当前评论数=跳过实时获取`);
-      console.log(csrf ? `[CSRF] 已找到：${csrf.source}` : '[CSRF] HTTP Cookie中未找到 token');
+      if (!csrf) console.log('[CSRF] HTTP Cookie中未找到 token');
       const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
       if (answer === 'q') break;
       if (answer !== 'y') continue;
@@ -326,17 +338,16 @@ async function main() {
         const result = await sendCommentHttp(api, row.post_id, row.post_link, DEFAULT_COMMENT);
         const success = isCommentSuccess(result);
         console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
-        if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 1000)}`);
-
+        if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
         if (isLoginExpiredResult(result)) {
           console.log('[登录] 微博返回登录失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
-          api = await rebuildHttpSession(rl, true);
+          ({ api, browserSession } = await rebuildHttpSession(rl, true));
           console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动重发。');
           i -= 1;
         }
       } catch (error) {
-        console.error(`[评论失败] ${error.message}`);
+        console.error(`[评论失败] ${shortError(error)}`);
       }
     }
   } finally {
@@ -346,6 +357,6 @@ async function main() {
 }
 
 main().catch(error => {
-  console.error('[comment-assistant] 异常：', error);
+  console.error(`[comment-assistant] 异常：${shortError(error)}`);
   process.exitCode = 1;
 });
