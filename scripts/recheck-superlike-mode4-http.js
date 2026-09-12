@@ -444,7 +444,7 @@ async function createHttpSession() {
 function isSessionFailure(result) {
   if (!result) return true;
   if ([401, 403, 418, 432].includes(Number(result.status))) return true;
-  if (/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|登录/i.test(
+  if (/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|passport\.weibo\.com|登录/i.test(
     `${result.finalUrl || ''} ${result.bodyPreview || ''} ${result.message || ''}`
   )) return true;
   return false;
@@ -474,7 +474,7 @@ async function fetchListPage(session, config, sinceId = null) {
       status >= 200
       && status < 300
       && Number(json?.ok ?? 0) === 1
-      && !/visitor\.passport\.weibo\.cn|passport\.weibo\.cn/i.test(finalUrl);
+      && !/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|passport\.weibo\.com/i.test(finalUrl);
 
     return {
       ok,
