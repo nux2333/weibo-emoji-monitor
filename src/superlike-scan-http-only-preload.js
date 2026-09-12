@@ -83,6 +83,48 @@ if (enabled) {
       : base;
   }
 
+  function isProxyFailureResult(result) {
+    const status = Number(result?.httpStatus);
+
+    if (
+      Number.isFinite(status)
+      && status >= 400
+      && status < 500
+    ) {
+      return true;
+    }
+
+    return proxyModule.isProxyConnectionError(
+      result?.error || ''
+    );
+  }
+
+  function throwIfProxyFailure(
+    result,
+    stage,
+    url
+  ) {
+    if (!isProxyFailureResult(result)) {
+      return;
+    }
+
+    const status =
+      result?.httpStatus ?? '-';
+
+    const detail =
+      result?.error
+      || result?.text
+      || `HTTP ${status}`;
+
+    console.warn(
+      `${logPrefix('[代理故障]')} stage=${stage} | HTTP=${status} | Proxy=${currentAssignment?.masked || 'LOCAL'} | ${String(detail).replace(/\s+/g, ' ').slice(0, 300)} | 交给外层切换代理`
+    );
+
+    throw new Error(
+      `PROXY_PAGE_INVALID：${stage} | HTTP=${status} | ${detail} | ${url}`
+    );
+  }
+
   function sanitizeHeaders(headers) {
     const blocked = new Set([
       'cookie',
@@ -388,10 +430,16 @@ if (enabled) {
         return lastResult;
       }
 
+      const status = Number(lastResult.httpStatus);
+
+      /*
+       * 任何 4xx 都不在当前代理上继续重试。
+       * 交给调用方统一抛成代理故障，让外层冷却当前代理并切换。
+       */
       if (
-        lastResult.httpStatus === 403
-        || lastResult.httpStatus === 418
-        || lastResult.httpStatus === 432
+        Number.isFinite(status)
+        && status >= 400
+        && status < 500
       ) {
         return lastResult;
       }
@@ -417,12 +465,21 @@ if (enabled) {
       const ctx =
         await ensureHttpOnlySession(page);
 
-      return httpGet(
-        ctx,
-        url,
-        headers,
-        3
+      const result =
+        await httpGet(
+          ctx,
+          url,
+          headers,
+          3
+        );
+
+      throwIfProxyFailure(
+        result,
+        'chaohua分页',
+        url
       );
+
+      return result;
     };
 
   profileApi.checkUserSuperLikeByProfile =
@@ -462,25 +519,14 @@ if (enabled) {
           2
         );
 
+      throwIfProxyFailure(
+        result,
+        `Profile UID=${uid}`,
+        url
+      );
+
       const status =
         result?.httpStatus;
-
-      if (
-        status === 403
-        || status === 418
-        || status === 432
-      ) {
-        return {
-          ok: false,
-          blocked: status === 418,
-          visitorRedirect: status === 403,
-          hasSuperLike: null,
-          status,
-          httpStatus: status,
-          url: result?.finalUrl || url,
-          message: `HTTP ${status}`
-        };
-      }
 
       const text =
         String(result?.text || '');
@@ -524,6 +570,16 @@ if (enabled) {
 
       if (Number(json?.ok ?? 0) !== 1) {
         const apiErrno = Number(json?.errno);
+
+        if (
+          Number.isFinite(apiErrno)
+          && apiErrno >= 400
+          && apiErrno < 500
+        ) {
+          throw new Error(
+            `PROXY_PAGE_INVALID：Profile UID=${uid} | API errno=${apiErrno} | ${url}`
+          );
+        }
 
         return {
           ok: false,
@@ -577,6 +633,6 @@ if (enabled) {
   );
 
   console.log(
-    `${logPrefix()} 已启用：Chromium初始化 + m.weibo.cn游客预热后关闭；后续抓帖分页 + Profile 全HTTP；单次超时=12秒。`
+    `${logPrefix()} 已启用：Chromium初始化 + m.weibo.cn游客预热后关闭；后续抓帖分页 + Profile 全HTTP；单次超时=12秒；4xx/网络故障统一切代理。`
   );
 }
