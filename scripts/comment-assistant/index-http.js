@@ -109,9 +109,9 @@ function shortError(error) {
   const match = first.match(/(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_[A-Z_]+|socket hang up|Timeout[^:]*)/i);
   return match ? match[1] : first.replace(/^apiRequestContext\.(?:get|post):\s*/i, '').slice(0, 180);
 }
-function isHttp4xx(status) {
+function isHttpProxyFailure(status) {
   const code = Number(status);
-  return code >= 400 && code < 500;
+  return (code >= 400 && code < 500) || (code >= 500 && code < 600);
 }
 function isLoginUrl(url) {
   return /newlogin|passport\.weibo|\/login/i.test(String(url || ''));
@@ -318,7 +318,7 @@ async function refreshCsrfBeforePrompt(api, browserSession, postLink) {
       if (isLoginUrl(lastWarm.url)) {
         return { api: currentApi, csrf: null, loginExpired: true, error: null };
       }
-      if (isHttp4xx(lastWarm.status)) {
+      if (isHttpProxyFailure(lastWarm.status)) {
         console.warn(`[CSRF] 刷新帖子 HTTP ${lastWarm.status}，自动切换代理`);
         if (attempt >= PROXY_RETRIES) break;
         const nextApi = await rotateHttpSession(currentApi, browserSession);
@@ -379,7 +379,7 @@ async function main() {
       for (let attempt = 1; attempt <= PROXY_RETRIES; attempt += 1) {
         try {
           const candidateWarm = await warmPost(api, row.post_link);
-          if (isHttp4xx(candidateWarm.status)) {
+          if (isHttpProxyFailure(candidateWarm.status)) {
             console.warn(`[HTTP评论] 帖子GET HTTP ${candidateWarm.status}，自动切换代理`);
             if (attempt >= PROXY_RETRIES) {
               warmError = new Error(`HTTP ${candidateWarm.status}`);
@@ -439,7 +439,7 @@ async function main() {
         console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
         if (success) rememberCommented(row.post_id);
         if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
-        if (!success && isHttp4xx(result?.status)) {
+        if (!success && isHttpProxyFailure(result?.status)) {
           const nextApi = await rotateHttpSession(api, browserSession);
           if (nextApi) {
             api = nextApi;
