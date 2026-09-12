@@ -44,6 +44,13 @@ const UNIFIED_SCAN_CHECKPOINT_PRELOAD =
     'unified-scan-checkpoint-preload.js'
   );
 
+const HTTP_FRESH_LATEST_PRELOAD =
+  path.join(
+    ROOT,
+    'src',
+    'superlike-http-latest-preload.js'
+  );
+
 const WORKER_STAGGER_MS =
   Math.max(
     0,
@@ -166,6 +173,8 @@ function startWorker(
         UNIFIED_SCAN_RESUME_PRELOAD,
         '--require',
         UNIFIED_SCAN_CHECKPOINT_PRELOAD,
+        '--require',
+        HTTP_FRESH_LATEST_PRELOAD,
         '--require',
         PLAYWRIGHT_GUARD,
         SCANNER
@@ -321,6 +330,9 @@ console.log(
 );
 console.log(
   '# Checkpoint: 统一 superlike_scan_checkpoint(monitor_id, source_key)'
+);
+console.log(
+  '# fresh-latest: sort_time 后续分页使用 HTTP APIRequestContext'
 );
 console.log(
   '# Browser profile: 每个 worker 独立'
