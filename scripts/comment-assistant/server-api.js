@@ -77,7 +77,7 @@ function hasProfileData(profileDir) {
 function listAccounts() {
   const result = [];
   if (fs.existsSync(LEGACY_PROFILE_DIR)) {
-    result.push({ name: 'default', legacy: true, initialized: hasProfileData(LEGACY_PROFILE_DIR) });
+    result.push({ name: 'default', username: null, legacy: true, initialized: hasProfileData(LEGACY_PROFILE_DIR) });
   }
   try {
     const names = fs.readdirSync(PROFILE_ROOT, { withFileTypes: true })
@@ -85,7 +85,7 @@ function listAccounts() {
       .map(entry => entry.name)
       .sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' }));
     for (const name of names) {
-      result.push({ name, legacy: false, initialized: hasProfileData(path.join(PROFILE_ROOT, name)) });
+      result.push({ name, username: null, legacy: false, initialized: hasProfileData(path.join(PROFILE_ROOT, name)) });
     }
   } catch (error) {
     console.warn(`[Comment Assistant] 读取账号目录失败：${error.message}`);
@@ -100,7 +100,7 @@ function createAccount(name) {
   const dir = path.join(PROFILE_ROOT, safe);
   if (fs.existsSync(dir)) throw new Error(`账号 ${safe} 已存在`);
   fs.mkdirSync(dir, { recursive: true });
-  return { name: safe, legacy: false, initialized: false };
+  return { name: safe, username: null, legacy: false, initialized: false };
 }
 
 function bearer(req) {
@@ -306,12 +306,12 @@ app.get('/api/admin/workers', adminAuth, (req, res) => {
 });
 
 const baseCss = `
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}.account{border:1px solid #e5e7eb;border-radius:9px;padding:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}.account-table th:first-child,.account-table td:first-child{width:42px;text-align:center}.account-table th:nth-child(2),.account-table td:nth-child(2){width:54px;text-align:center}.account-table tbody tr:hover{background:#fafafa}.account-table input[type=checkbox]{width:16px;height:16px;min-width:0;margin:0}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}
 `;
 
 const clientCommon = String.raw`
 function byId(id){return document.getElementById(id)}
-function esc(v){return String(v == null ? '' : v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function esc(v){return String(v == null ? '' : v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot',"'":'&#39;'}[c]})}
 function showFatal(message){var el=byId('fatal');if(!el)return;el.style.display='block';el.textContent='页面脚本错误：'+message}
 window.addEventListener('error',function(e){showFatal(e.message || 'unknown error')});
 window.addEventListener('unhandledrejection',function(e){showFatal((e.reason && e.reason.message) || String(e.reason || 'Promise error'))});
@@ -322,7 +322,7 @@ function userPage() {
 <div id="fatal" class="fatal"></div>
 <div class="card"><div class="top"><div><h1>Comment Assistant 用户端</h1><div class="muted">账号管理、任务领取、处理记录</div></div><a href="/admin">管理员画面 →</a></div></div>
 <div class="card"><div class="row"><div><div class="muted">API Token</div><input id="token" type="password"></div><div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A"></div><button id="connect">连接</button><button class="blue" id="add">＋ 添加微博账号</button></div><div id="health" class="muted" style="margin-top:10px">未连接</div></div>
-<div class="card"><div class="top"><h2>当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><div id="accounts" class="accounts"></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><button class="green" id="claim">领取任务</button></div><div class="muted" style="margin-top:8px">当前版本领取后生成待处理队列，帖子由用户打开后处理并标记结果。</div></div>
+<div class="card"><div class="top"><h2>当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><div class="scroll"><table class="account-table"><thead><tr><th><input id="selectAllAccounts" type="checkbox" title="全选"></th><th>No</th><th>用户ID</th><th>用户名</th></tr></thead><tbody id="accounts"><tr><td colspan="4" class="muted">请先连接</td></tr></tbody></table></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><button class="green" id="claim">领取任务</button></div><div class="muted" style="margin-top:8px">当前版本领取后生成待处理队列，帖子由用户打开后处理并标记结果。</div></div>
 <div class="card"><h2>执行结果 / 我的任务</h2><div class="scroll"><table><thead><tr><th>账号</th><th>状态</th><th>帖子</th><th>备注</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div>
 <div class="card"><h2>执行 Log</h2><div id="log" class="log"></div></div>
 </div><script>${clientCommon}
@@ -335,7 +335,7 @@ function userPage() {
   function log(message){var el=byId('log');el.textContent+='['+new Date().toLocaleTimeString()+'] '+message+'\\n';el.scrollTop=el.scrollHeight}
   async function api(url,opt){opt=opt||{};var r=await fetch(url,Object.assign({},opt,{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tokenEl.value.trim()},opt.headers||{})}));var j;try{j=await r.json()}catch(_){j={success:false,message:'HTTP '+r.status}}if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
 
-  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var host=byId('accounts');host.innerHTML='';if(!list.length){host.innerHTML='<div class="muted">暂无账号</div>';return}list.forEach(function(item){var label=document.createElement('label');label.className='account';var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;label.appendChild(checkbox);var name=document.createElement('b');name.textContent=' '+item.name;label.appendChild(name);label.appendChild(document.createElement('br'));var state=document.createElement('span');state.className=item.initialized?'ok':'warn';state.textContent=item.initialized?'● 已有登录数据':'○ 未初始化';label.appendChild(state);host.appendChild(label)})}
+  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="4" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);body.appendChild(tr)})}
 
   function resultButton(taskId,status,text,className){var button=document.createElement('button');button.className=className;button.textContent=text;button.dataset.taskId=taskId;button.dataset.status=status;button.classList.add('task-result');return button}
 
@@ -347,6 +347,8 @@ function userPage() {
 
   byId('connect').addEventListener('click',connect);
   byId('add').addEventListener('click',async function(){var name=prompt('新微博账号名称');if(!name)return;try{var account=await api('/api/accounts',{method:'POST',body:JSON.stringify({name:name})});log('已创建账号目录：'+account.name);await loadAccounts();alert('账号目录已创建。首次登录仍需在执行电脑上初始化 Chromium Profile。')}catch(e){alert(e.message)}});
+  byId('selectAllAccounts').addEventListener('change',function(){var checked=this.checked;document.querySelectorAll('.acct').forEach(function(x){x.checked=checked})});
+  byId('accounts').addEventListener('change',function(){var all=document.querySelectorAll('.acct');var selected=document.querySelectorAll('.acct:checked');byId('selectAllAccounts').checked=all.length>0&&all.length===selected.length});
   byId('claim').addEventListener('click',async function(){var accounts=Array.prototype.map.call(document.querySelectorAll('.acct:checked'),function(x){return x.value});var loops=Number(byId('loops').value||1);try{var data=await api('/api/tasks/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('领取任务 '+data.count+' 条，账号='+accounts.join(',')+'，Loop='+loops);await loadTasks()}catch(e){alert(e.message);log('领取失败：'+e.message)}});
   byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-result');if(!button)return;try{await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/result',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:button.dataset.status})});log('任务 '+button.dataset.taskId+' → '+button.dataset.status);await loadTasks()}catch(err){alert(err.message)}});
 
