@@ -49,22 +49,29 @@ function makeTaskId() {
 }
 
 function listAccounts() {
-  const rows = db.prepare(`SELECT account, MAX(last_seen) AS last_seen
-    FROM (
-      SELECT account, MAX(claimed_at) AS last_seen
-      FROM comment_assistant_task_assignments
-      WHERE account IS NOT NULL AND account <> ''
-      GROUP BY account
-      UNION ALL
-      SELECT account, MAX(commented_at) AS last_seen
-      FROM comment_assistant_history
-      WHERE account IS NOT NULL AND account <> ''
-      GROUP BY account
-    ) x
-    GROUP BY account
-    ORDER BY MAX(last_seen) DESC`).all();
+  const assignmentRows = db.prepare(`SELECT account, MAX(claimed_at) AS last_seen
+    FROM comment_assistant_task_assignments
+    WHERE account IS NOT NULL AND account <> ''
+    GROUP BY account`).all();
 
-  const names = rows.map(row => String(row.account || '').trim()).filter(Boolean);
+  const historyRows = db.prepare(`SELECT account, MAX(commented_at) AS last_seen
+    FROM comment_assistant_history
+    WHERE account IS NOT NULL AND account <> ''
+    GROUP BY account`).all();
+
+  const seen = new Map();
+  for (const row of [...assignmentRows, ...historyRows]) {
+    const account = String(row.account || '').trim();
+    if (!account) continue;
+    const time = row.last_seen == null ? '' : String(row.last_seen);
+    const prev = seen.get(account);
+    if (!prev || time > prev) seen.set(account, time);
+  }
+
+  const names = Array.from(seen.entries())
+    .sort((a, b) => String(b[1]).localeCompare(String(a[1])))
+    .map(([account]) => account);
+
   if (!names.includes(DEFAULT_ACCOUNT)) names.unshift(DEFAULT_ACCOUNT);
   return names;
 }
