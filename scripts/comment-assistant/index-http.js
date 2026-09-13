@@ -434,9 +434,9 @@ async function main() {
         continue;
       }
 
-      const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
+     /* const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
       if (answer === 'q') break;
-      if (answer !== 'y') continue;
+      if (answer !== 'y') continue;*/
 
       try {
         const result = await sendCommentHttp(api, row.post_id, row.post_link, DEFAULT_COMMENT);
