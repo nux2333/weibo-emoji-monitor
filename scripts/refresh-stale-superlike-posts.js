@@ -13,6 +13,7 @@ const { checkUserSuperLikeByProfile } = require('../src/superlike/profile');
 const { checkSuperLikeByBrowser } = require('../src/superlike/mode3-profile');
 const {
   getPostId,
+  getUid,
   getCommentsCount,
   getPostCreatedAt,
   parsePostCreatedAtMs
@@ -46,8 +47,12 @@ function pad2(value) {
 function formatShanghai(ms) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
     hourCycle: 'h23'
   }).formatToParts(new Date(ms));
   const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
@@ -57,16 +62,18 @@ function formatShanghai(ms) {
 function shanghaiDateParts(ms = Date.now()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
-    year: 'numeric', month: '2-digit', day: '2-digit'
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
   }).formatToParts(new Date(ms));
   const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
-  return { year: Number(map.year), month: Number(map.month), day: Number(map.day) };
+  return {
+    year: Number(map.year),
+    month: Number(map.month),
+    day: Number(map.day)
+  };
 }
 
-/*
- * 返回北京时间某天 00:00:00 对应的“北京时间文本”。
- * amount=0 => 今天00:00；amount=-1 => 昨天00:00。
- */
 function shanghaiDayStartText(amount = 0) {
   const now = shanghaiDateParts();
   const utcNoon = Date.UTC(now.year, now.month - 1, now.day + amount, 12, 0, 0);
@@ -90,8 +97,9 @@ function cleanupOlderThan15Days() {
 
   let deleted = 0;
   for (const row of rows) {
-    if (!row?.uid) continue;
-    deleted += deletePostsByUidWithLog(String(row.uid), 'POST_CREATED_AT_OLDER_THAN_15_DAYS');
+    const uid = String(row?.uid || '').trim();
+    if (!uid) continue;
+    deleted += deletePostsByUidWithLog(uid, 'POST_CREATED_AT_OLDER_THAN_15_DAYS');
   }
 
   console.log(`[StaleRefresh][启动清理] post_created_at < ${cutoff} | 删除=${deleted}`);
@@ -99,16 +107,17 @@ function cleanupOlderThan15Days() {
 }
 
 function getCandidates(monitorId, limit) {
-  /*
-   * 不处理今天和昨天：
-   * cutoff = 昨天00:00，所以只取前天及更早。
-   * 一个UID只有一条帖，直接按帖子时间正序即可。
-   */
+  /* 昨天00:00以前 = 前天及更早；今天和昨天完全不参与。 */
   const cutoff = shanghaiDayStartText(-1);
   return db.prepare(`
     SELECT
-      id, monitor_id, post_id, uid, username,
-      post_created_at, experience_7d
+      id,
+      monitor_id,
+      post_id,
+      uid,
+      username,
+      post_created_at,
+      experience_7d
     FROM superlike_posts
     WHERE monitor_id = ?
       AND uid IS NOT NULL
@@ -165,18 +174,23 @@ function updateExperience(uid, value) {
   `).run(Number(value), Number(value), String(uid));
 }
 
-function pickLatestPost(profilePosts) {
+function pickLatestPost(profilePosts, expectedUid) {
   if (!Array.isArray(profilePosts)) return null;
 
   return profilePosts
     .map(post => ({
       post,
       postId: getPostId(post),
+      uid: String(getUid(post) || '').trim(),
       createdAtMs: parsePostCreatedAtMs(post),
       createdAt: getPostCreatedAt(post),
       comments: getCommentsCount(post)
     }))
-    .filter(item => item.postId && Number.isFinite(Number(item.createdAtMs)))
+    .filter(item =>
+      item.postId &&
+      item.uid === String(expectedUid) &&
+      Number.isFinite(Number(item.createdAtMs))
+    )
     .sort((a, b) => Number(b.createdAtMs) - Number(a.createdAtMs))[0] || null;
 }
 
@@ -203,31 +217,28 @@ async function openBrowser() {
   return { browser, context, assignment };
 }
 
-async function replaceOldPostSafely(row, monitor, latest, experience7d) {
+/*
+ * 这里故意不让 db.saveSuperLikeTargetPost() 先决定“同日评论更多优先”。
+ * 新需求是：主页最新一条帖就是目标。
+ * 所以：先验证新帖可入库 -> 删除旧行 -> saveTargetPost 插入最新帖。
+ */
+async function replaceWithLatest(row, monitor, latest, experience7d) {
   const uid = String(row.uid);
-  const latestPostId = String(latest.postId);
   const oldPostId = String(row.post_id || '');
+  const latestPostId = String(latest.postId || '');
 
   if (latestPostId === oldPostId) {
     updateExperience(uid, experience7d);
-    console.log(`[StaleRefresh][同一最新帖] UID=${uid} | Post=${latestPostId} | 只更新经验值=${experience7d}`);
+    console.log(`[StaleRefresh][已是最新] UID=${uid} | Post=${latestPostId} | 经验值=${experience7d}`);
     return 'same';
   }
 
-  /*
-   * saveTargetPost 本身会拒绝：无post_id/uid、超Like、评论>=21等异常候选。
-   * 为了避免“先删后插失败”造成用户消失，这里先保存新帖，确认成功后
-   * 再按旧记录 id 删除旧帖。整个稳定状态仍然是一UID一条帖。
-   */
-  const saveResult = saveTargetPost(Number(monitor.id), latest.post, 'NO_SUPERLIKE');
-  if (!saveResult || saveResult.status === 'skip') {
-    console.log(`[StaleRefresh][新帖未保存] UID=${uid} | old=${oldPostId} | new=${latestPostId} | reason=${saveResult?.reason || 'unknown'} | 保留旧帖`);
+  /* saveTargetPost 会拒绝评论未知/已满；先在删旧前拦住，避免丢数据。 */
+  if (latest.comments === null || Number(latest.comments) >= 21) {
     updateExperience(uid, experience7d);
+    console.log(`[StaleRefresh][最新帖不可入库] UID=${uid} | new=${latestPostId} | 评论=${latest.comments ?? 'unknown'} | 保留旧帖`);
     return 'kept';
   }
-
-  /* 新帖保存成功后，把经验值写到该UID的新记录。 */
-  updateExperience(uid, experience7d);
 
   const deleted = db.prepare(`
     DELETE FROM superlike_posts
@@ -236,8 +247,23 @@ async function replaceOldPostSafely(row, monitor, latest, experience7d) {
       AND post_id = ?
   `).run(Number(row.id), uid, oldPostId);
 
-  console.log(`[StaleRefresh][替换完成] UID=${uid} | ${oldPostId} -> ${latestPostId} | 发帖=${latest.createdAt || '-'} | 评论=${latest.comments ?? '-'} | 经验值=${experience7d} | 删除旧帖=${deleted?.changes ?? deleted ?? 0}`);
-  return 'replaced';
+  try {
+    const saveResult = saveTargetPost(Number(monitor.id), latest.post, 'NO_SUPERLIKE');
+
+    if (!saveResult || saveResult.status === 'skip') {
+      console.log(`[StaleRefresh][最新帖保存跳过] UID=${uid} | old=${oldPostId} | new=${latestPostId} | reason=${saveResult?.reason || 'unknown'} | 旧行已删=${deleted?.changes ?? deleted ?? 0}`);
+      return 'skipped_after_delete';
+    }
+
+    updateExperience(uid, experience7d);
+
+    console.log(`[StaleRefresh][替换完成] UID=${uid} | ${oldPostId} -> ${latestPostId} | 发帖=${latest.createdAt || '-'} | 评论=${latest.comments} | 经验值=${experience7d}`);
+    return 'replaced';
+  } catch (error) {
+    /* 极端情况下插入失败，至少把错误完整打出来，便于立刻恢复。 */
+    console.error(`[StaleRefresh][替换异常] UID=${uid} | old=${oldPostId} | new=${latestPostId} | ${error?.message || error}`);
+    throw error;
+  }
 }
 
 async function runMonitor(monitor) {
@@ -256,8 +282,14 @@ async function runMonitor(monitor) {
   console.log('==============================================');
 
   const summary = {
-    checked: 0, superLike: 0, replaced: 0, same: 0,
-    kept: 0, profileFailed: 0, jyzFailed: 0, noLatest: 0
+    checked: 0,
+    superLike: 0,
+    replaced: 0,
+    same: 0,
+    kept: 0,
+    profileFailed: 0,
+    jyzFailed: 0,
+    noLatest: 0
   };
 
   if (!rows.length) return summary;
@@ -312,7 +344,6 @@ async function runMonitor(monitor) {
         continue;
       }
 
-      /* 未超Like后才查经验值。经验值失败时不替换，避免新帖没有经验值。 */
       const jyz = await queryExperience7d(topicHash, uid);
       if (!jyz.ok) {
         summary.jyzFailed++;
@@ -324,7 +355,6 @@ async function runMonitor(monitor) {
       updateExperience(uid, jyz.experience7d);
       console.log(`[StaleRefresh][经验值] UID=${uid} | ${row.experience_7d ?? '-'} -> ${jyz.experience7d}`);
 
-      /* 同一个 Visitor Context 获取主页第一页，再从返回帖子中按真实发帖时间取最新一条。 */
       const profile = await checkUserSuperLikeByProfile(
         state.context,
         config,
@@ -348,15 +378,15 @@ async function runMonitor(monitor) {
         continue;
       }
 
-      const latest = pickLatestPost(profile.profilePosts);
+      const latest = pickLatestPost(profile.profilePosts, uid);
       if (!latest) {
         summary.noLatest++;
-        console.log(`[StaleRefresh][无最新帖] UID=${uid} | 主页第一页没有可解析帖子 | 保留旧帖`);
+        console.log(`[StaleRefresh][无最新帖] UID=${uid} | 主页第一页没有该UID可解析帖子 | 保留旧帖`);
         await sleep(PROFILE_DELAY_MS);
         continue;
       }
 
-      const result = await replaceOldPostSafely(row, monitor, latest, jyz.experience7d);
+      const result = await replaceWithLatest(row, monitor, latest, jyz.experience7d);
       if (result === 'replaced') summary.replaced++;
       else if (result === 'same') summary.same++;
       else summary.kept++;
@@ -381,20 +411,28 @@ async function runMonitor(monitor) {
   console.log('# 2. 今天/昨天不处理；前天及更早按发帖时间正序');
   console.log('# 3. 超Like => 删除');
   console.log('# 4. 非超Like => 更新经验值 => 主页最新帖替换旧帖');
-  console.log('# 5. 任一步失败 => 不删除旧帖');
+  console.log('# 5. Profile/JYZ/主页失败 => 保留旧帖');
   console.log('##############################################');
 
   cleanupOlderThan15Days();
 
   const monitors = getSuperLikeMonitors();
   const total = {
-    checked: 0, superLike: 0, replaced: 0, same: 0,
-    kept: 0, profileFailed: 0, jyzFailed: 0, noLatest: 0
+    checked: 0,
+    superLike: 0,
+    replaced: 0,
+    same: 0,
+    kept: 0,
+    profileFailed: 0,
+    jyzFailed: 0,
+    noLatest: 0
   };
 
   for (const monitor of monitors) {
     const summary = await runMonitor(monitor);
-    for (const key of Object.keys(total)) total[key] += Number(summary[key] || 0);
+    for (const key of Object.keys(total)) {
+      total[key] += Number(summary[key] || 0);
+    }
   }
 
   console.log('');
