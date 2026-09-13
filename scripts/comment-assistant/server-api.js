@@ -155,7 +155,7 @@ function normalizeStatus(value) {
 
 app.get('/api/health', userAuth, (req, res) => {
   cleanupWorkers();
-  const taskStats = db.prepare(`SELECT status, COUNT(*) AS cnt FROM comment_assistant_tasks GROUP BY status`).all();
+  const taskStats = db.prepare('SELECT status, COUNT(*) AS cnt FROM comment_assistant_tasks GROUP BY status').all();
   res.json({ success: true, data: {
     host: os.hostname(),
     now: new Date().toISOString(),
@@ -225,10 +225,14 @@ app.post('/api/tasks/claim', userAuth, (req, res) => {
         WHERE task_id = ? AND status = 'OPEN'`).run(task.task_id);
       claimed.push({ ...task, account });
     } catch (_) {
-      // 其他用户可能刚领取，忽略该条即可。
+      // 其他用户可能刚领取，忽略该条。
     }
   }
-  touchWorker(worker, { account: accounts.join(','), status: claimed.length ? 'tasks-claimed' : 'idle', note: `领取 ${claimed.length} 条` });
+  touchWorker(worker, {
+    account: accounts.join(','),
+    status: claimed.length ? 'tasks-claimed' : 'idle',
+    note: `领取 ${claimed.length} 条`
+  });
   res.json({ success: true, data: { worker, loops, accounts, count: claimed.length, items: claimed } });
 });
 
@@ -254,18 +258,15 @@ app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
 
 app.get('/api/admin/tasks', adminAuth, (req, res) => {
   const status = normalizeStatus(req.query.status);
-  let rows;
-  if (status) {
-    rows = db.prepare(`SELECT t.*, a.worker_id, a.account, a.claimed_at, a.completed_at, a.result
-      FROM comment_assistant_tasks t
-      LEFT JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id
-      WHERE t.status = ? ORDER BY t.priority DESC, t.created_at DESC LIMIT 500`).all(status);
-  } else {
-    rows = db.prepare(`SELECT t.*, a.worker_id, a.account, a.claimed_at, a.completed_at, a.result
-      FROM comment_assistant_tasks t
-      LEFT JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id
-      ORDER BY t.created_at DESC LIMIT 500`).all();
-  }
+  const rows = status
+    ? db.prepare(`SELECT t.*, a.worker_id, a.account, a.claimed_at, a.completed_at, a.result
+        FROM comment_assistant_tasks t
+        LEFT JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id
+        WHERE t.status = ? ORDER BY t.priority DESC, t.created_at DESC LIMIT 500`).all(status)
+    : db.prepare(`SELECT t.*, a.worker_id, a.account, a.claimed_at, a.completed_at, a.result
+        FROM comment_assistant_tasks t
+        LEFT JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id
+        ORDER BY t.created_at DESC LIMIT 500`).all();
   res.json({ success: true, data: rows });
 });
 
@@ -279,13 +280,20 @@ app.post('/api/admin/tasks', adminAuth, (req, res) => {
   const taskId = makeTaskId();
   db.prepare(`INSERT INTO comment_assistant_tasks
     (task_id, post_id, post_link, post_text, note, priority, status, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, 'OPEN', 'admin')`).run(taskId, postId || null, postLink, postText || null, note || null, priority);
+    VALUES (?, ?, ?, ?, ?, ?, 'OPEN', 'admin')`).run(
+      taskId,
+      postId || null,
+      postLink,
+      postText || null,
+      note || null,
+      priority
+    );
   res.json({ success: true, data: { task_id: taskId } });
 });
 
 app.post('/api/admin/tasks/:taskId/cancel', adminAuth, (req, res) => {
   const taskId = String(req.params.taskId || '').trim();
-  db.prepare(`UPDATE comment_assistant_tasks SET status = 'CANCELLED', updated_at = LOCALTIMESTAMP WHERE task_id = ?`).run(taskId);
+  db.prepare("UPDATE comment_assistant_tasks SET status = 'CANCELLED', updated_at = LOCALTIMESTAMP WHERE task_id = ?").run(taskId);
   res.json({ success: true });
 });
 
@@ -298,44 +306,82 @@ app.get('/api/admin/workers', adminAuth, (req, res) => {
 });
 
 const baseCss = `
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}.account{border:1px solid #e5e7eb;border-radius:9px;padding:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}.accounts{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px}.account{border:1px solid #e5e7eb;border-radius:9px;padding:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}
+`;
+
+const clientCommon = String.raw`
+function byId(id){return document.getElementById(id)}
+function esc(v){return String(v == null ? '' : v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+function showFatal(message){var el=byId('fatal');if(!el)return;el.style.display='block';el.textContent='页面脚本错误：'+message}
+window.addEventListener('error',function(e){showFatal(e.message || 'unknown error')});
+window.addEventListener('unhandledrejection',function(e){showFatal((e.reason && e.reason.message) || String(e.reason || 'Promise error'))});
 `;
 
 function userPage() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Comment Assistant 用户端</title><style>${baseCss}</style></head><body><div class="wrap">
+<div id="fatal" class="fatal"></div>
 <div class="card"><div class="top"><div><h1>Comment Assistant 用户端</h1><div class="muted">账号管理、任务领取、处理记录</div></div><a href="/admin">管理员画面 →</a></div></div>
 <div class="card"><div class="row"><div><div class="muted">API Token</div><input id="token" type="password"></div><div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A"></div><button id="connect">连接</button><button class="blue" id="add">＋ 添加微博账号</button></div><div id="health" class="muted" style="margin-top:10px">未连接</div></div>
-<div class="card"><div class="top"><h2>当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><div id="accounts" class="accounts"></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><button class="green" id="claim">领取任务</button></div><div class="muted" style="margin-top:8px">第一版中“领取任务”会按所选账号与 Loop 回数生成待处理队列；帖子处理仍由用户打开后完成。</div></div>
+<div class="card"><div class="top"><h2>当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><div id="accounts" class="accounts"></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><button class="green" id="claim">领取任务</button></div><div class="muted" style="margin-top:8px">当前版本领取后生成待处理队列，帖子由用户打开后处理并标记结果。</div></div>
 <div class="card"><h2>执行结果 / 我的任务</h2><div class="scroll"><table><thead><tr><th>账号</th><th>状态</th><th>帖子</th><th>备注</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div>
 <div class="card"><h2>执行 Log</h2><div id="log" class="log"></div></div>
-</div><script>
-const $=id=>document.getElementById(id);$('token').value=sessionStorage.getItem('caToken')||'';$('worker').value=localStorage.getItem('caWorker')||('PC-'+Math.random().toString(36).slice(2,6));
-function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}function log(s){$('log').textContent+='['+new Date().toLocaleTimeString()+'] '+s+'\n';$('log').scrollTop=$('log').scrollHeight}
-async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json','Authorization':'Bearer '+$('token').value.trim(),...(opt.headers||{})}});const j=await r.json().catch(()=>({success:false,message:'HTTP '+r.status}));if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
-async function loadAccounts(){const list=await api('/api/accounts');$('accountCount').textContent=list.length;$('accounts').innerHTML=list.map(x=>'<label class="account"><input type="checkbox" class="acct" value="'+esc(x.name)+'"> <b>'+esc(x.name)+'</b><br><span class="'+(x.initialized?'ok':'warn')+'">'+(x.initialized?'● 已有登录数据':'○ 未初始化')+'</span></label>').join('')||'<div class="muted">暂无账号</div>'}
-async function loadTasks(){const worker=$('worker').value.trim();if(!worker)return;const list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));$('tasks').innerHTML=list.map(x=>'<tr><td>'+esc(x.account||'-')+'</td><td>'+esc(x.assignment_status||x.status)+'</td><td><a target="_blank" href="'+esc(x.post_link)+'">打开帖子</a><br><span class="muted">'+esc(x.post_text||'')+'</span></td><td>'+esc(x.note||'')+'</td><td>'+(x.assignment_status==='CLAIMED'?'<button class="green" onclick="finish(\''+esc(x.task_id)+'\',\'DONE\')">完成</button> <button class="gray" onclick="finish(\''+esc(x.task_id)+'\',\'SKIPPED\')">跳过</button>':'-')+'</td></tr>').join('')||'<tr><td colspan="5" class="muted">暂无任务</td></tr>'}
-async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:$('worker').value.trim(),status:'online'})})}catch(_){} }
-async function connect(){sessionStorage.setItem('caToken',$('token').value.trim());localStorage.setItem('caWorker',$('worker').value.trim());try{const h=await api('/api/health');$('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts+' | Workers='+h.workers;await loadAccounts();await loadTasks();await heartbeat();log('连接成功')}catch(e){$('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
-$('connect').onclick=connect;$('add').onclick=async()=>{const name=prompt('新微博账号名称');if(!name)return;try{const a=await api('/api/accounts',{method:'POST',body:JSON.stringify({name})});log('已创建账号目录：'+a.name);await loadAccounts();alert('账号目录已创建。首次扫码登录仍需在执行电脑上初始化 Chromium Profile。')}catch(e){alert(e.message)}};
-$('claim').onclick=async()=>{const accounts=[...document.querySelectorAll('.acct:checked')].map(x=>x.value);const loops=Number($('loops').value||1);try{const d=await api('/api/tasks/claim',{method:'POST',body:JSON.stringify({worker:$('worker').value.trim(),accounts,loops})});log('领取任务 '+d.count+' 条，账号='+accounts.join(',')+'，Loop='+loops);await loadTasks()}catch(e){alert(e.message);log('领取失败：'+e.message)}};
-window.finish=async(taskId,status)=>{try{await api('/api/tasks/'+encodeURIComponent(taskId)+'/result',{method:'POST',body:JSON.stringify({worker:$('worker').value.trim(),status})});log('任务 '+taskId+' → '+status);await loadTasks()}catch(e){alert(e.message)}};
-if($('token').value)connect();setInterval(()=>{if($('token').value){heartbeat();loadTasks().catch(()=>{})}},15000);
+</div><script>${clientCommon}
+(function(){
+  var tokenEl=byId('token');
+  var workerEl=byId('worker');
+  tokenEl.value=sessionStorage.getItem('caToken')||'';
+  workerEl.value=localStorage.getItem('caWorker')||('PC-'+Math.random().toString(36).slice(2,6));
+
+  function log(message){var el=byId('log');el.textContent+='['+new Date().toLocaleTimeString()+'] '+message+'\\n';el.scrollTop=el.scrollHeight}
+  async function api(url,opt){opt=opt||{};var r=await fetch(url,Object.assign({},opt,{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tokenEl.value.trim()},opt.headers||{})}));var j;try{j=await r.json()}catch(_){j={success:false,message:'HTTP '+r.status}}if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
+
+  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var host=byId('accounts');host.innerHTML='';if(!list.length){host.innerHTML='<div class="muted">暂无账号</div>';return}list.forEach(function(item){var label=document.createElement('label');label.className='account';var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;label.appendChild(checkbox);var name=document.createElement('b');name.textContent=' '+item.name;label.appendChild(name);label.appendChild(document.createElement('br'));var state=document.createElement('span');state.className=item.initialized?'ok':'warn';state.textContent=item.initialized?'● 已有登录数据':'○ 未初始化';label.appendChild(state);host.appendChild(label)})}
+
+  function resultButton(taskId,status,text,className){var button=document.createElement('button');button.className=className;button.textContent=text;button.dataset.taskId=taskId;button.dataset.status=status;button.classList.add('task-result');return button}
+
+  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var c1=document.createElement('td');c1.textContent=item.account||'-';var c2=document.createElement('td');c2.textContent=item.assignment_status||item.status||'-';var c3=document.createElement('td');var a=document.createElement('a');a.target='_blank';a.rel='noopener';a.href=item.post_link;a.textContent='打开帖子';c3.appendChild(a);if(item.post_text){c3.appendChild(document.createElement('br'));var s=document.createElement('span');s.className='muted';s.textContent=item.post_text;c3.appendChild(s)}var c4=document.createElement('td');c4.textContent=item.note||'';var c5=document.createElement('td');if(item.assignment_status==='CLAIMED'){c5.appendChild(resultButton(item.task_id,'DONE','完成','green'));c5.appendChild(document.createTextNode(' '));c5.appendChild(resultButton(item.task_id,'SKIPPED','跳过','gray'))}else{c5.textContent='-'}[c1,c2,c3,c4,c5].forEach(function(td){tr.appendChild(td)});body.appendChild(tr)})}
+
+  async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:'online'})})}catch(_){}}
+
+  async function connect(){sessionStorage.setItem('caToken',tokenEl.value.trim());localStorage.setItem('caWorker',workerEl.value.trim());try{var h=await api('/api/health');byId('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts+' | Workers='+h.workers;await loadAccounts();await loadTasks();await heartbeat();log('连接成功')}catch(e){byId('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
+
+  byId('connect').addEventListener('click',connect);
+  byId('add').addEventListener('click',async function(){var name=prompt('新微博账号名称');if(!name)return;try{var account=await api('/api/accounts',{method:'POST',body:JSON.stringify({name:name})});log('已创建账号目录：'+account.name);await loadAccounts();alert('账号目录已创建。首次登录仍需在执行电脑上初始化 Chromium Profile。')}catch(e){alert(e.message)}});
+  byId('claim').addEventListener('click',async function(){var accounts=Array.prototype.map.call(document.querySelectorAll('.acct:checked'),function(x){return x.value});var loops=Number(byId('loops').value||1);try{var data=await api('/api/tasks/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('领取任务 '+data.count+' 条，账号='+accounts.join(',')+'，Loop='+loops);await loadTasks()}catch(e){alert(e.message);log('领取失败：'+e.message)}});
+  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-result');if(!button)return;try{await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/result',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:button.dataset.status})});log('任务 '+button.dataset.taskId+' → '+button.dataset.status);await loadTasks()}catch(err){alert(err.message)}});
+
+  if(tokenEl.value)connect();
+  setInterval(function(){if(tokenEl.value){heartbeat();loadTasks().catch(function(){})}},15000);
+})();
 </script></body></html>`;
 }
 
 function adminPage() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Comment Assistant 管理员</title><style>${baseCss}</style></head><body><div class="wrap">
+<div id="fatal" class="fatal"></div>
 <div class="card"><div class="top"><div><h1>Comment Assistant 管理员</h1><div class="muted">发布任务、查看领取与完成状态</div></div><a href="/user">← 用户画面</a></div></div>
 <div class="card"><div class="row"><div><div class="muted">Admin Token</div><input id="token" type="password"></div><button id="connect">连接</button></div><div id="state" class="muted" style="margin-top:8px">未连接</div></div>
 <div class="card"><h2>发布任务</h2><div class="row"><input id="postId" placeholder="Post ID（可选）"><input id="link" placeholder="帖子链接" style="min-width:320px"><input id="priority" type="number" value="0" placeholder="优先级" style="width:90px"></div><div class="row" style="margin-top:8px"><textarea id="text" placeholder="帖子文案/说明（可选）" rows="2" style="min-width:320px"></textarea><textarea id="note" placeholder="任务备注（可选）" rows="2" style="min-width:260px"></textarea><button class="blue" id="publish">发布任务</button></div></div>
 <div class="card"><div class="top"><h2>任务列表</h2><div><select id="status"><option value="">全部</option><option>OPEN</option><option>CLAIMED</option><option>DONE</option><option>SKIPPED</option><option>CANCELLED</option></select> <button id="refresh">刷新</button></div></div><div class="scroll"><table><thead><tr><th>状态</th><th>优先级</th><th>帖子</th><th>领取人</th><th>账号</th><th>结果</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div>
 <div class="card"><h2>在线 Worker</h2><div id="workers" class="grid"></div></div>
-</div><script>
-const $=id=>document.getElementById(id);$('token').value=sessionStorage.getItem('caAdminToken')||'';function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-async function api(path,opt={}){const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json','Authorization':'Bearer '+$('token').value.trim(),...(opt.headers||{})}});const j=await r.json().catch(()=>({success:false,message:'HTTP '+r.status}));if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
-async function load(){const q=$('status').value?'?status='+encodeURIComponent($('status').value):'';const list=await api('/api/admin/tasks'+q);$('tasks').innerHTML=list.map(x=>'<tr><td>'+esc(x.status)+'</td><td>'+esc(x.priority)+'</td><td><a target="_blank" href="'+esc(x.post_link)+'">打开</a><br><span class="muted">'+esc(x.post_text||'')+'</span></td><td>'+esc(x.worker_id||'-')+'</td><td>'+esc(x.account||'-')+'</td><td>'+esc(x.result||'-')+'</td><td>'+(x.status!=='CANCELLED'&&x.status!=='DONE'?'<button class="red" onclick="cancelTask(\''+esc(x.task_id)+'\')">取消</button>':'-')+'</td></tr>').join('')||'<tr><td colspan="7" class="muted">暂无任务</td></tr>';const ws=await api('/api/admin/workers');$('workers').innerHTML=ws.map(w=>'<div class="box"><b>'+esc(w.worker)+'</b><br>账号：'+esc(w.account||'-')+'<br>状态：'+esc(w.status||'-')+'<br><span class="muted">'+esc(w.lastSeenAt)+'</span></div>').join('')||'<div class="muted">暂无在线 Worker</div>'}
-$('connect').onclick=async()=>{sessionStorage.setItem('caAdminToken',$('token').value.trim());try{await load();$('state').innerHTML='<span class="ok">● 已连接管理员接口</span>'}catch(e){$('state').innerHTML='<span class="bad">'+esc(e.message)+'</span>'}};$('refresh').onclick=()=>load().catch(e=>alert(e.message));$('status').onchange=()=>load().catch(e=>alert(e.message));
-$('publish').onclick=async()=>{try{await api('/api/admin/tasks',{method:'POST',body:JSON.stringify({post_id:$('postId').value,post_link:$('link').value,post_text:$('text').value,note:$('note').value,priority:Number($('priority').value||0)})});$('link').value='';$('postId').value='';$('text').value='';$('note').value='';await load()}catch(e){alert(e.message)}};window.cancelTask=async id=>{if(!confirm('确定取消这个任务？'))return;await api('/api/admin/tasks/'+encodeURIComponent(id)+'/cancel',{method:'POST',body:'{}'});await load()};if($('token').value)$('connect').click();setInterval(()=>{if($('token').value)load().catch(()=>{})},15000);
+</div><script>${clientCommon}
+(function(){
+  var tokenEl=byId('token');
+  tokenEl.value=sessionStorage.getItem('caAdminToken')||'';
+  async function api(url,opt){opt=opt||{};var r=await fetch(url,Object.assign({},opt,{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tokenEl.value.trim()},opt.headers||{})}));var j;try{j=await r.json()}catch(_){j={success:false,message:'HTTP '+r.status}}if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
+
+  async function load(){var status=byId('status').value;var q=status?'?status='+encodeURIComponent(status):'';var list=await api('/api/admin/tasks'+q);var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="7" class="muted">暂无任务</td></tr>'}else{list.forEach(function(item){var tr=document.createElement('tr');var values=[item.status,item.priority];values.forEach(function(v){var td=document.createElement('td');td.textContent=v==null?'-':String(v);tr.appendChild(td)});var post=document.createElement('td');var a=document.createElement('a');a.target='_blank';a.rel='noopener';a.href=item.post_link;a.textContent='打开';post.appendChild(a);if(item.post_text){post.appendChild(document.createElement('br'));var s=document.createElement('span');s.className='muted';s.textContent=item.post_text;post.appendChild(s)}tr.appendChild(post);var worker=document.createElement('td');worker.textContent=item.worker_id||'-';tr.appendChild(worker);var account=document.createElement('td');account.textContent=item.account||'-';tr.appendChild(account);var result=document.createElement('td');result.textContent=item.result||'-';tr.appendChild(result);var action=document.createElement('td');if(item.status!=='CANCELLED'&&item.status!=='DONE'){var cancel=document.createElement('button');cancel.className='red cancel-task';cancel.textContent='取消';cancel.dataset.taskId=item.task_id;action.appendChild(cancel)}else{action.textContent='-'}tr.appendChild(action);body.appendChild(tr)})}
+    var ws=await api('/api/admin/workers');var workers=byId('workers');workers.innerHTML='';if(!ws.length){workers.innerHTML='<div class="muted">暂无在线 Worker</div>'}else{ws.forEach(function(item){var box=document.createElement('div');box.className='box';box.innerHTML='<b>'+esc(item.worker)+'</b><br>账号：'+esc(item.account||'-')+'<br>状态：'+esc(item.status||'-')+'<br><span class="muted">'+esc(item.lastSeenAt)+'</span>';workers.appendChild(box)})}}
+
+  async function connect(){sessionStorage.setItem('caAdminToken',tokenEl.value.trim());try{await load();byId('state').innerHTML='<span class="ok">● 已连接管理员接口</span>'}catch(e){byId('state').innerHTML='<span class="bad">'+esc(e.message)+'</span>'}}
+  byId('connect').addEventListener('click',connect);
+  byId('refresh').addEventListener('click',function(){load().catch(function(e){alert(e.message)})});
+  byId('status').addEventListener('change',function(){load().catch(function(e){alert(e.message)})});
+  byId('publish').addEventListener('click',async function(){try{await api('/api/admin/tasks',{method:'POST',body:JSON.stringify({post_id:byId('postId').value,post_link:byId('link').value,post_text:byId('text').value,note:byId('note').value,priority:Number(byId('priority').value||0)})});byId('link').value='';byId('postId').value='';byId('text').value='';byId('note').value='';await load()}catch(e){alert(e.message)}});
+  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.cancel-task');if(!button)return;if(!confirm('确定取消这个任务？'))return;try{await api('/api/admin/tasks/'+encodeURIComponent(button.dataset.taskId)+'/cancel',{method:'POST',body:'{}'});await load()}catch(err){alert(err.message)}});
+  if(tokenEl.value)connect();
+  setInterval(function(){if(tokenEl.value)load().catch(function(){})},15000);
+})();
 </script></body></html>`;
 }
 
