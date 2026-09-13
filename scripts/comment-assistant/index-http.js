@@ -15,6 +15,8 @@ function sanitizeAccountName(value) {
 }
 
 const ACCOUNT = sanitizeAccountName(process.env.COMMENT_ACCOUNT || 'default');
+const LOOP_MODE = String(process.env.COMMENT_LOOP_MODE || '') === '1';
+const LOOP_LOGIN_EXPIRED_EXIT_CODE = 20;
 const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
 const DEFAULT_ACCOUNT_PROFILE = path.join(PROFILE_ROOT, ACCOUNT);
@@ -39,6 +41,21 @@ let PROXY_POOL = [];
 let PROXY_INDEX = -1;
 
 fs.mkdirSync(PROFILE_DIR, { recursive: true });
+
+function makeLoopLoginExpiredError(reason) {
+  const error = new Error(reason || '微博登录信息已失效');
+  error.code = 'COMMENT_LOOP_LOGIN_EXPIRED';
+  return error;
+}
+function isLoopLoginExpiredError(error) {
+  return error?.code === 'COMMENT_LOOP_LOGIN_EXPIRED';
+}
+function skipLoopAccountForExpiredLogin(reason) {
+  if (!LOOP_MODE) return false;
+  console.warn(`[Loop] ⏭️ 账号 ${ACCOUNT} 登录信息已失效，跳过当前账号，不打开 Chromium 重新登录${reason ? ` | ${reason}` : ''}`);
+  process.exitCode = LOOP_LOGIN_EXPIRED_EXIT_CODE;
+  return true;
+}
 
 function formatShanghaiDate(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -193,6 +210,11 @@ async function collectBrowserSession(context) {
 }
 async function browserLoginSession(rl, forceLogin = false) {
   console.log(`[账号] ${ACCOUNT}`);
+
+  if (LOOP_MODE && forceLogin) {
+    throw makeLoopLoginExpiredError('loop 模式禁止打开 Chromium 重新登录');
+  }
+
   console.log('[登录] 临时启动 Chromium 读取登录态。');
   let context = await launchBrowser(true);
   try {
@@ -202,6 +224,10 @@ async function browserLoginSession(rl, forceLogin = false) {
       return session;
     }
   } finally { await context.close().catch(() => {}); }
+
+  if (LOOP_MODE) {
+    throw makeLoopLoginExpiredError('Profile 中未检测到有效 SUB Cookie');
+  }
 
   console.log('[登录] 登录态不存在或已失效，使用本地IP直接打开登录页。');
   context = await launchBrowser(false, false);
@@ -416,6 +442,7 @@ async function main() {
         continue;
       }
       if (isLoginUrl(warm.url)) {
+        if (skipLoopAccountForExpiredLogin('帖子 GET 被重定向到登录页')) return;
         console.log('[登录] HTTP会话已失效，只为当前账号临时启动 Chromium 重新登录。');
         await api.dispose().catch(() => {});
         ({ api, browserSession } = await rebuildHttpSession(rl, true));
@@ -426,6 +453,7 @@ async function main() {
       const csrfState = await refreshCsrfBeforePrompt(api, browserSession, row.post_link);
       api = csrfState.api;
       if (!csrfState.csrf) {
+        if (skipLoopAccountForExpiredLogin(`CSRF 无法恢复${csrfState.error ? `：${shortError(csrfState.error)}` : ''}`)) return;
         console.log(`[登录] CSRF 无法恢复${csrfState.error ? `：${shortError(csrfState.error)}` : ''}，重新登录。`);
         await api.dispose().catch(() => {});
         ({ api, browserSession } = await rebuildHttpSession(rl, true));
@@ -455,6 +483,7 @@ async function main() {
           console.warn(`[HTTP评论] HTTP ${result.status}，但没有其他可用代理可切换。`);
         }
         if (isLoginExpiredResult(result)) {
+          if (skipLoopAccountForExpiredLogin(`微博评论接口返回登录失效：${summarizeResult(result)}`)) return;
           console.log('[登录] 微博会话失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
           ({ api, browserSession } = await rebuildHttpSession(rl, true));
@@ -481,6 +510,10 @@ async function main() {
 }
 
 main().catch(error => {
+  if (LOOP_MODE && isLoopLoginExpiredError(error)) {
+    skipLoopAccountForExpiredLogin(shortError(error));
+    return;
+  }
   console.error(`[comment-assistant] 异常：${shortError(error)}`);
   process.exitCode = 1;
 });
