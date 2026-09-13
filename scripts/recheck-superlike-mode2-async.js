@@ -27,6 +27,12 @@ let sessionGeneration = 0;
 function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function cookieHeader(cookies) { return cookies.map(c => `${c.name}=${c.value}`).join('; '); }
 function compact(text) { return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 180); }
+function profileDebugSummary(text) {
+  const source = String(text || '').replace(/\s+/g, ' ');
+  const matches = source.match(/(?:fans_title_superlike(?:_on)?\.png|chao_like|超LIKE|badge[^,}\]]{0,100}|icon[^,}\]]{0,100}|title[^,}\]]{0,100})/ig) || [];
+  const unique = [...new Set(matches.map(v => v.trim()))].slice(0, 8);
+  return unique.length ? unique.join(' || ').slice(0, 900) : compact(source);
+}
 function memoryMB(v) { return Math.round(Number(v || 0) / 1024 / 1024); }
 function logMemory(label) { const m = process.memoryUsage(); console.log(`[模式2][Memory][${label}] RSS=${memoryMB(m.rss)}MB | Heap=${memoryMB(m.heapUsed)}/${memoryMB(m.heapTotal)}MB | PG total=${pool.totalCount} idle=${pool.idleCount} waiting=${pool.waitingCount}`); }
 function parseMonitorConfig(url) { const match = String(url || '').match(/100808([a-f0-9]{32})/i); if (!match) throw new Error(`无法从超话URL解析 page_id: ${url}`); return { pageId: `100808${match[1]}`, profileContainerId: `231140${match[1]}_-_profile_inpage` }; }
@@ -137,9 +143,9 @@ async function requestProfile(post, session) {
     const response = await session.apiContext.get(url,{timeout:REQUEST_TIMEOUT_MS,failOnStatusCode:false}); const text=await response.text(); const status=response.status();
     if (String(response.url()).includes('visitor.passport.weibo.cn')) return {ok:false,visitor:true,status,message:'profile_allbadge 跳转visitor.passport'};
     if(status<200||status>=300) return {ok:false,status,message:`profile_allbadge HTTP ${status}`};
-    let json; try{json=JSON.parse(text);}catch{return {ok:false,status,message:'profile_allbadge 非JSON'};}
-    if(Number(json?.ok??0)!==1) return {ok:false,status,message:`profile_allbadge API ok=${json?.ok??'?'}`};
-    return {ok:true,status,hasSuperLike:profileTextHasSuperLike(text)};
+    let json; try{json=JSON.parse(text);}catch{return {ok:false,status,message:'profile_allbadge 非JSON',sample:compact(text)};}
+    if(Number(json?.ok??0)!==1) return {ok:false,status,message:`profile_allbadge API ok=${json?.ok??'?'}`,sample:compact(text)};
+    return {ok:true,status,hasSuperLike:profileTextHasSuperLike(text),debug:profileDebugSummary(text)};
   } catch(error){return {ok:false,status:null,message:`profile_allbadge异常: ${error.message}`};}
 }
 
@@ -168,10 +174,32 @@ async function runRound(round){
   const results=await mapLimit(posts,HTTP_CONCURRENCY,async(post,index)=>{
     const comments=await withSessionRetry(`UID=${post.uid} Post=${post.post_id}`,s=>requestComments(post,s));
     if(!comments.ok){console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | Post=${post.post_id} | 评论失败 | ${comments.message}`);return;}
-    const threshold=getDeleteThreshold(post); let verify=null;
-    if(comments.commentsCount>=threshold){ verify=await withSessionRetry(`UID=${post.uid} allbadge`,s=>requestProfile(post,s)); }
-    if(comments.commentsCount>=threshold && verify?.ok && verify.hasSuperLike){ const reason=`SUPERLIKE_MODE2_CONFIRM_${threshold}`; const deleted=await graduate(post,reason); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'} | 超LIKE=YES | 删除UID候选=${deleted}`); return; }
-    const next=await schedule(post,comments.commentsCount); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'}${comments.commentsCount>=threshold?` | 超LIKE=${verify?.ok?(verify.hasSuperLike?'YES':'NO'):'FAILED'}`:' | 超LIKE=NO'} | 保留 | 下次≈${next}分钟`);
+
+    const threshold=getDeleteThreshold(post);
+    let verify=null;
+    if(comments.commentsCount>=threshold){
+      verify=await withSessionRetry(`UID=${post.uid} allbadge`,s=>requestProfile(post,s));
+    }
+
+    if(comments.commentsCount>=threshold && verify?.ok && verify.hasSuperLike){
+      const reason=`SUPERLIKE_MODE2_CONFIRM_${threshold}`;
+      const deleted=await graduate(post,reason);
+      console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'} | 阈值=${threshold} | 超LIKE=YES | 删除UID候选=${deleted}`);
+      return;
+    }
+
+    let superLikeState='SKIP';
+    if(comments.commentsCount>=threshold){
+      superLikeState=verify?.ok?(verify.hasSuperLike?'YES':'NO'):'FAILED';
+      if(verify?.ok && !verify.hasSuperLike){
+        console.log(`[模式2][ProfileDebug] UID=${post.uid} | Post=${post.post_id} | HTTP=${verify.status??'-'} | 判定=NO | 摘要=${verify.debug||'-'}`);
+      } else if(!verify?.ok){
+        console.log(`[模式2][ProfileDebug] UID=${post.uid} | Post=${post.post_id} | 判定=FAILED | ${verify?.message||'unknown'}${verify?.sample?` | 摘要=${verify.sample}`:''}`);
+      }
+    }
+
+    const next=await schedule(post,comments.commentsCount);
+    console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'} | 阈值=${threshold} | 超LIKE=${superLikeState} | 保留 | 下次≈${next}分钟`);
   });
   void results; const elapsed=Date.now()-started; logMemory('ROUND_END'); console.log(`[模式2] 第${round}轮完成 | 耗时=${Math.round(elapsed/1000)}秒 | Session generation=${visitorSession?.generation??0} | IP=${visitorSession?.proxyLabel||'-'}`); return elapsed;
 }
@@ -180,7 +208,7 @@ async function main(){
   if(!process.env.DATABASE_URL)throw new Error('缺少 DATABASE_URL');
   createBatchLogger('recheck-superlike','mode2');
   console.log('[模式2] 统一恢复策略：健康代理 → Chromium取Cookie → 同代理HTTP；4xx/5xx、网络错误、Session/Context/Browser关闭、Playwright timeout、visitor 都自动轮换代理+Session');
-  console.log(`[模式2] 查询范围=inserted_at今天 + experience_7d>70 | HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认`);
+  console.log(`[模式2] 查询范围=inserted_at今天 + experience_7d>70 | HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认 | 状态=SKIP/YES/NO/FAILED`);
   let round=0;
   while(true){round++;try{const elapsed=await runRound(round);await sleep(Math.max(0,ROUND_INTERVAL_MS-elapsed));}catch(e){console.error(`[模式2] 第${round}轮异常：`,e);await sleep(Math.min(ROUND_INTERVAL_MS,15000));}}
 }
