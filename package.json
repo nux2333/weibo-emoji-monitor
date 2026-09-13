@@ -22,6 +22,7 @@
     "jyz-service": "node -r ./src/skip-db-init-preload.js -r ./src/playwright-hardening.js scripts/jyz-service.js",
     "backfill-today-jyz": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/backfill-today-jyz.js",
     "refresh-old-superlike": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/refresh-old-superlike-posts.js",
+    "refresh-stale-superlike": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js -r ./src/playwright-hardening.js scripts/refresh-stale-superlike-posts.js",
     "normalize-superlike-post-time": "node -r ./src/skip-db-init-preload.js scripts/normalize-superlike-post-created-at.js",
     "comment-assistant": "node -r ./src/skip-db-init-preload.js ./scripts/comment-assistant/cli.js",
     "comment-assistant-ui": "node -r ./src/skip-db-init-preload.js ./scripts/comment-assistant/web.js",
