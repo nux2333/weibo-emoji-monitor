@@ -3,6 +3,7 @@ const { Pool } = require('pg');
 const { chromium, request } = require('playwright');
 const { createBatchLogger } = require('../src/batch-logger');
 const { ProxyPool } = require('../src/proxy-pool');
+const { shouldRotateProxy } = require('../src/proxy-http-policy');
 const { buildLightProfileApiUrl, profileTextHasSuperLike } = require('../src/superlike/mode3-profile');
 
 const ROUND_INTERVAL_MS = Number(process.env.SUPERLIKE_MODE3_ROUND_INTERVAL_MS) || 2 * 60 * 1000;
@@ -30,7 +31,6 @@ function logMemory(label) { const m = process.memoryUsage(); console.log(`[模�
 function compactBody(text) { return String(text || '').replace(/\s+/g, ' ').trim().slice(0, 180); }
 function cookieHeader(cookies) { return cookies.map(c => `${c.name}=${c.value}`).join('; '); }
 function parseMonitorConfig(url) { const match = String(url || '').match(/100808([a-f0-9]{32})/i); if (!match) throw new Error(`无法从超话URL解析 page_id: ${url}`); return { pageId: `100808${match[1]}`, profileContainerId: `231140${match[1]}_-_profile_inpage` }; }
-function isHttp4xx(status) { const n = Number(status); return Number.isFinite(n) && n >= 400 && n < 500; }
 async function getMonitors() { return (await pool.query(`SELECT id, name, url FROM monitors WHERE COALESCE(enabled, 1) <> 0 AND monitor_type = 'superlike' ORDER BY id`)).rows; }
 async function getUsers(monitorId) {
   return (await pool.query(`SELECT p.uid, MAX(p.username) AS username, COUNT(*)::int AS post_count, MAX(COALESCE(p.moved_flag, 0)) AS has_moved_post, MAX(p.id) AS latest_id, MIN(p.first_seen_at) AS first_seen_at, MAX(p.profile_last_checked_at) AS profile_last_checked_at, MAX(p.experience_7d) AS experience_7d FROM superlike_posts p WHERE p.monitor_id = $1 AND p.uid IS NOT NULL AND p.uid <> '' AND CAST(p.first_seen_at AS date) = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date AND NOT EXISTS (SELECT 1 FROM superlike_users su WHERE su.uid = p.uid) GROUP BY p.uid HAVING MAX(p.experience_7d) >= 70 ORDER BY MAX(p.experience_7d) DESC, CASE WHEN MAX(p.profile_last_checked_at) IS NULL THEN 0 ELSE 1 END ASC, CAST(MAX(p.profile_last_checked_at) AS timestamp) ASC NULLS FIRST, CAST(MIN(p.first_seen_at) AS timestamp) ASC, MAX(p.id) DESC LIMIT $2`, [monitorId, BATCH_SIZE])).rows;
@@ -57,13 +57,13 @@ async function bootstrapVisitorSession(reason = '建立Session') {
       const response = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
       const firstStatus = response?.status();
       console.log(`[模式3][Session] 首页 status=${firstStatus ?? '-'} | final=${page.url()} | IP=${assignment.masked}`);
-      if (isHttp4xx(firstStatus)) throw Object.assign(new Error(`Chromium首页 HTTP ${firstStatus}`), { blocked: true });
+      if (shouldRotateProxy({ status: firstStatus })) throw Object.assign(new Error(`Chromium首页 HTTP ${firstStatus}`), { blocked: true });
       await page.waitForTimeout(2500);
       if (page.url().includes('visitor.passport.weibo.cn')) {
         await page.waitForTimeout(2000);
         const second = await page.goto('https://m.weibo.cn/', { waitUntil: 'domcontentloaded', timeout: SESSION_BOOTSTRAP_TIMEOUT_MS });
         const secondStatus = second?.status();
-        if (isHttp4xx(secondStatus)) throw Object.assign(new Error(`Chromium游客初始化 HTTP ${secondStatus}`), { blocked: true });
+        if (shouldRotateProxy({ status: secondStatus })) throw Object.assign(new Error(`Chromium游客初始化 HTTP ${secondStatus}`), { blocked: true });
         await page.waitForTimeout(1500);
       }
       const cookies = await context.cookies(['https://m.weibo.cn/', 'https://weibo.cn/', 'https://weibo.com/']);
@@ -107,7 +107,11 @@ async function refreshVisitorSession(reason = 'Session失效', staleGeneration =
   return sessionRefreshPromise;
 }
 async function ensureVisitorSession() { if (visitorSession?.cookie && visitorSession?.apiContext) return visitorSession; return refreshVisitorSession('首次启动：从健康代理池建立Session'); }
-function isSessionFailure(result) { if (!result || result.ok) return false; if (result.visitor) return true; return isHttp4xx(result.status); }
+function isSessionFailure(result) {
+  if (!result || result.ok) return false;
+  if (result.visitor) return true;
+  return shouldRotateProxy({ status: result.status, message: result.message });
+}
 async function fetchWithSession(config, uid, session) {
   const url = buildLightProfileApiUrl(config, uid);
   try {
@@ -123,8 +127,8 @@ async function checkUser(config, uid, stats) {
   let session = await ensureVisitorSession(); const usedGeneration = session.generation; stats.httpTried++; let result = await fetchWithSession(config, uid, session); if (result.ok) { stats.httpOk++; return result; }
   if (isSessionFailure(result)) {
     stats.sessionFailures++;
-    console.log(`[模式3][Session] UID=${uid} | ${result.message} | generation=${usedGeneration} | IP=${session.proxyLabel} → 淘汰当前代理，轮询下一个健康代理+新Cookie`);
-    try { session = await refreshVisitorSession(`${result.message}，轮换代理`, usedGeneration, true); stats.httpRetried++; stats.httpTried++; result = await fetchWithSession(config, uid, session); if (result.ok) stats.httpOk++; }
+    console.log(`[模式3][Session] UID=${uid} | ${result.message} | generation=${usedGeneration} | IP=${session.proxyLabel} → 共通策略命中，淘汰当前代理并重建Session`);
+    try { session = await refreshVisitorSession(`${result.message}，统一策略轮换代理`, usedGeneration, true); stats.httpRetried++; stats.httpTried++; result = await fetchWithSession(config, uid, session); if (result.ok) stats.httpOk++; }
     catch (error) { result = { ok: false, status: null, message: `Session换代理失败: ${error.message}` }; }
   }
   return result;
@@ -132,7 +136,7 @@ async function checkUser(config, uid, stats) {
 async function mapLimit(items, limit, fn) { const results = new Array(items.length); let cursor = 0; async function worker() { while (true) { const index = cursor++; if (index >= items.length) return; results[index] = await fn(items[index], index); } } await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker)); return results; }
 async function runRound(round) {
   const startedAt = Date.now(); const monitors = await getMonitors(); const stats = { users: 0, httpTried: 0, httpOk: 0, httpRetried: 0, sessionFailures: 0, checked: 0, superlike: 0, deleted: 0, failed: 0 };
-  console.log(''); console.log(`[Recheck] ===== 模式3 Proxy-Session 第${round}轮开始 =====`); console.log(`[模式3] 只使用健康代理 | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 任意4xx/visitor=轮换代理+Cookie`); logMemory('ROUND_START');
+  console.log(''); console.log(`[Recheck] ===== 模式3 Proxy-Session 第${round}轮开始 =====`); console.log(`[模式3] 统一恢复策略 | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 4xx/5xx/网络异常/Session关闭/visitor=轮换代理+Session`); logMemory('ROUND_START');
   for (const monitor of monitors) {
     const config = parseMonitorConfig(monitor.url); const users = await getUsers(monitor.id); stats.users += users.length; console.log(`[模式3] Monitor=${monitor.name} | UID=${users.length} | 条件=今天入库+jyz>=70 | 顺序=jyz DESC`); if (!users.length) continue; console.log('[模式3][队列TOP] ' + users.slice(0, 10).map(x => `${x.uid}(jyz=${x.experience_7d ?? '-'})`).join(' | '));
     await ensureVisitorSession();
@@ -148,7 +152,7 @@ async function runRound(round) {
   const elapsed = Date.now() - startedAt; logMemory('ROUND_END'); console.log(`========== 模式3 Proxy-Session 第${round}轮完成 ==========`); console.log(`UID=${stats.users} | HTTP请求=${stats.httpTried} | HTTP成功=${stats.httpOk} | Session失效=${stats.sessionFailures} | Session重试=${stats.httpRetried} | 检查成功=${stats.checked} | SuperLike=${stats.superlike} | 删除=${stats.deleted} | 失败=${stats.failed}`); console.log(`耗时=${Math.round(elapsed / 1000)}秒 | HTTP成功率=${stats.httpTried ? (stats.httpOk * 100 / stats.httpTried).toFixed(1) : '0.0'}% | Session generation=${visitorSession?.generation ?? 0} | IP=${visitorSession?.proxyLabel || '-'}`); console.log('=============================================='); return elapsed;
 }
 async function main() {
-  if (!process.env.DATABASE_URL) throw new Error('缺少 DATABASE_URL'); createBatchLogger('recheck-superlike', 'mode3'); console.log('[模式3] 新架构：不使用LOCAL；健康代理池轮询 + Cookie/IP绑定Session'); console.log(`[模式3] PG pool max=${pool.options.max} | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 单次建Session最多轮询代理=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS / 1000}s`); let round = 0;
+  if (!process.env.DATABASE_URL) throw new Error('缺少 DATABASE_URL'); createBatchLogger('recheck-superlike', 'mode3'); console.log('[模式3] 统一恢复策略：健康代理池轮询 + Cookie/IP绑定Session；4xx/5xx、网络错误、Session/Context/Browser关闭、Playwright timeout、visitor 自动重建Session'); console.log(`[模式3] PG pool max=${pool.options.max} | HTTP并发=${HTTP_CONCURRENCY} | UID上限=${BATCH_SIZE} | 单次建Session最多轮询代理=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS / 1000}s`); let round = 0;
   while (true) { round++; try { const elapsed = await runRound(round); const waitMs = Math.max(0, ROUND_INTERVAL_MS - elapsed); if (waitMs > 0) await sleep(waitMs); } catch (error) { console.error(`[模式3] 第${round}轮异常：`, error); await sleep(Math.min(ROUND_INTERVAL_MS, 30000)); } }
 }
 main().catch(async error => { console.error('[模式3] 致命异常：', error); try { await disposeSession(visitorSession); } catch {} try { await pool.end(); } catch {} process.exit(1); });
