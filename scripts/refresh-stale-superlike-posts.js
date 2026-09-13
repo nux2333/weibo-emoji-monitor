@@ -1,0 +1,408 @@
+'use strict';
+
+const { chromium } = require('playwright');
+const { createBatchLogger } = require('../src/batch-logger');
+const {
+  db,
+  initDatabase,
+  getSuperLikeMonitors,
+  saveSuperLikeUser
+} = require('../src/db');
+const { parseTopicHomepage } = require('../src/superlike/monitor-scanner');
+const { checkUserSuperLikeByProfile } = require('../src/superlike/profile');
+const { checkSuperLikeByBrowser } = require('../src/superlike/mode3-profile');
+const {
+  getPostId,
+  getCommentsCount,
+  getPostCreatedAt,
+  parsePostCreatedAtMs
+} = require('../src/superlike/post-utils');
+const {
+  saveTargetPost,
+  deletePostsByUidWithLog
+} = require('../src/superlike/post-save');
+const {
+  acquireScanProxyWaiting,
+  SCAN_PROXY_POOL,
+  isProxyConnectionError
+} = require('../src/superlike/proxy');
+
+createBatchLogger('refresh-stale-superlike-posts');
+
+const LIMIT = Math.max(1, Number(process.env.SUPERLIKE_STALE_REFRESH_LIMIT) || 300);
+const PROFILE_DELAY_MS = Math.max(0, Number(process.env.SUPERLIKE_STALE_REFRESH_DELAY_MS) || 200);
+const JYZ_SERVICE_URL = process.env.WEIBO_JYZ_SERVICE_URL || 'http://127.0.0.1:3011/jyz';
+const JYZ_TIMEOUT_MS = Math.max(3000, Number(process.env.SUPERLIKE_STALE_JYZ_TIMEOUT_MS) || 15000);
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function pad2(value) {
+  return String(value).padStart(2, '0');
+}
+
+/* post_created_at 在项目里统一保存为北京时间 YYYY-MM-DD HH:mm:ss。 */
+function formatShanghai(ms) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date(ms));
+  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
+}
+
+function shanghaiDateParts(ms = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit'
+  }).formatToParts(new Date(ms));
+  const map = Object.fromEntries(parts.map(p => [p.type, p.value]));
+  return { year: Number(map.year), month: Number(map.month), day: Number(map.day) };
+}
+
+/*
+ * 返回北京时间某天 00:00:00 对应的“北京时间文本”。
+ * amount=0 => 今天00:00；amount=-1 => 昨天00:00。
+ */
+function shanghaiDayStartText(amount = 0) {
+  const now = shanghaiDateParts();
+  const utcNoon = Date.UTC(now.year, now.month - 1, now.day + amount, 12, 0, 0);
+  const p = shanghaiDateParts(utcNoon);
+  return `${p.year}-${pad2(p.month)}-${pad2(p.day)} 00:00:00`;
+}
+
+function fifteenDaysAgoText() {
+  return formatShanghai(Date.now() - 15 * 24 * 60 * 60 * 1000);
+}
+
+function cleanupOlderThan15Days() {
+  const cutoff = fifteenDaysAgoText();
+  const rows = db.prepare(`
+    SELECT uid
+    FROM superlike_posts
+    WHERE post_created_at IS NOT NULL
+      AND TRIM(post_created_at) <> ''
+      AND post_created_at < ?
+  `).all(cutoff);
+
+  let deleted = 0;
+  for (const row of rows) {
+    if (!row?.uid) continue;
+    deleted += deletePostsByUidWithLog(String(row.uid), 'POST_CREATED_AT_OLDER_THAN_15_DAYS');
+  }
+
+  console.log(`[StaleRefresh][启动清理] post_created_at < ${cutoff} | 删除=${deleted}`);
+  return deleted;
+}
+
+function getCandidates(monitorId, limit) {
+  /*
+   * 不处理今天和昨天：
+   * cutoff = 昨天00:00，所以只取前天及更早。
+   * 一个UID只有一条帖，直接按帖子时间正序即可。
+   */
+  const cutoff = shanghaiDayStartText(-1);
+  return db.prepare(`
+    SELECT
+      id, monitor_id, post_id, uid, username,
+      post_created_at, experience_7d
+    FROM superlike_posts
+    WHERE monitor_id = ?
+      AND uid IS NOT NULL
+      AND TRIM(uid) <> ''
+      AND post_created_at IS NOT NULL
+      AND TRIM(post_created_at) <> ''
+      AND post_created_at < ?
+    ORDER BY post_created_at ASC, id ASC
+    LIMIT ?
+  `).all(Number(monitorId), cutoff, Number(limit));
+}
+
+async function queryExperience7d(topicHash, uid) {
+  try {
+    const url = new URL(JYZ_SERVICE_URL);
+    url.searchParams.set('topicHash', String(topicHash));
+    url.searchParams.set('uid', String(uid));
+
+    const response = await fetch(url.toString(), {
+      signal: AbortSignal.timeout(JYZ_TIMEOUT_MS)
+    });
+    const json = await response.json().catch(() => null);
+
+    if (json?.ok && Number.isFinite(Number(json.experience7d))) {
+      return {
+        ok: true,
+        experience7d: Number(json.experience7d),
+        source: json.source || 'jyz-service'
+      };
+    }
+
+    return {
+      ok: false,
+      message: json?.message || `HTTP ${response.status}`
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error?.message || String(error)
+    };
+  }
+}
+
+function updateExperience(uid, value) {
+  db.prepare(`
+    UPDATE superlike_posts
+    SET experience_7d = ?,
+        initial_experience_7d = COALESCE(initial_experience_7d, ?),
+        profile_status = CASE
+          WHEN profile_status = 'PROFILE_FAILED' THEN 'NO_SUPERLIKE'
+          ELSE profile_status
+        END
+    WHERE uid = ?
+  `).run(Number(value), Number(value), String(uid));
+}
+
+function pickLatestPost(profilePosts) {
+  if (!Array.isArray(profilePosts)) return null;
+
+  return profilePosts
+    .map(post => ({
+      post,
+      postId: getPostId(post),
+      createdAtMs: parsePostCreatedAtMs(post),
+      createdAt: getPostCreatedAt(post),
+      comments: getCommentsCount(post)
+    }))
+    .filter(item => item.postId && Number.isFinite(Number(item.createdAtMs)))
+    .sort((a, b) => Number(b.createdAtMs) - Number(a.createdAtMs))[0] || null;
+}
+
+async function openBrowser() {
+  const assignment = await acquireScanProxyWaiting();
+  const proxy = assignment?.proxy || null;
+
+  console.log(proxy
+    ? `[StaleRefresh] 使用健康代理：${assignment.masked}`
+    : '[StaleRefresh] 当前使用本地IP');
+
+  const browser = await chromium.launch({
+    channel: 'chromium',
+    headless: true,
+    ignoreHTTPSErrors: true,
+    ...(proxy ? { proxy } : {})
+  });
+
+  const context = await browser.newContext({
+    ignoreHTTPSErrors: true,
+    viewport: { width: 1280, height: 900 }
+  });
+
+  return { browser, context, assignment };
+}
+
+async function replaceOldPostSafely(row, monitor, latest, experience7d) {
+  const uid = String(row.uid);
+  const latestPostId = String(latest.postId);
+  const oldPostId = String(row.post_id || '');
+
+  if (latestPostId === oldPostId) {
+    updateExperience(uid, experience7d);
+    console.log(`[StaleRefresh][同一最新帖] UID=${uid} | Post=${latestPostId} | 只更新经验值=${experience7d}`);
+    return 'same';
+  }
+
+  /*
+   * saveTargetPost 本身会拒绝：无post_id/uid、超Like、评论>=21等异常候选。
+   * 为了避免“先删后插失败”造成用户消失，这里先保存新帖，确认成功后
+   * 再按旧记录 id 删除旧帖。整个稳定状态仍然是一UID一条帖。
+   */
+  const saveResult = saveTargetPost(Number(monitor.id), latest.post, 'NO_SUPERLIKE');
+  if (!saveResult || saveResult.status === 'skip') {
+    console.log(`[StaleRefresh][新帖未保存] UID=${uid} | old=${oldPostId} | new=${latestPostId} | reason=${saveResult?.reason || 'unknown'} | 保留旧帖`);
+    updateExperience(uid, experience7d);
+    return 'kept';
+  }
+
+  /* 新帖保存成功后，把经验值写到该UID的新记录。 */
+  updateExperience(uid, experience7d);
+
+  const deleted = db.prepare(`
+    DELETE FROM superlike_posts
+    WHERE id = ?
+      AND uid = ?
+      AND post_id = ?
+  `).run(Number(row.id), uid, oldPostId);
+
+  console.log(`[StaleRefresh][替换完成] UID=${uid} | ${oldPostId} -> ${latestPostId} | 发帖=${latest.createdAt || '-'} | 评论=${latest.comments ?? '-'} | 经验值=${experience7d} | 删除旧帖=${deleted?.changes ?? deleted ?? 0}`);
+  return 'replaced';
+}
+
+async function runMonitor(monitor) {
+  const config = parseTopicHomepage(monitor.url);
+  const topicHash = config?.topicHash;
+  if (!topicHash) throw new Error(`Monitor ${monitor.id} 无法解析 topicHash`);
+
+  const rows = getCandidates(monitor.id, LIMIT);
+  const cutoff = shanghaiDayStartText(-1);
+
+  console.log('');
+  console.log('==============================================');
+  console.log(`[StaleRefresh] Monitor=${monitor.name} | 本轮=${rows.length} | limit=${LIMIT}`);
+  console.log(`[StaleRefresh] 只查 post_created_at < ${cutoff}（今天/昨天不查）`);
+  console.log('[StaleRefresh] 顺序=post_created_at ASC（最旧优先）');
+  console.log('==============================================');
+
+  const summary = {
+    checked: 0, superLike: 0, replaced: 0, same: 0,
+    kept: 0, profileFailed: 0, jyzFailed: 0, noLatest: 0
+  };
+
+  if (!rows.length) return summary;
+
+  let state = await openBrowser();
+
+  try {
+    for (let index = 0; index < rows.length; index++) {
+      const row = rows[index];
+      const uid = String(row.uid);
+
+      console.log('');
+      console.log(`[StaleRefresh ${index + 1}/${rows.length}] UID=${uid} | Post=${row.post_id} | 发帖=${row.post_created_at} | 当前经验=${row.experience_7d ?? '-'}`);
+
+      let allbadge;
+      try {
+        allbadge = await checkSuperLikeByBrowser(
+          state.context,
+          config,
+          uid,
+          null,
+          'StaleRefresh'
+        );
+      } catch (error) {
+        if (state.assignment?.raw && isProxyConnectionError(error)) {
+          console.log(`[StaleRefresh][代理失败] ${error.message} | 换代理后重试当前UID`);
+          try { SCAN_PROXY_POOL.remove(state.assignment.raw); } catch {}
+          try { await state.context.close(); } catch {}
+          try { await state.browser.close(); } catch {}
+          state = await openBrowser();
+          index--;
+          continue;
+        }
+        throw error;
+      }
+
+      if (!allbadge?.ok) {
+        summary.profileFailed++;
+        console.log(`[StaleRefresh][超Like检查失败] UID=${uid} | ${allbadge?.message || allbadge?.error || '-'} | 保留旧帖`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      summary.checked++;
+
+      if (allbadge.hasSuperLike) {
+        saveSuperLikeUser(Number(monitor.id), uid);
+        const deleted = deletePostsByUidWithLog(uid, 'SUPERLIKE_STALE_REFRESH');
+        summary.superLike++;
+        console.log(`[StaleRefresh][已超Like] UID=${uid} | 删除=${deleted}`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      /* 未超Like后才查经验值。经验值失败时不替换，避免新帖没有经验值。 */
+      const jyz = await queryExperience7d(topicHash, uid);
+      if (!jyz.ok) {
+        summary.jyzFailed++;
+        console.log(`[StaleRefresh][经验值失败] UID=${uid} | ${jyz.message || '-'} | 保留旧帖`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      updateExperience(uid, jyz.experience7d);
+      console.log(`[StaleRefresh][经验值] UID=${uid} | ${row.experience_7d ?? '-'} -> ${jyz.experience7d}`);
+
+      /* 同一个 Visitor Context 获取主页第一页，再从返回帖子中按真实发帖时间取最新一条。 */
+      const profile = await checkUserSuperLikeByProfile(
+        state.context,
+        config,
+        uid,
+        state.context
+      );
+
+      if (!profile?.ok) {
+        summary.profileFailed++;
+        console.log(`[StaleRefresh][主页失败] UID=${uid} | ${profile?.message || profile?.error || '-'} | 已更新经验值，旧帖保留`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      if (profile.hasSuperLike) {
+        saveSuperLikeUser(Number(monitor.id), uid);
+        const deleted = deletePostsByUidWithLog(uid, 'SUPERLIKE_STALE_REFRESH_PROFILE');
+        summary.superLike++;
+        console.log(`[StaleRefresh][主页确认超Like] UID=${uid} | 删除=${deleted}`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      const latest = pickLatestPost(profile.profilePosts);
+      if (!latest) {
+        summary.noLatest++;
+        console.log(`[StaleRefresh][无最新帖] UID=${uid} | 主页第一页没有可解析帖子 | 保留旧帖`);
+        await sleep(PROFILE_DELAY_MS);
+        continue;
+      }
+
+      const result = await replaceOldPostSafely(row, monitor, latest, jyz.experience7d);
+      if (result === 'replaced') summary.replaced++;
+      else if (result === 'same') summary.same++;
+      else summary.kept++;
+
+      await sleep(PROFILE_DELAY_MS);
+    }
+  } finally {
+    try { await state.context.close(); } catch {}
+    try { await state.browser.close(); } catch {}
+  }
+
+  return summary;
+}
+
+(async () => {
+  initDatabase();
+
+  console.log('');
+  console.log('##############################################');
+  console.log('# Stale SuperLike Post Refresh');
+  console.log('# 1. 启动删除 post_created_at 15天以前');
+  console.log('# 2. 今天/昨天不处理；前天及更早按发帖时间正序');
+  console.log('# 3. 超Like => 删除');
+  console.log('# 4. 非超Like => 更新经验值 => 主页最新帖替换旧帖');
+  console.log('# 5. 任一步失败 => 不删除旧帖');
+  console.log('##############################################');
+
+  cleanupOlderThan15Days();
+
+  const monitors = getSuperLikeMonitors();
+  const total = {
+    checked: 0, superLike: 0, replaced: 0, same: 0,
+    kept: 0, profileFailed: 0, jyzFailed: 0, noLatest: 0
+  };
+
+  for (const monitor of monitors) {
+    const summary = await runMonitor(monitor);
+    for (const key of Object.keys(total)) total[key] += Number(summary[key] || 0);
+  }
+
+  console.log('');
+  console.log('==============================================');
+  console.log('[StaleRefresh] 本轮完成');
+  console.log(`[StaleRefresh] 检查=${total.checked} | 超Like删除=${total.superLike} | 换新帖=${total.replaced} | 已是最新=${total.same} | 保留=${total.kept} | Profile失败=${total.profileFailed} | 经验值失败=${total.jyzFailed} | 无最新帖=${total.noLatest}`);
+  console.log('==============================================');
+})().catch(error => {
+  console.error('[StaleRefresh][FATAL]', error?.stack || error);
+  process.exitCode = 1;
+});
