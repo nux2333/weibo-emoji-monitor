@@ -65,7 +65,7 @@ const workers = new Map();
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
-  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  const safe = raw.replace(/[^\p{L}\p{N}_-]/gu, '_').slice(0, 80);
   return safe || null;
 }
 
@@ -137,6 +137,32 @@ function createAccount(name) {
   if (fs.existsSync(dir)) throw new Error(`账号 ${safe} 已存在`);
   fs.mkdirSync(dir, { recursive: true });
   return { name: safe, uid: null, username: null, legacy: false, initialized: false };
+}
+
+function deleteAccount(name) {
+  const account = sanitizeAccount(name);
+  if (!account) throw new Error('账号名称不能为空');
+  if (account === 'default') throw new Error('default 为旧版保留账号，不支持在这里删除');
+  const profileDir = accountProfileDir(account);
+  if (!fs.existsSync(profileDir)) throw new Error(`账号 ${account} 不存在`);
+
+  const assignments = db.prepare(`SELECT task_id, status
+    FROM comment_assistant_task_assignments
+    WHERE account = ?`).all(account);
+
+  for (const item of assignments) {
+    if (item.status === 'CLAIMED' || item.status === 'SKIPPED') {
+      db.prepare(`UPDATE comment_assistant_tasks
+        SET status = 'OPEN', updated_at = LOCALTIMESTAMP
+        WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED')`).run(item.task_id);
+    }
+  }
+
+  db.prepare('DELETE FROM comment_assistant_task_assignments WHERE account = ?').run(account);
+  db.prepare('DELETE FROM comment_assistant_history WHERE account = ?').run(account);
+  fs.rmSync(profileDir, { recursive: true, force: true });
+
+  return { account, deleted: true, released_tasks: assignments.length };
 }
 
 function launchAccountLogin(name) {
@@ -331,6 +357,14 @@ app.get('/api/accounts', userAuth, (req, res) => {
 app.post('/api/accounts', userAuth, (req, res) => {
   try {
     res.json({ success: true, data: createAccount(req.body?.name) });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
+app.delete('/api/accounts/:name', userAuth, (req, res) => {
+  try {
+    res.json({ success: true, data: deleteAccount(req.params.name) });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
   }
@@ -536,7 +570,7 @@ app.get('/api/admin/workers', adminAuth, (req, res) => {
 });
 
 const baseCss = `
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2,h3{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}.account-table th:first-child,.account-table td:first-child{width:42px;text-align:center}.account-table th:nth-child(2),.account-table td:nth-child(2){width:54px;text-align:center}.account-table tbody tr:hover,.task-catalog tbody tr:hover{background:#fafafa}.account-table input[type=checkbox]{width:16px;height:16px;min-width:0;margin:0}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}.login-ok{color:#15803d;font-weight:600}.login-relogin{color:#9ca3af;font-weight:600}.collapse-toggle{background:transparent;color:#444;border:1px solid #ddd;padding:5px 10px}.collapse-toggle:hover{background:#f3f4f6}.account-panel.collapsed,.collapsible-panel.collapsed{display:none}.account-scroll{max-height:320px;overflow:auto}.relogin-btn{margin-left:100px;padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;font-size:12px}.relogin-btn:hover{background:#e5e7eb}.task-claim{padding:5px 10px;background:#15803d}.task-action{padding:5px 9px;margin-right:6px;font-size:12px}.section-gap{margin-top:18px}.builtin-task td{background:#f8fff9}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2,h3{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}.account-table th:first-child,.account-table td:first-child{width:42px;text-align:center}.account-table th:nth-child(2),.account-table td:nth-child(2){width:54px;text-align:center}.account-table tbody tr:hover,.task-catalog tbody tr:hover{background:#fafafa}.account-table input[type=checkbox]{width:16px;height:16px;min-width:0;margin:0}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}.login-ok{color:#15803d;font-weight:600}.login-relogin{color:#9ca3af;font-weight:600}.collapse-toggle{background:transparent;color:#444;border:1px solid #ddd;padding:5px 10px}.collapse-toggle:hover{background:#f3f4f6}.account-panel.collapsed,.collapsible-panel.collapsed{display:none}.account-scroll{max-height:320px;overflow:auto}.relogin-btn{margin-left:100px;padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;font-size:12px}.relogin-btn:hover{background:#e5e7eb}.delete-account-btn{margin-left:8px;padding:4px 8px;background:#fff;color:#b91c1c;border:1px solid #fecaca;font-size:12px}.delete-account-btn:hover{background:#fef2f2}.task-claim{padding:5px 10px;background:#15803d}.task-action{padding:5px 9px;margin-right:6px;font-size:12px}.section-gap{margin-top:18px}.builtin-task td{background:#f8fff9}
 `;
 
 const clientCommon = String.raw`
@@ -552,106 +586,22 @@ function userPage() {
     <div id="fatal" class="fatal"></div>
     <div class="card">
         <div class="row">
-            <div>
-                <div class="muted">API Token</div>
-                <input id="token" type="password" />
-            </div>
-            <div>
-                <div class="muted">本机名称</div>
-                <input id="worker" placeholder="例如 PC-A" />
-            </div>
+            <div><div class="muted">API Token</div><input id="token" type="password" /></div>
+            <div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A" /></div>
             <button id="connect">连接</button><button class="blue" id="add">＋ 添加账号</button>
         </div>
         <div id="health" class="muted" style="margin-top: 10px">未连接</div>
     </div>
     <div class="card">
-        <div class="top">
-            <div style="display: flex; gap: 8px; align-items: center">
-                <h2 style="margin: 0">当前可执行账号</h2>
-                <span id="accountCount" class="pill">0</span>
-            </div>
-            <button id="toggleAccounts" class="collapse-toggle" type="button">收起 ▲</button>
-        </div>
+        <div class="top"><div style="display: flex; gap: 8px; align-items: center"><h2 style="margin: 0">当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><button id="toggleAccounts" class="collapse-toggle" type="button">收起 ▲</button></div>
         <div id="accountPanel" class="account-panel">
-            <div class="account-scroll">
-                <table class="account-table">
-                    <thead>
-                        <tr>
-                            <th><input id="selectAllAccounts" type="checkbox" title="全选" /></th>
-                            <th>No</th>
-                            <th>用户ID</th>
-                            <th>用户名</th>
-                            <th>登录状态</th>
-                        </tr>
-                    </thead>
-                    <tbody id="accounts">
-                        <tr>
-                            <td colspan="5" class="muted">请先连接</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-            <div class="row" style="margin-top: 12px">
-                <div>
-                    <div class="muted">循环回数</div>
-                    <input id="loops" type="number" min="1" max="20" value="1" style="width: 80px" />
-                </div>
-                <div class="muted">先选账号和循环回数，再到下面默认任务里点击“领取任务”。循环1 = 每个账号 20 条。</div>
-            </div>
+            <div class="account-scroll"><table class="account-table"><thead><tr><th><input id="selectAllAccounts" type="checkbox" title="全选" /></th><th>No</th><th>用户ID</th><th>用户名</th><th>登录状态</th></tr></thead><tbody id="accounts"><tr><td colspan="5" class="muted">请先连接</td></tr></tbody></table></div>
+            <div class="row" style="margin-top: 12px"><div><div class="muted">循环回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width: 80px" /></div><div class="muted">先选账号和循环回数，再到下面默认任务里点击“领取任务”。循环1 = 每个账号 20 条。</div></div>
         </div>
     </div>
-    <div class="card">
-        <div class="top">
-            <h2 style="margin: 0">任务列表</h2>
-            <button id="toggleAvailableTasks" class="collapse-toggle" type="button">收起 ▲</button>
-        </div>
-        <div id="availableTasksPanel" class="collapsible-panel">
-            <div class="scroll">
-                <table class="task-catalog">
-                    <thead>
-                        <tr>
-                            <th>任务</th>
-                            <th>说明</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="availableTasks">
-                        <tr>
-                            <td colspan="3" class="muted">请先连接</td>
-                        </tr>
-                    </tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    <div class="card">
-        <div class="top">
-            <h2 style="margin: 0">执行结果</h2>
-            <button id="toggleResults" class="collapse-toggle" type="button">收起 ▲</button>
-        </div>
-        <div id="resultsPanel" class="collapsible-panel">
-            <div class="scroll">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>账号</th>
-                            <th>任务名</th>
-                            <th>执行状态</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody id="tasks"></tbody>
-                </table>
-            </div>
-        </div>
-    </div>
-    <div class="card">
-        <div class="top">
-            <h2 style="margin: 0">执行 Log</h2>
-            <button id="toggleLog" class="collapse-toggle" type="button">收起 ▲</button>
-        </div>
-        <div id="logPanel" class="collapsible-panel"><div id="log" class="log"></div></div>
-    </div>
+    <div class="card"><div class="top"><h2 style="margin: 0">任务列表</h2><button id="toggleAvailableTasks" class="collapse-toggle" type="button">收起 ▲</button></div><div id="availableTasksPanel" class="collapsible-panel"><div class="scroll"><table class="task-catalog"><thead><tr><th>任务</th><th>说明</th><th>操作</th></tr></thead><tbody id="availableTasks"><tr><td colspan="3" class="muted">请先连接</td></tr></tbody></table></div></div></div>
+    <div class="card"><div class="top"><h2 style="margin: 0">执行结果</h2><button id="toggleResults" class="collapse-toggle" type="button">收起 ▲</button></div><div id="resultsPanel" class="collapsible-panel"><div class="scroll"><table><thead><tr><th>账号</th><th>任务名</th><th>执行状态</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div></div>
+    <div class="card"><div class="top"><h2 style="margin: 0">执行 Log</h2><button id="toggleLog" class="collapse-toggle" type="button">收起 ▲</button></div><div id="logPanel" class="collapsible-panel"><div id="log" class="log"></div></div></div>
 </div>
 <script>${clientCommon}
 (function(){
@@ -665,7 +615,7 @@ function userPage() {
   function initCollapse(buttonId,panelId,storageKey){var button=byId(buttonId);var panel=byId(panelId);if(!button||!panel)return;function apply(collapsed){panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'展开 ▼':'收起 ▲'}var initial=localStorage.getItem(storageKey)==='1';apply(initial);button.addEventListener('click',function(){var collapsed=!panel.classList.contains('collapsed');apply(collapsed);localStorage.setItem(storageKey,collapsed?'1':'0')})}
   function selectedAccounts(){return Array.prototype.map.call(document.querySelectorAll('.acct:checked'),function(x){return x.value})}
 
-  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.uid||item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';var loginTd=document.createElement('td');var login=document.createElement('span');login.className=item.initialized?'login-ok':'login-relogin';login.textContent=item.initialized?'● 已登录':'● 需重新登录';loginTd.appendChild(login);var relogin=document.createElement('button');relogin.type='button';relogin.className='relogin-btn relogin-account';relogin.dataset.account=item.name;relogin.textContent='再次登录';loginTd.appendChild(relogin);tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);tr.appendChild(loginTd);body.appendChild(tr)})}
+  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.uid||item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';var loginTd=document.createElement('td');var login=document.createElement('span');login.className=item.initialized?'login-ok':'login-relogin';login.textContent=item.initialized?'● 已登录':'● 需重新登录';loginTd.appendChild(login);var relogin=document.createElement('button');relogin.type='button';relogin.className='relogin-btn relogin-account';relogin.dataset.account=item.name;relogin.textContent='再次登录';loginTd.appendChild(relogin);if(item.name!=='default'){var del=document.createElement('button');del.type='button';del.className='delete-account-btn delete-account';del.dataset.account=item.name;del.textContent='删除用户';loginTd.appendChild(del)}tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);tr.appendChild(loginTd);body.appendChild(tr)})}
 
   async function loadAvailableTasks(){var list=await api('/api/available-tasks');var body=byId('availableTasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="3" class="muted">暂无可领取任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');if(item.kind==='builtin')tr.className='builtin-task';var name=document.createElement('td');name.textContent=item.name||item.task_id;var note=document.createElement('td');note.textContent=item.note||'-';var action=document.createElement('td');var button=document.createElement('button');button.className='task-claim claim-task';button.type='button';button.dataset.taskId=item.task_id;button.textContent='领取任务';action.appendChild(button);tr.appendChild(name);tr.appendChild(note);tr.appendChild(action);body.appendChild(tr)})}
 
@@ -676,10 +626,10 @@ function userPage() {
   async function connect(){sessionStorage.setItem('caToken',tokenEl.value.trim());localStorage.setItem('caWorker',workerEl.value.trim());try{var h=await api('/api/health');byId('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts+' | Workers='+h.workers;await loadAccounts();await loadAvailableTasks();await loadTasks();await heartbeat();log('连接成功')}catch(e){byId('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
 
   byId('connect').addEventListener('click',connect);
-  byId('add').addEventListener('click',async function(){var name=prompt('新微博账号名称');if(!name)return;try{var account=await api('/api/accounts',{method:'POST',body:JSON.stringify({name:name})});log('已创建账号目录：'+account.name);await loadAccounts();alert('账号目录已创建。可以直接点击该账号后的“再次登录”打开 Chromium 扫码登录。')}catch(e){alert(e.message)}});
+  byId('add').addEventListener('click',async function(){var name=prompt('新微博账号名称');if(!name)return;try{var account=await api('/api/accounts',{method:'POST',body:JSON.stringify({name:name})});log('已创建账号目录：'+account.name);await loadAccounts();alert('账号目录已创建。可以直接点击该账号后的“再次登录”打开 Chromium 登录。')}catch(e){alert(e.message)}});
   byId('selectAllAccounts').addEventListener('change',function(){var checked=this.checked;document.querySelectorAll('.acct').forEach(function(x){x.checked=checked})});
   byId('accounts').addEventListener('change',function(){var all=document.querySelectorAll('.acct');var selected=document.querySelectorAll('.acct:checked');byId('selectAllAccounts').checked=all.length>0&&all.length===selected.length});
-  byId('accounts').addEventListener('click',async function(e){var button=e.target.closest('.relogin-account');if(!button)return;button.disabled=true;var oldText=button.textContent;button.textContent='正在打开...';try{var data=await api('/api/accounts/'+encodeURIComponent(button.dataset.account)+'/login',{method:'POST',body:'{}'});log('已打开 '+data.account+' 的 Chromium 登录窗口');setTimeout(function(){loadAccounts().catch(function(){})},3000)}catch(err){alert(err.message);log('打开登录窗口失败：'+err.message)}finally{button.disabled=false;button.textContent=oldText}});
+  byId('accounts').addEventListener('click',async function(e){var deleteButton=e.target.closest('.delete-account');if(deleteButton){var accountName=deleteButton.dataset.account;if(!confirm('确定删除用户 '+accountName+' 吗？这会删除本地登录 Profile，并清理该账号的任务分配和历史记录。'))return;deleteButton.disabled=true;try{var result=await api('/api/accounts/'+encodeURIComponent(accountName),{method:'DELETE'});log('已删除用户 '+result.account+'，清理任务='+result.released_tasks);await loadAccounts();await loadTasks()}catch(err){alert(err.message);log('删除用户失败：'+err.message)}return}var button=e.target.closest('.relogin-account');if(!button)return;button.disabled=true;var oldText=button.textContent;button.textContent='正在打开...';try{var data=await api('/api/accounts/'+encodeURIComponent(button.dataset.account)+'/login',{method:'POST',body:'{}'});log('已打开 '+data.account+' 的 Chromium 登录窗口');setTimeout(function(){loadAccounts().catch(function(){})},3000)}catch(err){alert(err.message);log('打开登录窗口失败：'+err.message)}finally{button.disabled=false;button.textContent=oldText}});
   byId('availableTasks').addEventListener('click',async function(e){var button=e.target.closest('.claim-task');if(!button)return;var accounts=selectedAccounts();var loops=Number(byId('loops').value||1);if(!accounts.length){alert('请先在“当前可执行账号”里选择至少一个账号');return}button.disabled=true;var old=button.textContent;button.textContent='领取中...';try{var data=await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('任务 '+button.dataset.taskId+' 领取 '+data.count+' 条 | 账号='+accounts.join(',')+' | Loop='+loops);await loadAvailableTasks();await loadTasks()}catch(err){alert(err.message);log('领取任务失败：'+err.message)}finally{button.disabled=false;button.textContent=old}});
   byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-action');if(!button)return;var action=button.dataset.action;var account=button.dataset.account;if(action==='delete'&&!confirm('确定删除 '+account+' 的任务记录？未完成任务会释放回任务池。'))return;if(action==='interrupt'&&!confirm('确定中断 '+account+' 当前任务？'))return;button.disabled=true;try{await api('/api/my-tasks/'+encodeURIComponent(account)+'/action',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),action:action})});log('账号 '+account+' → '+action);await loadTasks()}catch(err){alert(err.message);log('任务操作失败：'+err.message)}finally{button.disabled=false}});
   initCollapse('toggleAccounts','accountPanel','caAccountsCollapsed');
