@@ -43,7 +43,6 @@ function pad2(value) {
   return String(value).padStart(2, '0');
 }
 
-/* post_created_at 在项目里统一保存为北京时间 YYYY-MM-DD HH:mm:ss。 */
 function formatShanghai(ms) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Shanghai',
@@ -107,7 +106,6 @@ function cleanupOlderThan15Days() {
 }
 
 function getCandidates(monitorId, limit) {
-  /* 昨天00:00以前 = 前天及更早；今天和昨天完全不参与。 */
   const cutoff = shanghaiDayStartText(-1);
   return db.prepare(`
     SELECT
@@ -217,11 +215,29 @@ async function openBrowser() {
   return { browser, context, assignment };
 }
 
-/*
- * 这里故意不让 db.saveSuperLikeTargetPost() 先决定“同日评论更多优先”。
- * 新需求是：主页最新一条帖就是目标。
- * 所以：先验证新帖可入库 -> 删除旧行 -> saveTargetPost 插入最新帖。
- */
+function shouldRotateForResult(result) {
+  const status = Number(result?.status);
+  const text = String(result?.message || result?.error || '');
+
+  return (
+    (Number.isFinite(status) && status >= 400 && status < 500)
+    || /ERR_HTTP_RESPONSE_CODE_FAILURE/i.test(text)
+    || isProxyConnectionError(new Error(text))
+  );
+}
+
+async function rotateBrowserState(state, reason) {
+  console.log(`[StaleRefresh][代理失败] ${reason || '-'} | 淘汰当前代理并重建浏览器`);
+
+  if (state?.assignment?.raw) {
+    try { SCAN_PROXY_POOL.remove(state.assignment.raw); } catch {}
+  }
+  try { await state?.context?.close(); } catch {}
+  try { await state?.browser?.close(); } catch {}
+
+  return openBrowser();
+}
+
 async function replaceWithLatest(row, monitor, latest, experience7d) {
   const uid = String(row.uid);
   const oldPostId = String(row.post_id || '');
@@ -233,7 +249,6 @@ async function replaceWithLatest(row, monitor, latest, experience7d) {
     return 'same';
   }
 
-  /* saveTargetPost 会拒绝评论未知/已满；先在删旧前拦住，避免丢数据。 */
   if (latest.comments === null || Number(latest.comments) >= 21) {
     updateExperience(uid, experience7d);
     console.log(`[StaleRefresh][最新帖不可入库] UID=${uid} | new=${latestPostId} | 评论=${latest.comments ?? 'unknown'} | 保留旧帖`);
@@ -260,7 +275,6 @@ async function replaceWithLatest(row, monitor, latest, experience7d) {
     console.log(`[StaleRefresh][替换完成] UID=${uid} | ${oldPostId} -> ${latestPostId} | 发帖=${latest.createdAt || '-'} | 评论=${latest.comments} | 经验值=${experience7d}`);
     return 'replaced';
   } catch (error) {
-    /* 极端情况下插入失败，至少把错误完整打出来，便于立刻恢复。 */
     console.error(`[StaleRefresh][替换异常] UID=${uid} | old=${oldPostId} | new=${latestPostId} | ${error?.message || error}`);
     throw error;
   }
@@ -314,12 +328,8 @@ async function runMonitor(monitor) {
           'StaleRefresh'
         );
       } catch (error) {
-        if (state.assignment?.raw && isProxyConnectionError(error)) {
-          console.log(`[StaleRefresh][代理失败] ${error.message} | 换代理后重试当前UID`);
-          try { SCAN_PROXY_POOL.remove(state.assignment.raw); } catch {}
-          try { await state.context.close(); } catch {}
-          try { await state.browser.close(); } catch {}
-          state = await openBrowser();
+        if (shouldRotateForResult({ message: error?.message || String(error) })) {
+          state = await rotateBrowserState(state, error?.message || String(error));
           index--;
           continue;
         }
@@ -327,8 +337,16 @@ async function runMonitor(monitor) {
       }
 
       if (!allbadge?.ok) {
+        const failureText = String(allbadge?.message || allbadge?.error || '');
+
+        if (shouldRotateForResult(allbadge)) {
+          state = await rotateBrowserState(state, failureText);
+          index--;
+          continue;
+        }
+
         summary.profileFailed++;
-        console.log(`[StaleRefresh][超Like检查失败] UID=${uid} | ${allbadge?.message || allbadge?.error || '-'} | 保留旧帖`);
+        console.log(`[StaleRefresh][超Like检查失败] UID=${uid} | ${failureText || '-'} | 保留旧帖`);
         await sleep(PROFILE_DELAY_MS);
         continue;
       }
@@ -363,8 +381,16 @@ async function runMonitor(monitor) {
       );
 
       if (!profile?.ok) {
+        const failureText = String(profile?.message || profile?.error || '');
+
+        if (shouldRotateForResult(profile)) {
+          state = await rotateBrowserState(state, failureText);
+          index--;
+          continue;
+        }
+
         summary.profileFailed++;
-        console.log(`[StaleRefresh][主页失败] UID=${uid} | ${profile?.message || profile?.error || '-'} | 已更新经验值，旧帖保留`);
+        console.log(`[StaleRefresh][主页失败] UID=${uid} | ${failureText || '-'} | 已更新经验值，旧帖保留`);
         await sleep(PROFILE_DELAY_MS);
         continue;
       }
