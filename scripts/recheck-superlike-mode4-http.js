@@ -7,123 +7,82 @@ const {
   initDatabase,
   addSuperLikePoolExitCount
 } = require('../src/db');
+const {
+  SCAN_PROXY_POOL,
+  acquireScanProxyWaiting
+} = require('../src/superlike/proxy');
+const {
+  shouldRotateProxy
+} = require('../src/proxy-http-policy');
 
-const LIST_DAY_INTERVAL_MS =
-  Number(process.env.SUPERLIKE_LIST_DAY_INTERVAL_MS)
-  || 20 * 60 * 1000;
+const LIST_DAY_INTERVAL_MS = Number(process.env.SUPERLIKE_LIST_DAY_INTERVAL_MS) || 20 * 60 * 1000;
+const LIST_NIGHT_INTERVAL_MS = Number(process.env.SUPERLIKE_LIST_NIGHT_INTERVAL_MS) || 5 * 60 * 1000;
+const LIST_FIRST_RUN_MAX_PAGES = Number(process.env.SUPERLIKE_LIST_FIRST_RUN_MAX_PAGES) || 50;
+const LIST_BOUNDARY_SAFETY_MAX_PAGES = Number(process.env.SUPERLIKE_LIST_BOUNDARY_SAFETY_MAX_PAGES) || 1000;
+const LIST_REQUEST_DELAY_MS = Number(process.env.SUPERLIKE_LIST_REQUEST_DELAY_MS) || 250;
+const REQUEST_TIMEOUT_MS = Number(process.env.SUPERLIKE_MODE4_HTTP_TIMEOUT_MS) || 15000;
+const SESSION_PROXY_RETRIES = Math.max(1, Math.min(20, Number(process.env.SUPERLIKE_MODE4_SESSION_PROXY_RETRIES) || 8));
 
-const LIST_NIGHT_INTERVAL_MS =
-  Number(process.env.SUPERLIKE_LIST_NIGHT_INTERVAL_MS)
-  || 5 * 60 * 1000;
-
-const LIST_FIRST_RUN_MAX_PAGES =
-  Number(process.env.SUPERLIKE_LIST_FIRST_RUN_MAX_PAGES)
-  || 50;
-
-const LIST_BOUNDARY_SAFETY_MAX_PAGES =
-  Number(process.env.SUPERLIKE_LIST_BOUNDARY_SAFETY_MAX_PAGES)
-  || 1000;
-
-const LIST_REQUEST_DELAY_MS =
-  Number(process.env.SUPERLIKE_LIST_REQUEST_DELAY_MS)
-  || 250;
-
-const REQUEST_TIMEOUT_MS =
-  Number(process.env.SUPERLIKE_MODE4_HTTP_TIMEOUT_MS)
-  || 15000;
-
-const PROFILE_DIR =
-  path.resolve(
-    process.env.SUPERLIKE_MODE4_USER_DATA_DIR
-    || path.join(
-      __dirname,
-      '..',
-      'data',
-      'superlike-browser-profile-scan'
-    )
-  );
+const PROFILE_DIR = path.resolve(
+  process.env.SUPERLIKE_MODE4_USER_DATA_DIR
+  || path.join(__dirname, '..', 'data', 'superlike-browser-profile-scan')
+);
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 function getChinaDate() {
-  const parts = new Intl.DateTimeFormat(
-    'en-CA',
-    {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }
-  ).formatToParts(new Date());
-
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(new Date());
   const map = {};
-  for (const part of parts) {
-    if (part.type !== 'literal') map[part.type] = part.value;
-  }
-
+  for (const part of parts) if (part.type !== 'literal') map[part.type] = part.value;
   return `${map.year}-${map.month}-${map.day}`;
 }
 
 function getChinaDateTime() {
-  const parts = new Intl.DateTimeFormat(
-    'en-CA',
-    {
-      timeZone: 'Asia/Shanghai',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: false
-    }
-  ).formatToParts(new Date());
-
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
   const map = {};
-  for (const part of parts) {
-    if (part.type !== 'literal') map[part.type] = part.value;
-  }
-
+  for (const part of parts) if (part.type !== 'literal') map[part.type] = part.value;
   return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
 }
 
 function getChinaHour() {
-  return Number(
-    new Intl.DateTimeFormat(
-      'en-US',
-      {
-        timeZone: 'Asia/Shanghai',
-        hour: '2-digit',
-        hour12: false
-      }
-    ).format(new Date())
-  );
+  return Number(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Shanghai',
+    hour: '2-digit',
+    hour12: false
+  }).format(new Date()));
 }
 
 function getMode4IntervalMs() {
   const hour = getChinaHour();
-  return hour >= 19 && hour <= 23
-    ? LIST_NIGHT_INTERVAL_MS
-    : LIST_DAY_INTERVAL_MS;
+  return hour >= 19 && hour <= 23 ? LIST_NIGHT_INTERVAL_MS : LIST_DAY_INTERVAL_MS;
 }
 
 function parseTopicHomepage(topicUrl) {
   const url = new URL(String(topicUrl || '').trim());
   const match = url.pathname.match(/\/p\/(100808[a-f0-9]{32})/i);
-  if (!match) {
-    throw new Error(`无法从 Monitor URL 解析超话 page_id：${topicUrl}`);
-  }
-
+  if (!match) throw new Error(`无法从 Monitor URL 解析超话 page_id：${topicUrl}`);
   const containerId = match[1];
   const topicHash = containerId.replace(/^100808/i, '');
-
   return {
     containerId,
     topicHash,
-    chaoLikeListContainerId:
-      `231140${topicHash}_-_chaolikenew`
+    chaoLikeListContainerId: `231140${topicHash}_-_chaolikenew`
   };
 }
 
@@ -144,30 +103,19 @@ function getListState(monitorId) {
     FROM superlike_list_state
     WHERE monitor_id = ?
   `).get(monitorId);
-
   if (!row) return null;
-
   return {
     lastUid: row.last_uid ? String(row.last_uid) : null,
     scanDate: row.scan_date ? String(row.scan_date) : null,
-    lastTotal: Number.isFinite(Number(row.last_total))
-      ? Number(row.last_total)
-      : null,
+    lastTotal: Number.isFinite(Number(row.last_total)) ? Number(row.last_total) : null,
     updatedAt: row.updated_at || null
   };
 }
 
 function saveListState(monitorId, lastUid, scanDate, lastTotal) {
   if (!lastUid) return;
-
   db.prepare(`
-    INSERT INTO superlike_list_state(
-      monitor_id,
-      last_uid,
-      scan_date,
-      last_total,
-      updated_at
-    )
+    INSERT INTO superlike_list_state(monitor_id,last_uid,scan_date,last_total,updated_at)
     VALUES(?,?,?,?,CURRENT_TIMESTAMP)
     ON CONFLICT(monitor_id) DO UPDATE SET
       last_uid = excluded.last_uid,
@@ -188,23 +136,15 @@ function cleanupSuperLikeUsersForToday(monitorId, scanDate) {
     WHERE monitor_id = ?
       AND scan_date <> ?
   `).run(monitorId, scanDate);
-
   return Number(result.changes || 0);
 }
 
 function upsertSuperLikeUsers(monitorId, uidList, scanDate, rankStart) {
   if (!Array.isArray(uidList) || uidList.length === 0) return 0;
-
   const chinaNow = getChinaDateTime();
   const stmt = db.prepare(`
     INSERT INTO superlike_users(
-      monitor_id,
-      uid,
-      scan_date,
-      inserted_at,
-      last_seen_at,
-      first_seen_rank,
-      last_seen_rank
+      monitor_id,uid,scan_date,inserted_at,last_seen_at,first_seen_rank,last_seen_rank
     )
     VALUES(?,?,?,?,?,?,?)
     ON CONFLICT(uid) DO UPDATE SET
@@ -213,25 +153,14 @@ function upsertSuperLikeUsers(monitorId, uidList, scanDate, rankStart) {
       last_seen_at = excluded.last_seen_at,
       last_seen_rank = excluded.last_seen_rank
   `);
-
   let saved = 0;
   db.exec('BEGIN');
-
   try {
     for (let i = 0; i < uidList.length; i++) {
       const uid = String(uidList[i] || '').trim();
       if (!uid) continue;
-
       const rank = Number(rankStart) + i;
-      stmt.run(
-        monitorId,
-        uid,
-        scanDate,
-        chinaNow,
-        chinaNow,
-        rank,
-        rank
-      );
+      stmt.run(monitorId, uid, scanDate, chinaNow, chinaNow, rank, rank);
       saved++;
     }
     db.exec('COMMIT');
@@ -239,15 +168,11 @@ function upsertSuperLikeUsers(monitorId, uidList, scanDate, rankStart) {
     try { db.exec('ROLLBACK'); } catch {}
     throw error;
   }
-
   return saved;
 }
 
 function deletePostsByUidSet(monitorId, uidSet) {
-  const uids = Array.from(uidSet || [])
-    .map(uid => String(uid || '').trim())
-    .filter(Boolean);
-
+  const uids = Array.from(uidSet || []).map(uid => String(uid || '').trim()).filter(Boolean);
   if (uids.length === 0) return 0;
 
   const chunkSize = 500;
@@ -284,14 +209,8 @@ function deletePostsByUidSet(monitorId, uidSet) {
     throw error;
   }
 
-  if (deletedUsers > 0) {
-    addSuperLikePoolExitCount(deletedUsers);
-  }
-
-  console.log(
-    `[模式4][今日毕业] 候选UID=${deletedUsers} | 今日累计已增加`
-  );
-
+  if (deletedUsers > 0) addSuperLikePoolExitCount(deletedUsers);
+  console.log(`[模式4][今日毕业] 候选UID=${deletedUsers} | 今日累计已增加`);
   return deleted;
 }
 
@@ -305,173 +224,198 @@ function buildListUrl(config, sinceId = null) {
 
 function extractUids(json) {
   const result = [];
-  const cards = Array.isArray(json?.data?.cards)
-    ? json.data.cards
-    : [];
-
+  const cards = Array.isArray(json?.data?.cards) ? json.data.cards : [];
   for (const card of cards) {
-    const groups = Array.isArray(card?.card_group)
-      ? card.card_group
-      : [];
-
+    const groups = Array.isArray(card?.card_group) ? card.card_group : [];
     for (const item of groups) {
       const uid = item?.user?.idstr ?? item?.user?.id;
-      if (uid !== undefined && uid !== null && String(uid).trim()) {
-        result.push(String(uid));
-      }
+      if (uid !== undefined && uid !== null && String(uid).trim()) result.push(String(uid));
     }
   }
-
   return result;
 }
 
 function extractNextSinceId(json) {
   const value = json?.data?.cardlistInfo?.since_id ?? null;
-  return value === null || value === undefined || value === ''
-    ? null
-    : String(value);
+  return value === null || value === undefined || value === '' ? null : String(value);
 }
 
 function extractTotal(json) {
   const visited = new Set();
-
   function parseText(value) {
     const text = String(value || '');
     const wan = text.match(/超\s*LIKE\s*\(\s*([\d.]+)\s*万\s*人?\s*\)/i);
     if (wan) return Math.round(Number(wan[1]) * 10000);
-
     const plain = text.match(/超\s*LIKE\s*\(\s*([\d,]+)\s*人?\s*\)/i);
     if (plain) return Number(plain[1].replace(/,/g, ''));
     return null;
   }
-
   function walk(value) {
     if (value === null || value === undefined) return null;
     if (typeof value === 'string') return parseText(value);
     if (typeof value !== 'object' || visited.has(value)) return null;
     visited.add(value);
-
     if (typeof value.desc === 'string') {
       const parsed = parseText(value.desc);
       if (parsed !== null) return parsed;
     }
-
     for (const child of Array.isArray(value) ? value : Object.values(value)) {
       const result = walk(child);
       if (result !== null) return result;
     }
     return null;
   }
-
   return walk(json);
 }
 
 function cookiesToHeader(cookies) {
-  return (cookies || [])
-    .filter(item => item?.name)
-    .map(item => `${item.name}=${item.value}`)
-    .join('; ');
+  return (cookies || []).filter(item => item?.name).map(item => `${item.name}=${item.value}`).join('; ');
 }
 
-async function createHttpSession() {
-  console.log(
-    `[模式4][Session] 启动 Persistent Chromium 读取登录Cookie | Profile=${PROFILE_DIR}`
-  );
+async function safeDisposeSession(session) {
+  try { await session?.api?.dispose(); } catch {}
+}
 
-  const context = await chromium.launchPersistentContext(
-    PROFILE_DIR,
-    {
-      headless: false,
-      viewport: { width: 1280, height: 900 }
-    }
-  );
+function markCurrentProxyBlocked(session, reason) {
+  if (!session?.assignment?.raw) return;
+  SCAN_PROXY_POOL.markBlocked(session.assignment.raw);
+  console.log(`[模式4][Proxy] 当前代理进入冷却 | IP=${session.proxyLabel || session.assignment.masked || '-'} | 原因=${reason}`);
+}
 
-  let cookies = [];
-  let userAgent =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
-
+async function closePersistentContextSafely(context) {
+  if (!context) return;
   try {
-    const page = context.pages()[0] || await context.newPage();
+    await context.close();
+    return;
+  } catch (error) {
+    console.log(`[模式4][Session] context.close异常，忽略并继续重建HTTP Session | ${error.message}`);
+  }
+  try {
+    await context.browser()?.close();
+  } catch (error) {
+    console.log(`[模式4][Session] browser.close兜底失败，继续后续恢复 | ${error.message}`);
+  }
+}
+
+async function createHttpSession(reason = '建立Session') {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= SESSION_PROXY_RETRIES; attempt++) {
+    let assignment = null;
+    let context = null;
+    let cookies = [];
+    let userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36';
 
     try {
-      await page.goto(
-        'https://m.weibo.cn/',
-        {
+      assignment = await acquireScanProxyWaiting();
+      const proxyLabel = assignment?.masked || 'LOCAL';
+      console.log(`[模式4][Session] ${reason} | 尝试=${attempt}/${SESSION_PROXY_RETRIES} | IP=${proxyLabel} | Profile=${PROFILE_DIR}`);
+
+      const launchOptions = {
+        headless: false,
+        viewport: { width: 1280, height: 900 }
+      };
+      if (assignment?.proxy) launchOptions.proxy = assignment.proxy;
+
+      context = await chromium.launchPersistentContext(PROFILE_DIR, launchOptions);
+      const page = context.pages()[0] || await context.newPage();
+
+      try {
+        const response = await page.goto('https://m.weibo.cn/', {
           waitUntil: 'domcontentloaded',
           timeout: REQUEST_TIMEOUT_MS
+        });
+        const status = response?.status?.() ?? null;
+        if (shouldRotateProxy({ status })) {
+          throw new Error(`m.weibo.cn 首页 HTTP ${status}`);
         }
-      );
-      await page.waitForTimeout(1200);
+        await page.waitForTimeout(1200);
+      } catch (error) {
+        if (shouldRotateProxy({ error })) throw error;
+        console.log(`[模式4][Session] 打开 m.weibo.cn 异常，但仍尝试读取已有Cookie | ${error.message}`);
+      }
+
+      cookies = await context.cookies([
+        'https://m.weibo.cn/',
+        'https://weibo.com/'
+      ]);
+      userAgent = await page.evaluate(() => navigator.userAgent).catch(() => userAgent);
+
+      const cookieHeader = cookiesToHeader(cookies);
+      if (!cookieHeader) throw new Error('Persistent Profile 未读取到登录Cookie');
+
+      const requestOptions = {
+        userAgent,
+        extraHTTPHeaders: {
+          Accept: 'application/json, text/plain, */*',
+          'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+          Referer: 'https://m.weibo.cn/',
+          Cookie: cookieHeader
+        }
+      };
+      if (assignment?.proxy) requestOptions.proxy = assignment.proxy;
+
+      const api = await request.newContext(requestOptions);
+      console.log(`[模式4][Session] 建立成功 | IP=${proxyLabel} | Cookie=${cookies.length} | names=${cookies.map(item => item.name).join(',') || '-'}`);
+
+      return {
+        api,
+        assignment,
+        proxyLabel,
+        cookieNames: cookies.map(item => item.name)
+      };
     } catch (error) {
-      console.log(
-        `[模式4][Session] 打开 m.weibo.cn 异常，继续读取已有Cookie | ${error.message}`
-      );
+      lastError = error;
+      if (assignment?.raw) {
+        SCAN_PROXY_POOL.markBlocked(assignment.raw);
+        console.log(`[模式4][Proxy] Session建立失败，当前代理冷却并切下一个 | IP=${assignment.masked} | ${error.message}`);
+      } else {
+        console.log(`[模式4][Session] 建立失败 | IP=LOCAL | ${error.message}`);
+      }
+    } finally {
+      await closePersistentContextSafely(context);
     }
-
-    cookies = await context.cookies([
-      'https://m.weibo.cn/',
-      'https://weibo.com/'
-    ]);
-
-    userAgent = await page.evaluate(() => navigator.userAgent)
-      .catch(() => userAgent);
-  } finally {
-    await context.close();
   }
 
-  const cookieHeader = cookiesToHeader(cookies);
-  console.log(
-    `[模式4][Session] Chromium已关闭 | Cookie=${cookies.length} | names=${cookies.map(item => item.name).join(',') || '-'}`
-  );
-
-  if (!cookieHeader) {
-    throw new Error('Persistent Profile 未读取到登录Cookie');
-  }
-
-  const api = await request.newContext({
-    userAgent,
-    extraHTTPHeaders: {
-      Accept: 'application/json, text/plain, */*',
-      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-      Referer: 'https://m.weibo.cn/',
-      Cookie: cookieHeader
-    }
-  });
-
-  return { api, cookieNames: cookies.map(item => item.name) };
+  throw lastError || new Error('Mode4 多次轮换代理后仍无法建立 HTTP Session');
 }
 
 function isSessionFailure(result) {
   if (!result) return true;
-  if ([401, 403, 418, 432].includes(Number(result.status))) return true;
-  if (/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|passport\.weibo\.com|登录/i.test(
-    `${result.finalUrl || ''} ${result.bodyPreview || ''} ${result.message || ''}`
-  )) return true;
+  const combined = `${result.finalUrl || ''} ${result.bodyPreview || ''} ${result.message || ''}`;
+  if (/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|passport\.weibo\.com|登录/i.test(combined)) return true;
+  if (shouldRotateProxy({ status: result.status, message: result.message })) return true;
+  if (Number(result.status) === 0) return true;
+  if (result.ok === false && Number(result.status) >= 200 && Number(result.status) < 300) return true;
   return false;
 }
 
 async function fetchListPage(session, config, sinceId = null) {
   const url = buildListUrl(config, sinceId);
+  if (!session?.api) {
+    return {
+      ok: false,
+      status: 0,
+      finalUrl: url,
+      bodyPreview: '',
+      json: null,
+      message: 'HTTP Session不存在或已失效'
+    };
+  }
 
   try {
-    const response = await session.api.get(
-      url,
-      {
-        timeout: REQUEST_TIMEOUT_MS,
-        failOnStatusCode: false
-      }
-    );
-
+    const response = await session.api.get(url, {
+      timeout: REQUEST_TIMEOUT_MS,
+      failOnStatusCode: false
+    });
     const status = response.status();
     const finalUrl = response.url();
     const body = await response.text();
     const bodyPreview = String(body || '').replace(/\s+/g, ' ').slice(0, 300);
-
     let json = null;
     try { json = JSON.parse(body); } catch {}
 
-    const ok =
-      status >= 200
+    const ok = status >= 200
       && status < 300
       && Number(json?.ok ?? 0) === 1
       && !/visitor\.passport\.weibo\.cn|passport\.weibo\.cn|passport\.weibo\.com/i.test(finalUrl);
@@ -482,9 +426,7 @@ async function fetchListPage(session, config, sinceId = null) {
       finalUrl,
       bodyPreview,
       json,
-      message: ok
-        ? ''
-        : `chaolikenew HTTP ${status} / ok=${json?.ok ?? '非JSON'}`
+      message: ok ? '' : `chaolikenew HTTP ${status} / ok=${json?.ok ?? '非JSON'}`
     };
   } catch (error) {
     return {
@@ -498,6 +440,22 @@ async function fetchListPage(session, config, sinceId = null) {
   }
 }
 
+async function refreshSession(sessionRef, reason, blockCurrent = true) {
+  const old = sessionRef.current;
+  if (blockCurrent) markCurrentProxyBlocked(old, reason);
+  sessionRef.current = null;
+  await safeDisposeSession(old);
+  const fresh = await createHttpSession(reason);
+  sessionRef.current = fresh;
+  return fresh;
+}
+
+async function ensureSession(sessionRef) {
+  if (sessionRef.current?.api) return sessionRef.current;
+  sessionRef.current = await createHttpSession('当前Session为空，自动重建');
+  return sessionRef.current;
+}
+
 async function runRound(sessionRef) {
   const monitors = getSuperLikeMonitors();
 
@@ -508,10 +466,7 @@ async function runRound(sessionRef) {
     const today = getChinaDate();
     const sameDay = state?.scanDate === today;
     const firstRun = !sameDay;
-
-    let maxPages = firstRun
-      ? LIST_FIRST_RUN_MAX_PAGES
-      : LIST_BOUNDARY_SAFETY_MAX_PAGES;
+    const maxPages = firstRun ? LIST_FIRST_RUN_MAX_PAGES : LIST_BOUNDARY_SAFETY_MAX_PAGES;
 
     let sinceId = null;
     let pageNumber = 0;
@@ -531,23 +486,41 @@ async function runRound(sessionRef) {
     );
 
     while (pageNumber < maxPages) {
+      await ensureSession(sessionRef);
       let result = await fetchListPage(sessionRef.current, config, sinceId);
 
       if (!result.ok && isSessionFailure(result)) {
-        console.log(
-          `[模式4][Session] 第${pageNumber + 1}页登录态失效，刷新Cookie后重试 | status=${result.status} | ${result.message}`
-        );
+        const oldIp = sessionRef.current?.proxyLabel || 'LOCAL';
+        console.log(`[模式4][Recovery] 第${pageNumber + 1}页请求失败 | status=${result.status} | IP=${oldIp} | ${result.message} → 自动切代理+重建Session后重试一次`);
 
-        try { await sessionRef.current.api.dispose(); } catch {}
-        sessionRef.current = await createHttpSession();
-        result = await fetchListPage(sessionRef.current, config, sinceId);
+        try {
+          await refreshSession(
+            sessionRef,
+            `第${pageNumber + 1}页失败：${result.message || `HTTP ${result.status}`}`,
+            true
+          );
+          result = await fetchListPage(sessionRef.current, config, sinceId);
+        } catch (error) {
+          console.log(`[模式4][Recovery] 重建Session失败 | ${error.message}`);
+          result = {
+            ok: false,
+            status: 0,
+            finalUrl: buildListUrl(config, sinceId),
+            bodyPreview: '',
+            json: null,
+            message: `Session重建失败: ${error.message}`
+          };
+        }
       }
 
       if (!result.ok) {
-        console.log(
-          `[模式4] 第${pageNumber + 1}页失败 | ${result.message} | status=${result.status ?? '-'} | url=${result.finalUrl || '-'} | body=${result.bodyPreview || '-'}`
-        );
+        console.log(`[模式4] 第${pageNumber + 1}页失败 | ${result.message} | status=${result.status ?? '-'} | IP=${sessionRef.current?.proxyLabel || '-'} | url=${result.finalUrl || '-'} | body=${result.bodyPreview || '-'}`);
         console.log('[模式4] 本轮未完整结束，不更新扫描边界。');
+        if (isSessionFailure(result)) {
+          markCurrentProxyBlocked(sessionRef.current, result.message || `HTTP ${result.status}`);
+          await safeDisposeSession(sessionRef.current);
+          sessionRef.current = null;
+        }
         break;
       }
 
@@ -557,31 +530,19 @@ async function runRound(sessionRef) {
 
       if (pageNumber === 1) {
         currentTotal = extractTotal(result.json);
-
         if (!cleanupDone) {
           const cleaned = cleanupSuperLikeUsersForToday(monitor.id, today);
           cleanupDone = true;
           console.log(`[模式4] 清理非当天超LIKE用户数据：${cleaned} 条`);
         }
-
         if (uids.length > 0) newestUid = uids[0];
       }
 
-      console.log(
-        `[模式4][HTTP] 第${pageNumber}页 | UID=${uids.length} | 请求since_id=${sinceId || '-'} | 返回since_id=${nextSinceId || '-'}`
-      );
+      console.log(`[模式4][HTTP] 第${pageNumber}页 | UID=${uids.length} | IP=${sessionRef.current?.proxyLabel || 'LOCAL'} | 请求since_id=${sinceId || '-'} | 返回since_id=${nextSinceId || '-'}`);
 
       const rankStart = (pageNumber - 1) * 20 + 1;
-      const savedUsers = upsertSuperLikeUsers(
-        monitor.id,
-        uids,
-        today,
-        rankStart
-      );
-
-      console.log(
-        `[模式4] 第${pageNumber}页保存当天超LIKE UID=${savedUsers} | 排名约=${rankStart}-${rankStart + Math.max(0, uids.length - 1)}`
-      );
+      const savedUsers = upsertSuperLikeUsers(monitor.id, uids, today, rankStart);
+      console.log(`[模式4] 第${pageNumber}页保存当天超LIKE UID=${savedUsers} | 排名约=${rankStart}-${rankStart + Math.max(0, uids.length - 1)}`);
 
       for (const uid of uids) {
         if (!firstRun && previousLastUid && uid === previousLastUid) {
@@ -617,16 +578,11 @@ async function runRound(sessionRef) {
     }
 
     const deleted = deletePostsByUidSet(monitor.id, uidSet);
-
-    console.log(
-      `[模式4] Monitor=${monitor.name} | 扫描页=${pageNumber} | UID=${uidSet.size} | 删除DB记录=${deleted} | 完整结束=${completed ? '是' : '否'} | 命中旧边界=${reachedBoundary ? '是' : '否'}`
-    );
+    console.log(`[模式4] Monitor=${monitor.name} | 扫描页=${pageNumber} | UID=${uidSet.size} | 删除DB记录=${deleted} | 完整结束=${completed ? '是' : '否'} | 命中旧边界=${reachedBoundary ? '是' : '否'}`);
 
     if (completed && newestUid) {
       saveListState(monitor.id, newestUid, today, currentTotal);
-      console.log(
-        `[模式4] 已更新状态：日期=${today} | 总人数=${currentTotal ?? '-'} | 边界UID=${newestUid}`
-      );
+      console.log(`[模式4] 已更新状态：日期=${today} | 总人数=${currentTotal ?? '-'} | 边界UID=${newestUid}`);
     } else {
       console.log('[模式4] 本轮 incomplete，保留旧边界不变。');
     }
@@ -639,16 +595,13 @@ async function main() {
   console.log('');
   console.log('########################################');
   console.log('# SuperLike Recheck - 模式4 HTTP UID模式');
-  console.log('# Persistent Chromium仅用于读取/刷新登录Cookie，读取后立即关闭');
-  console.log('# 正式分页：LOCAL + 登录Cookie + HTTP');
+  console.log('# HTTP请求统一使用健康代理池；失败自动冷却当前代理、切IP、重建Session');
+  console.log('# HTTP 4xx/5xx、网络错误、context/browser/request关闭、Playwright timeout 都进入恢复流程');
   console.log(`# 当天首次最多 ${LIST_FIRST_RUN_MAX_PAGES} 页`);
   console.log(`# 后续安全上限 ${LIST_BOUNDARY_SAFETY_MAX_PAGES} 页`);
   console.log('########################################');
 
-  const sessionRef = {
-    current: await createHttpSession()
-  };
-
+  const sessionRef = { current: null };
   let round = 0;
 
   try {
@@ -658,28 +611,29 @@ async function main() {
       const startedAt = Date.now();
 
       console.log('');
-      console.log(
-        `[Recheck] ===== 模式4 HTTP 第${round}轮开始 | 当前间隔=${intervalMs / 60000}分钟 =====`
-      );
+      console.log(`[Recheck] ===== 模式4 HTTP 第${round}轮开始 | 当前间隔=${intervalMs / 60000}分钟 =====`);
 
       try {
         await runRound(sessionRef);
       } catch (error) {
         console.error(`[Recheck] 模式4 HTTP 第${round}轮异常：`, error);
+        if (shouldRotateProxy({ error })) {
+          markCurrentProxyBlocked(sessionRef.current, error.message);
+        }
+        await safeDisposeSession(sessionRef.current);
+        sessionRef.current = null;
+        console.log('[Recheck] 本轮异常后已废弃旧HTTP Session；下一轮会自动从健康代理池重建，不再复用死亡context。');
       }
 
       const elapsed = Date.now() - startedAt;
       const waitMs = Math.max(0, intervalMs - elapsed);
-
       if (waitMs > 0) {
-        console.log(
-          `[Recheck] 模式4 HTTP 第${round}轮结束，${Math.round(waitMs / 60000)}分钟后进入下一轮；Chromium已关闭，仅保留HTTP Session。`
-        );
+        console.log(`[Recheck] 模式4 HTTP 第${round}轮结束，${Math.round(waitMs / 60000)}分钟后进入下一轮；HTTP Session保持可用，失效时自动切代理重建。`);
         await sleep(waitMs);
       }
     }
   } finally {
-    try { await sessionRef.current?.api?.dispose(); } catch {}
+    await safeDisposeSession(sessionRef.current);
   }
 }
 
