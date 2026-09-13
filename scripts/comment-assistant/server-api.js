@@ -514,12 +514,111 @@ window.addEventListener('unhandledrejection',function(e){showFatal((e.reason && 
 
 function userPage() {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Comment Assistant 用户端</title><style>${baseCss}</style></head><body><div class="wrap">
-<div id="fatal" class="fatal"></div>
-<div class="card"><div class="row"><div><div class="muted">API Token</div><input id="token" type="password"></div><div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A"></div><button id="connect">连接</button><button class="blue" id="add">＋ 添加账号</button></div><div id="health" class="muted" style="margin-top:10px">未连接</div></div>
-<div class="card"><div class="top"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><button id="toggleAccounts" class="collapse-toggle" type="button">收起 ▲</button></div><div id="accountPanel" class="account-panel"><div class="account-scroll"><table class="account-table"><thead><tr><th><input id="selectAllAccounts" type="checkbox" title="全选"></th><th>No</th><th>用户ID</th><th>用户名</th><th>登录状态</th></tr></thead><tbody id="accounts"><tr><td colspan="5" class="muted">请先连接</td></tr></tbody></table></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><div class="muted">先选账号和 Loop，再到下面默认任务里点击“领取任务”。Loop 1 = 每个账号 20 条。</div></div></div></div>
-<div class="card"><div class="top"><h2 style="margin:0">任务列表 / 执行结果</h2><button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button></div><div id="tasksPanel" class="collapsible-panel"><h3>可领取任务</h3><div class="scroll"><table class="task-catalog"><thead><tr><th>任务</th><th>说明</th><th>操作</th></tr></thead><tbody id="availableTasks"><tr><td colspan="3" class="muted">请先连接</td></tr></tbody></table></div><h3 class="section-gap">执行结果 / 我的任务</h3><div class="scroll"><table><thead><tr><th>账号</th><th>执行状态</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div></div>
-<div class="card"><div class="top"><h2 style="margin:0">执行 Log</h2><button id="toggleLog" class="collapse-toggle" type="button">收起 ▲</button></div><div id="logPanel" class="collapsible-panel"><div id="log" class="log"></div></div></div>
-</div><script>${clientCommon}
+    <div id="fatal" class="fatal"></div>
+    <div class="card">
+        <div class="row">
+            <div>
+                <div class="muted">API Token</div>
+                <input id="token" type="password" />
+            </div>
+            <div>
+                <div class="muted">本机名称</div>
+                <input id="worker" placeholder="例如 PC-A" />
+            </div>
+            <button id="connect">连接</button><button class="blue" id="add">＋ 添加账号</button>
+        </div>
+        <div id="health" class="muted" style="margin-top: 10px">未连接</div>
+    </div>
+    <div class="card">
+        <div class="top">
+            <div style="display: flex; gap: 8px; align-items: center">
+                <h2 style="margin: 0">当前可执行账号</h2>
+                <span id="accountCount" class="pill">0</span>
+            </div>
+            <button id="toggleAccounts" class="collapse-toggle" type="button">收起 ▲</button>
+        </div>
+        <div id="accountPanel" class="account-panel">
+            <div class="account-scroll">
+                <table class="account-table">
+                    <thead>
+                        <tr>
+                            <th><input id="selectAllAccounts" type="checkbox" title="全选" /></th>
+                            <th>No</th>
+                            <th>用户ID</th>
+                            <th>用户名</th>
+                            <th>登录状态</th>
+                        </tr>
+                    </thead>
+                    <tbody id="accounts">
+                        <tr>
+                            <td colspan="5" class="muted">请先连接</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="row" style="margin-top: 12px">
+                <div>
+                    <div class="muted">循环回数</div>
+                    <input id="loops" type="number" min="1" max="20" value="1" style="width: 80px" />
+                </div>
+                <div class="muted">先选账号和循环回数，再到下面默认任务里点击“领取任务”。循环1 = 每个账号 20 条。</div>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="top">
+            <h2 style="margin: 0">任务列表</h2>
+            <button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button>
+        </div>
+        <div id="tasksPanel" class="collapsible-panel">
+            <div class="scroll">
+                <table class="task-catalog">
+                    <thead>
+                        <tr>
+                            <th>任务</th>
+                            <th>说明</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="availableTasks">
+                        <tr>
+                            <td colspan="3" class="muted">请先连接</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="top">
+            <h2 style="margin: 0">执行结果</h2>
+            <button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button>
+        </div>
+        <div id="tasksPanel" class="collapsible-panel">
+            <div class="scroll">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>账号</th>
+                            <th>任务名</th>
+                            <th>执行状态</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="tasks"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    <div class="card">
+        <div class="top">
+            <h2 style="margin: 0">执行 Log</h2>
+            <button id="toggleLog" class="collapse-toggle" type="button">收起 ▲</button>
+        </div>
+        <div id="logPanel" class="collapsible-panel"><div id="log" class="log"></div></div>
+    </div>
+</div>
+<script>${clientCommon}
 (function(){
   var tokenEl=byId('token');
   var workerEl=byId('worker');
