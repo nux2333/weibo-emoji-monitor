@@ -16,6 +16,7 @@ const PORT = Number(process.env.COMMENT_WORKER_API_PORT || 3012);
 const TOKEN = String(process.env.COMMENT_API_TOKEN || '').trim();
 const ADMIN_TOKEN = String(process.env.COMMENT_ADMIN_TOKEN || '').trim();
 const WORKER_TTL_MS = Math.max(30_000, Number(process.env.COMMENT_WORKER_TTL_MS || 2 * 60_000));
+const TASK_TARGET_PER_ACCOUNT = 20;
 
 if (!TOKEN) {
   console.error('[Comment Assistant] COMMENT_API_TOKEN 未设置，拒绝启动。');
@@ -224,13 +225,78 @@ app.post('/api/heartbeat', userAuth, (req, res) => {
 app.get('/api/my-tasks', userAuth, (req, res) => {
   const worker = workerKey(req.query.worker);
   if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
-  const rows = db.prepare(`SELECT t.task_id, t.post_id, t.post_link, t.post_text, t.note, t.priority,
-      t.status, a.account, a.status AS assignment_status, a.claimed_at, a.completed_at, a.result
+  const rows = db.prepare(`SELECT
+      a.account,
+      COUNT(*) AS assigned_count,
+      SUM(CASE WHEN a.status = 'DONE' THEN 1 ELSE 0 END) AS completed_count,
+      SUM(CASE WHEN a.status = 'CLAIMED' THEN 1 ELSE 0 END) AS running_count,
+      SUM(CASE WHEN a.status = 'SKIPPED' THEN 1 ELSE 0 END) AS interrupted_count,
+      MAX(a.claimed_at) AS last_claimed_at
     FROM comment_assistant_task_assignments a
-    JOIN comment_assistant_tasks t ON t.task_id = a.task_id
     WHERE a.worker_id = ?
-    ORDER BY a.claimed_at DESC`).all(worker);
+    GROUP BY a.account
+    ORDER BY MAX(a.claimed_at) DESC`).all(worker).map(row => ({
+      ...row,
+      target_count: TASK_TARGET_PER_ACCOUNT,
+      progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
+    }));
   res.json({ success: true, data: rows });
+});
+
+app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
+  try {
+    const worker = workerKey(req.body?.worker);
+    const account = sanitizeAccount(req.params.account);
+    const action = String(req.body?.action || '').trim().toLowerCase();
+    if (!worker || !account) return res.status(400).json({ success: false, message: 'worker/account required' });
+    if (!['interrupt', 'complete', 'delete'].includes(action)) {
+      return res.status(400).json({ success: false, message: 'invalid action' });
+    }
+
+    const assignments = db.prepare(`SELECT task_id, status
+      FROM comment_assistant_task_assignments
+      WHERE worker_id = ? AND account = ?`).all(worker, account);
+    if (!assignments.length) return res.status(404).json({ success: false, message: '没有找到该账号的任务' });
+
+    if (action === 'interrupt') {
+      const activeIds = assignments.filter(x => x.status === 'CLAIMED').map(x => x.task_id);
+      db.prepare(`UPDATE comment_assistant_task_assignments
+        SET status = 'SKIPPED', result = '用户中断', completed_at = LOCALTIMESTAMP
+        WHERE worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(worker, account);
+      for (const taskId of activeIds) {
+        db.prepare(`UPDATE comment_assistant_tasks
+          SET status = 'SKIPPED', updated_at = LOCALTIMESTAMP
+          WHERE task_id = ? AND status = 'CLAIMED'`).run(taskId);
+      }
+    }
+
+    if (action === 'complete') {
+      const ids = assignments.map(x => x.task_id);
+      db.prepare(`UPDATE comment_assistant_task_assignments
+        SET status = 'DONE', result = '手动标记已完成', completed_at = LOCALTIMESTAMP
+        WHERE worker_id = ? AND account = ?`).run(worker, account);
+      for (const taskId of ids) {
+        db.prepare(`UPDATE comment_assistant_tasks
+          SET status = 'DONE', updated_at = LOCALTIMESTAMP
+          WHERE task_id = ?`).run(taskId);
+      }
+    }
+
+    if (action === 'delete') {
+      const ids = assignments.map(x => x.task_id);
+      for (const taskId of ids) {
+        db.prepare(`UPDATE comment_assistant_tasks
+          SET status = 'OPEN', updated_at = LOCALTIMESTAMP
+          WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED')`).run(taskId);
+      }
+      db.prepare(`DELETE FROM comment_assistant_task_assignments
+        WHERE worker_id = ? AND account = ?`).run(worker, account);
+    }
+
+    res.json({ success: true, data: { account, action } });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
 });
 
 app.post('/api/tasks/claim', userAuth, (req, res) => {
@@ -331,7 +397,7 @@ app.get('/api/admin/workers', adminAuth, (req, res) => {
 });
 
 const baseCss = `
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}.account-table th:first-child,.account-table td:first-child{width:42px;text-align:center}.account-table th:nth-child(2),.account-table td:nth-child(2){width:54px;text-align:center}.account-table tbody tr:hover{background:#fafafa}.account-table input[type=checkbox]{width:16px;height:16px;min-width:0;margin:0}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}.login-ok{color:#15803d;font-weight:600}.login-relogin{color:#9ca3af;font-weight:600}.collapse-toggle{background:transparent;color:#444;border:1px solid #ddd;padding:5px 10px}.collapse-toggle:hover{background:#f3f4f6}.account-panel.collapsed,.collapsible-panel.collapsed{display:none}.account-scroll{max-height:320px;overflow:auto}.relogin-btn{margin-left:100px;padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;font-size:12px}.relogin-btn:hover{background:#e5e7eb}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1180px;margin:18px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}.top{display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}.box{border:1px solid #e8e8e8;border-radius:10px;padding:10px}input,select,button,textarea{font:inherit;padding:9px 10px;border-radius:8px}input,select,textarea{border:1px solid #ccc;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.blue{background:#1677ff}.green{background:#15803d}.gray{background:#6b7280}.red{background:#b91c1c}.muted{font-size:13px;color:#666}.ok{color:#15803d}.warn{color:#b45309}.bad{color:#b91c1c}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}th{background:#fafafa;font-weight:600}.account-table th:first-child,.account-table td:first-child{width:42px;text-align:center}.account-table th:nth-child(2),.account-table td:nth-child(2){width:54px;text-align:center}.account-table tbody tr:hover{background:#fafafa}.account-table input[type=checkbox]{width:16px;height:16px;min-width:0;margin:0}.scroll{overflow:auto;max-height:58vh}a{color:#1677ff;text-decoration:none}.log{background:#111;color:#ddd;border-radius:10px;padding:10px;min-height:130px;max-height:260px;overflow:auto;font-family:Consolas,monospace;font-size:12px;white-space:pre-wrap}.pill{display:inline-block;border-radius:999px;padding:2px 8px;background:#eef2ff;font-size:12px}.fatal{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;border-radius:10px;padding:10px;margin-bottom:12px;display:none}.login-ok{color:#15803d;font-weight:600}.login-relogin{color:#9ca3af;font-weight:600}.collapse-toggle{background:transparent;color:#444;border:1px solid #ddd;padding:5px 10px}.collapse-toggle:hover{background:#f3f4f6}.account-panel.collapsed,.collapsible-panel.collapsed{display:none}.account-scroll{max-height:320px;overflow:auto}.relogin-btn{margin-left:100px;padding:4px 8px;background:#f3f4f6;color:#374151;border:1px solid #d1d5db;font-size:12px}.relogin-btn:hover{background:#e5e7eb}.task-action{padding:5px 9px;margin-right:6px;font-size:12px}
 `;
 
 const clientCommon = String.raw`
@@ -347,7 +413,7 @@ function userPage() {
 <div id="fatal" class="fatal"></div>
 <div class="card"><div class="row"><div><div class="muted">API Token</div><input id="token" type="password"></div><div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A"></div><button id="connect">连接</button><button class="blue" id="add">＋ 添加账号</button></div><div id="health" class="muted" style="margin-top:10px">未连接</div></div>
 <div class="card"><div class="top"><div style="display:flex;gap:8px;align-items:center"><h2 style="margin:0">当前可执行账号</h2><span id="accountCount" class="pill">0</span></div><button id="toggleAccounts" class="collapse-toggle" type="button">收起 ▲</button></div><div id="accountPanel" class="account-panel"><div class="account-scroll"><table class="account-table"><thead><tr><th><input id="selectAllAccounts" type="checkbox" title="全选"></th><th>No</th><th>用户ID</th><th>用户名</th><th>登录状态</th></tr></thead><tbody id="accounts"><tr><td colspan="5" class="muted">请先连接</td></tr></tbody></table></div><div class="row" style="margin-top:12px"><div><div class="muted">Loop 回数</div><input id="loops" type="number" min="1" max="20" value="1" style="width:80px"></div><button class="green" id="claim">领取任务</button></div><div class="muted" style="margin-top:8px">当前版本领取后生成待处理队列，帖子由用户打开后处理并标记结果。</div></div></div>
-<div class="card"><div class="top"><h2 style="margin:0">执行结果 / 我的任务</h2><button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button></div><div id="tasksPanel" class="collapsible-panel"><div class="scroll"><table><thead><tr><th>账号</th><th>状态</th><th>帖子</th><th>备注</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div></div>
+<div class="card"><div class="top"><h2 style="margin:0">执行结果 / 我的任务</h2><button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button></div><div id="tasksPanel" class="collapsible-panel"><div class="scroll"><table><thead><tr><th>账号</th><th>执行状态</th><th>操作</th></tr></thead><tbody id="tasks"></tbody></table></div></div></div>
 <div class="card"><div class="top"><h2 style="margin:0">执行 Log</h2><button id="toggleLog" class="collapse-toggle" type="button">收起 ▲</button></div><div id="logPanel" class="collapsible-panel"><div id="log" class="log"></div></div></div>
 </div><script>${clientCommon}
 (function(){
@@ -363,9 +429,9 @@ function userPage() {
 
   async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';var loginTd=document.createElement('td');var login=document.createElement('span');login.className=item.initialized?'login-ok':'login-relogin';login.textContent=item.initialized?'● 已登录':'● 需重新登录';loginTd.appendChild(login);var relogin=document.createElement('button');relogin.type='button';relogin.className='relogin-btn relogin-account';relogin.dataset.account=item.name;relogin.textContent='再次登录';loginTd.appendChild(relogin);tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);tr.appendChild(loginTd);body.appendChild(tr)})}
 
-  function resultButton(taskId,status,text,className){var button=document.createElement('button');button.className=className;button.textContent=text;button.dataset.taskId=taskId;button.dataset.status=status;button.classList.add('task-result');return button}
+  function taskActionButton(account,action,text,className){var button=document.createElement('button');button.className='task-action '+className;button.type='button';button.textContent=text;button.dataset.account=account;button.dataset.action=action;return button}
 
-  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var c1=document.createElement('td');c1.textContent=item.account||'-';var c2=document.createElement('td');c2.textContent=item.assignment_status||item.status||'-';var c3=document.createElement('td');var a=document.createElement('a');a.target='_blank';a.rel='noopener';a.href=item.post_link;a.textContent='打开帖子';c3.appendChild(a);if(item.post_text){c3.appendChild(document.createElement('br'));var s=document.createElement('span');s.className='muted';s.textContent=item.post_text;c3.appendChild(s)}var c4=document.createElement('td');c4.textContent=item.note||'';var c5=document.createElement('td');if(item.assignment_status==='CLAIMED'){c5.appendChild(resultButton(item.task_id,'DONE','完成','green'));c5.appendChild(document.createTextNode(' '));c5.appendChild(resultButton(item.task_id,'SKIPPED','跳过','gray'))}else{c5.textContent='-'}[c1,c2,c3,c4,c5].forEach(function(td){tr.appendChild(td)});body.appendChild(tr)})}
+  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="3" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var account=document.createElement('td');account.textContent=item.account||'-';var progress=document.createElement('td');progress.textContent=String(item.progress_count||0)+'/'+String(item.target_count||20);var actions=document.createElement('td');if(Number(item.running_count||0)>0){actions.appendChild(taskActionButton(item.account,'interrupt','中断','gray'))}actions.appendChild(taskActionButton(item.account,'complete','已完成','green'));actions.appendChild(taskActionButton(item.account,'delete','删除','red'));tr.appendChild(account);tr.appendChild(progress);tr.appendChild(actions);body.appendChild(tr)})}
 
   async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:'online'})})}catch(_){}}
 
@@ -380,7 +446,7 @@ function userPage() {
   initCollapse('toggleTasks','tasksPanel','caTasksCollapsed');
   initCollapse('toggleLog','logPanel','caLogCollapsed');
   byId('claim').addEventListener('click',async function(){var accounts=Array.prototype.map.call(document.querySelectorAll('.acct:checked'),function(x){return x.value});var loops=Number(byId('loops').value||1);try{var data=await api('/api/tasks/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('领取任务 '+data.count+' 条，账号='+accounts.join(',')+'，Loop='+loops);await loadTasks()}catch(e){alert(e.message);log('领取失败：'+e.message)}});
-  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-result');if(!button)return;try{await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/result',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:button.dataset.status})});log('任务 '+button.dataset.taskId+' → '+button.dataset.status);await loadTasks()}catch(err){alert(err.message)}});
+  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-action');if(!button)return;var action=button.dataset.action;var account=button.dataset.account;if(action==='delete'&&!confirm('确定删除 '+account+' 的任务记录？未完成任务会释放回任务池。'))return;if(action==='interrupt'&&!confirm('确定中断 '+account+' 当前任务？'))return;button.disabled=true;try{await api('/api/my-tasks/'+encodeURIComponent(account)+'/action',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),action:action})});log('账号 '+account+' → '+action);await loadTasks()}catch(err){alert(err.message);log('任务操作失败：'+err.message)}finally{button.disabled=false}});
 
   if(tokenEl.value)connect();
   setInterval(function(){if(tokenEl.value){heartbeat();loadTasks().catch(function(){})}},15000);
