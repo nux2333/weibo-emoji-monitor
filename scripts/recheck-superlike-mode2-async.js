@@ -112,7 +112,7 @@ function getDeleteThreshold(post) {
 function getNextMinutes(count) { count = Number(count) || 0; if (count >= 18) return 0.25; if (count >= 15) return 0.5; if (count >= 10) return 1; return 5; }
 
 async function getCandidates() {
-  const r = await pool.query(`SELECT p.id,p.monitor_id,p.post_id,p.uid,p.username,p.post_link,p.comments_count,p.experience_7d,p.initial_comments_count,p.comment_last_checked_at,p.comment_next_check_at,m.url AS monitor_url FROM superlike_posts p JOIN monitors m ON m.id=p.monitor_id WHERE p.post_id IS NOT NULL AND p.post_id<>'' AND CAST(p.first_seen_at AS date) >= ((CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date - 2) AND CAST(p.first_seen_at AS date) <= (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date AND p.comments_count < 21 AND (p.comment_next_check_at IS NULL OR CAST(p.comment_next_check_at AS timestamp) <= CURRENT_TIMESTAMP) AND NOT EXISTS(SELECT 1 FROM superlike_users su WHERE su.uid=p.uid) AND NOT EXISTS(SELECT 1 FROM superlike_daily_excluded_users deu WHERE deu.monitor_id=p.monitor_id AND deu.uid=p.uid AND deu.exclude_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text) ORDER BY CASE WHEN p.experience_7d>=79 THEN 5 WHEN p.experience_7d>=77 THEN 10 WHEN p.experience_7d>=74 THEN 15 WHEN p.experience_7d>=70 THEN 20 ELSE 999 END ASC, p.experience_7d DESC NULLS LAST, p.comments_count DESC, CASE WHEN p.comment_last_checked_at IS NULL THEN 0 ELSE 1 END, CAST(p.comment_last_checked_at AS timestamp) ASC NULLS FIRST, p.id DESC`);
+  const r = await pool.query(`SELECT p.id,p.monitor_id,p.post_id,p.uid,p.username,p.post_link,p.comments_count,p.experience_7d,p.initial_comments_count,p.comment_last_checked_at,p.comment_next_check_at,m.url AS monitor_url FROM superlike_posts p JOIN monitors m ON m.id=p.monitor_id WHERE p.post_id IS NOT NULL AND p.post_id<>'' AND CAST(p.inserted_at AS date) = (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date AND p.experience_7d > 70 AND p.comments_count < 21 AND (p.comment_next_check_at IS NULL OR CAST(p.comment_next_check_at AS timestamp) <= CURRENT_TIMESTAMP) AND NOT EXISTS(SELECT 1 FROM superlike_users su WHERE su.uid=p.uid) AND NOT EXISTS(SELECT 1 FROM superlike_daily_excluded_users deu WHERE deu.monitor_id=p.monitor_id AND deu.uid=p.uid AND deu.exclude_date=(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date::text) ORDER BY CASE WHEN p.experience_7d>=79 THEN 5 WHEN p.experience_7d>=77 THEN 10 WHEN p.experience_7d>=74 THEN 15 ELSE 20 END ASC, p.experience_7d DESC NULLS LAST, p.comments_count DESC, CASE WHEN p.comment_last_checked_at IS NULL THEN 0 ELSE 1 END, CAST(p.comment_last_checked_at AS timestamp) ASC NULLS FIRST, p.id DESC`);
   return r.rows;
 }
 
@@ -163,7 +163,7 @@ async function graduate(post, reason) {
 async function mapLimit(items,limit,fn){const out=new Array(items.length);let cursor=0;async function worker(){while(true){const i=cursor++;if(i>=items.length)return;out[i]=await fn(items[i],i);}}await Promise.all(Array.from({length:Math.min(limit,items.length)},worker));return out;}
 
 async function runRound(round){
-  const started=Date.now(); const posts=await getCandidates(); console.log(`\n[模式2] ===== Proxy-Session HTTP 第${round}轮 | 到期帖子=${posts.length} =====`); logMemory('ROUND_START'); if(!posts.length)return Date.now()-started;
+  const started=Date.now(); const posts=await getCandidates(); console.log(`\n[模式2] ===== Proxy-Session HTTP 第${round}轮 | 到期帖子=${posts.length} | 条件=inserted_at今天+jyz>70 =====`); logMemory('ROUND_START'); if(!posts.length)return Date.now()-started;
   await ensureSession();
   const results=await mapLimit(posts,HTTP_CONCURRENCY,async(post,index)=>{
     const comments=await withSessionRetry(`UID=${post.uid} Post=${post.post_id}`,s=>requestComments(post,s));
@@ -180,7 +180,7 @@ async function main(){
   if(!process.env.DATABASE_URL)throw new Error('缺少 DATABASE_URL');
   createBatchLogger('recheck-superlike','mode2');
   console.log('[模式2] 统一恢复策略：健康代理 → Chromium取Cookie → 同代理HTTP；4xx/5xx、网络错误、Session/Context/Browser关闭、Playwright timeout、visitor 都自动轮换代理+Session');
-  console.log(`[模式2] HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认`);
+  console.log(`[模式2] 查询范围=inserted_at今天 + experience_7d>70 | HTTP并发=${HTTP_CONCURRENCY} | 代理重试=${SESSION_PROXY_RETRIES} | round=${ROUND_INTERVAL_MS/1000}s | 动态阈值=6/11/16/21 + allbadge确认`);
   let round=0;
   while(true){round++;try{const elapsed=await runRound(round);await sleep(Math.max(0,ROUND_INTERVAL_MS-elapsed));}catch(e){console.error(`[模式2] 第${round}轮异常：`,e);await sleep(Math.min(ROUND_INTERVAL_MS,15000));}}
 }
