@@ -27,7 +27,7 @@ initDatabase();
 db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
   account TEXT NOT NULL,
   post_id TEXT NOT NULL,
-  commented_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  commented_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
   PRIMARY KEY (account, post_id)
 )`);
 
@@ -40,8 +40,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_tasks (
   priority INTEGER NOT NULL DEFAULT 0,
   status TEXT NOT NULL DEFAULT 'OPEN',
   created_by TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
 )`);
 
 db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_task_assignments (
@@ -49,7 +49,7 @@ db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_task_assignments (
   worker_id TEXT NOT NULL,
   account TEXT,
   status TEXT NOT NULL DEFAULT 'CLAIMED',
-  claimed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  claimed_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
   completed_at TIMESTAMP,
   result TEXT
 )`);
@@ -220,8 +220,8 @@ app.post('/api/tasks/claim', userAuth, (req, res) => {
     try {
       db.prepare(`INSERT INTO comment_assistant_task_assignments
         (task_id, worker_id, account, status, claimed_at)
-        VALUES (?, ?, ?, 'CLAIMED', CURRENT_TIMESTAMP)`).run(task.task_id, worker, account);
-      db.prepare(`UPDATE comment_assistant_tasks SET status = 'CLAIMED', updated_at = CURRENT_TIMESTAMP
+        VALUES (?, ?, ?, 'CLAIMED', LOCALTIMESTAMP)`).run(task.task_id, worker, account);
+      db.prepare(`UPDATE comment_assistant_tasks SET status = 'CLAIMED', updated_at = LOCALTIMESTAMP
         WHERE task_id = ? AND status = 'OPEN'`).run(task.task_id);
       claimed.push({ ...task, account });
     } catch (_) {
@@ -245,9 +245,9 @@ app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
   if (!assignment) return res.status(404).json({ success: false, message: '任务不属于当前 Worker' });
 
   db.prepare(`UPDATE comment_assistant_task_assignments
-    SET status = ?, result = ?, completed_at = CURRENT_TIMESTAMP
+    SET status = ?, result = ?, completed_at = LOCALTIMESTAMP
     WHERE task_id = ? AND worker_id = ?`).run(status, result, taskId, worker);
-  db.prepare(`UPDATE comment_assistant_tasks SET status = ?, updated_at = CURRENT_TIMESTAMP
+  db.prepare(`UPDATE comment_assistant_tasks SET status = ?, updated_at = LOCALTIMESTAMP
     WHERE task_id = ?`).run(status, taskId);
   res.json({ success: true });
 });
@@ -285,7 +285,7 @@ app.post('/api/admin/tasks', adminAuth, (req, res) => {
 
 app.post('/api/admin/tasks/:taskId/cancel', adminAuth, (req, res) => {
   const taskId = String(req.params.taskId || '').trim();
-  db.prepare(`UPDATE comment_assistant_tasks SET status = 'CANCELLED', updated_at = CURRENT_TIMESTAMP WHERE task_id = ?`).run(taskId);
+  db.prepare(`UPDATE comment_assistant_tasks SET status = 'CANCELLED', updated_at = LOCALTIMESTAMP WHERE task_id = ?`).run(taskId);
   res.json({ success: true });
 });
 
