@@ -84,10 +84,35 @@ function hasProfileData(profileDir) {
   ].some(file => fs.existsSync(file));
 }
 
+function readAccountMeta(profileDir) {
+  const file = path.join(profileDir, 'account-meta.json');
+  try {
+    if (!fs.existsSync(file)) return {};
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return {
+      uid: data?.uid ? String(data.uid) : null,
+      username: data?.username ? String(data.username).trim() : null
+    };
+  } catch (_) {
+    return {};
+  }
+}
+
+function accountInfo(name, profileDir, legacy) {
+  const meta = readAccountMeta(profileDir);
+  return {
+    name,
+    uid: meta.uid || null,
+    username: meta.username || null,
+    legacy: Boolean(legacy),
+    initialized: hasProfileData(profileDir)
+  };
+}
+
 function listAccounts() {
   const result = [];
   if (fs.existsSync(LEGACY_PROFILE_DIR)) {
-    result.push({ name: 'default', username: null, legacy: true, initialized: hasProfileData(LEGACY_PROFILE_DIR) });
+    result.push(accountInfo('default', LEGACY_PROFILE_DIR, true));
   }
   try {
     const names = fs.readdirSync(PROFILE_ROOT, { withFileTypes: true })
@@ -95,7 +120,8 @@ function listAccounts() {
       .map(entry => entry.name)
       .sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' }));
     for (const name of names) {
-      result.push({ name, username: null, legacy: false, initialized: hasProfileData(path.join(PROFILE_ROOT, name)) });
+      const dir = path.join(PROFILE_ROOT, name);
+      result.push(accountInfo(name, dir, false));
     }
   } catch (error) {
     console.warn(`[Comment Assistant] 读取账号目录失败：${error.message}`);
@@ -110,7 +136,7 @@ function createAccount(name) {
   const dir = path.join(PROFILE_ROOT, safe);
   if (fs.existsSync(dir)) throw new Error(`账号 ${safe} 已存在`);
   fs.mkdirSync(dir, { recursive: true });
-  return { name: safe, username: null, legacy: false, initialized: false };
+  return { name: safe, uid: null, username: null, legacy: false, initialized: false };
 }
 
 function launchAccountLogin(name) {
@@ -336,21 +362,30 @@ app.get('/api/available-tasks', userAuth, (req, res) => {
 app.get('/api/my-tasks', userAuth, (req, res) => {
   const worker = workerKey(req.query.worker);
   if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
+  const accountMap = new Map(listAccounts().map(item => [item.name, item]));
   const rows = db.prepare(`SELECT
       a.account,
       COUNT(*) AS assigned_count,
       SUM(CASE WHEN a.status = 'DONE' THEN 1 ELSE 0 END) AS completed_count,
       SUM(CASE WHEN a.status = 'CLAIMED' THEN 1 ELSE 0 END) AS running_count,
       SUM(CASE WHEN a.status = 'SKIPPED' THEN 1 ELSE 0 END) AS interrupted_count,
+      SUM(CASE WHEN t.created_by = ? THEN 1 ELSE 0 END) AS default_task_count,
       MAX(a.claimed_at) AS last_claimed_at
     FROM comment_assistant_task_assignments a
+    JOIN comment_assistant_tasks t ON t.task_id = a.task_id
     WHERE a.worker_id = ?
     GROUP BY a.account
-    ORDER BY MAX(a.claimed_at) DESC`).all(worker).map(row => ({
-      ...row,
-      target_count: TASK_TARGET_PER_ACCOUNT,
-      progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
-    }));
+    ORDER BY MAX(a.claimed_at) DESC`).all(DEFAULT_TASK_ID, worker).map(row => {
+      const account = accountMap.get(row.account) || {};
+      return {
+        ...row,
+        uid: account.uid || null,
+        username: account.username || row.account,
+        task_name: Number(row.default_task_count || 0) > 0 ? DEFAULT_TASK_NAME : '自定义任务',
+        target_count: TASK_TARGET_PER_ACCOUNT,
+        progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
+      };
+    });
   res.json({ success: true, data: rows });
 });
 
@@ -568,9 +603,9 @@ function userPage() {
     <div class="card">
         <div class="top">
             <h2 style="margin: 0">任务列表</h2>
-            <button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button>
+            <button id="toggleAvailableTasks" class="collapse-toggle" type="button">收起 ▲</button>
         </div>
-        <div id="tasksPanel" class="collapsible-panel">
+        <div id="availableTasksPanel" class="collapsible-panel">
             <div class="scroll">
                 <table class="task-catalog">
                     <thead>
@@ -592,9 +627,9 @@ function userPage() {
     <div class="card">
         <div class="top">
             <h2 style="margin: 0">执行结果</h2>
-            <button id="toggleTasks" class="collapse-toggle" type="button">收起 ▲</button>
+            <button id="toggleResults" class="collapse-toggle" type="button">收起 ▲</button>
         </div>
-        <div id="tasksPanel" class="collapsible-panel">
+        <div id="resultsPanel" class="collapsible-panel">
             <div class="scroll">
                 <table>
                     <thead>
@@ -627,15 +662,15 @@ function userPage() {
 
   function log(message){var el=byId('log');el.textContent+='['+new Date().toLocaleTimeString()+'] '+message+'\\n';el.scrollTop=el.scrollHeight}
   async function api(url,opt){opt=opt||{};var r=await fetch(url,Object.assign({},opt,{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tokenEl.value.trim()},opt.headers||{})}));var j;try{j=await r.json()}catch(_){j={success:false,message:'HTTP '+r.status}}if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
-  function initCollapse(buttonId,panelId,storageKey){var button=byId(buttonId);var panel=byId(panelId);function apply(collapsed){panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'展开 ▼':'收起 ▲'}var initial=localStorage.getItem(storageKey)==='1';apply(initial);button.addEventListener('click',function(){var collapsed=!panel.classList.contains('collapsed');apply(collapsed);localStorage.setItem(storageKey,collapsed?'1':'0')})}
+  function initCollapse(buttonId,panelId,storageKey){var button=byId(buttonId);var panel=byId(panelId);if(!button||!panel)return;function apply(collapsed){panel.classList.toggle('collapsed',collapsed);button.textContent=collapsed?'展开 ▼':'收起 ▲'}var initial=localStorage.getItem(storageKey)==='1';apply(initial);button.addEventListener('click',function(){var collapsed=!panel.classList.contains('collapsed');apply(collapsed);localStorage.setItem(storageKey,collapsed?'1':'0')})}
   function selectedAccounts(){return Array.prototype.map.call(document.querySelectorAll('.acct:checked'),function(x){return x.value})}
 
-  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';var loginTd=document.createElement('td');var login=document.createElement('span');login.className=item.initialized?'login-ok':'login-relogin';login.textContent=item.initialized?'● 已登录':'● 需重新登录';loginTd.appendChild(login);var relogin=document.createElement('button');relogin.type='button';relogin.className='relogin-btn relogin-account';relogin.dataset.account=item.name;relogin.textContent='再次登录';loginTd.appendChild(relogin);tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);tr.appendChild(loginTd);body.appendChild(tr)})}
+  async function loadAccounts(){var list=await api('/api/accounts');byId('accountCount').textContent=String(list.length);var body=byId('accounts');body.innerHTML='';byId('selectAllAccounts').checked=false;if(!list.length){body.innerHTML='<tr><td colspan="5" class="muted">暂无账号</td></tr>';return}list.forEach(function(item,index){var tr=document.createElement('tr');var checkTd=document.createElement('td');var checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.className='acct';checkbox.value=item.name;checkTd.appendChild(checkbox);var noTd=document.createElement('td');noTd.textContent=String(index+1);var idTd=document.createElement('td');idTd.textContent=item.uid||item.name;var usernameTd=document.createElement('td');usernameTd.textContent=item.username||'-';var loginTd=document.createElement('td');var login=document.createElement('span');login.className=item.initialized?'login-ok':'login-relogin';login.textContent=item.initialized?'● 已登录':'● 需重新登录';loginTd.appendChild(login);var relogin=document.createElement('button');relogin.type='button';relogin.className='relogin-btn relogin-account';relogin.dataset.account=item.name;relogin.textContent='再次登录';loginTd.appendChild(relogin);tr.appendChild(checkTd);tr.appendChild(noTd);tr.appendChild(idTd);tr.appendChild(usernameTd);tr.appendChild(loginTd);body.appendChild(tr)})}
 
   async function loadAvailableTasks(){var list=await api('/api/available-tasks');var body=byId('availableTasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="3" class="muted">暂无可领取任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');if(item.kind==='builtin')tr.className='builtin-task';var name=document.createElement('td');name.textContent=item.name||item.task_id;var note=document.createElement('td');note.textContent=item.note||'-';var action=document.createElement('td');var button=document.createElement('button');button.className='task-claim claim-task';button.type='button';button.dataset.taskId=item.task_id;button.textContent='领取任务';action.appendChild(button);tr.appendChild(name);tr.appendChild(note);tr.appendChild(action);body.appendChild(tr)})}
 
   function taskActionButton(account,action,text,className){var button=document.createElement('button');button.className='task-action '+className;button.type='button';button.textContent=text;button.dataset.account=account;button.dataset.action=action;return button}
-  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="3" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var account=document.createElement('td');account.textContent=item.account||'-';var progress=document.createElement('td');progress.textContent=String(item.progress_count||0)+'/'+String(item.target_count||20);var actions=document.createElement('td');if(Number(item.running_count||0)>0){actions.appendChild(taskActionButton(item.account,'interrupt','中断','gray'))}actions.appendChild(taskActionButton(item.account,'complete','已完成','green'));actions.appendChild(taskActionButton(item.account,'delete','删除','red'));tr.appendChild(account);tr.appendChild(progress);tr.appendChild(actions);body.appendChild(tr)})}
+  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="4" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var account=document.createElement('td');account.textContent=item.username||item.account||'-';if(item.uid&&item.uid!==item.account){var small=document.createElement('div');small.className='muted';small.textContent='UID: '+item.uid;account.appendChild(small)}var taskName=document.createElement('td');taskName.textContent=item.task_name||'-';var progress=document.createElement('td');progress.textContent=String(item.progress_count||0)+'/'+String(item.target_count||20);var actions=document.createElement('td');if(Number(item.running_count||0)>0){actions.appendChild(taskActionButton(item.account,'interrupt','中断','gray'))}actions.appendChild(taskActionButton(item.account,'complete','已完成','green'));actions.appendChild(taskActionButton(item.account,'delete','删除','red'));tr.appendChild(account);tr.appendChild(taskName);tr.appendChild(progress);tr.appendChild(actions);body.appendChild(tr)})}
 
   async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:'online'})})}catch(_){}}
   async function connect(){sessionStorage.setItem('caToken',tokenEl.value.trim());localStorage.setItem('caWorker',workerEl.value.trim());try{var h=await api('/api/health');byId('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts+' | Workers='+h.workers;await loadAccounts();await loadAvailableTasks();await loadTasks();await heartbeat();log('连接成功')}catch(e){byId('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
@@ -648,7 +683,8 @@ function userPage() {
   byId('availableTasks').addEventListener('click',async function(e){var button=e.target.closest('.claim-task');if(!button)return;var accounts=selectedAccounts();var loops=Number(byId('loops').value||1);if(!accounts.length){alert('请先在“当前可执行账号”里选择至少一个账号');return}button.disabled=true;var old=button.textContent;button.textContent='领取中...';try{var data=await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('任务 '+button.dataset.taskId+' 领取 '+data.count+' 条 | 账号='+accounts.join(',')+' | Loop='+loops);await loadAvailableTasks();await loadTasks()}catch(err){alert(err.message);log('领取任务失败：'+err.message)}finally{button.disabled=false;button.textContent=old}});
   byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-action');if(!button)return;var action=button.dataset.action;var account=button.dataset.account;if(action==='delete'&&!confirm('确定删除 '+account+' 的任务记录？未完成任务会释放回任务池。'))return;if(action==='interrupt'&&!confirm('确定中断 '+account+' 当前任务？'))return;button.disabled=true;try{await api('/api/my-tasks/'+encodeURIComponent(account)+'/action',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),action:action})});log('账号 '+account+' → '+action);await loadTasks()}catch(err){alert(err.message);log('任务操作失败：'+err.message)}finally{button.disabled=false}});
   initCollapse('toggleAccounts','accountPanel','caAccountsCollapsed');
-  initCollapse('toggleTasks','tasksPanel','caTasksCollapsed');
+  initCollapse('toggleAvailableTasks','availableTasksPanel','caAvailableTasksCollapsed');
+  initCollapse('toggleResults','resultsPanel','caResultsCollapsed');
   initCollapse('toggleLog','logPanel','caLogCollapsed');
   if(tokenEl.value)connect();
   setInterval(function(){if(tokenEl.value){heartbeat();loadAvailableTasks().catch(function(){});loadTasks().catch(function(){})}},15000);
