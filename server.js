@@ -948,35 +948,35 @@ const PM2_CLI_SCRIPT = findPm2CliScript();
 const SCRIPT_DEFINITIONS = [
   {
     key: 'fresh-latest',
-    name: '最新发帖',
+    name: '最新发帖扫描',
     pm2Name: 'scan-fresh-latest',
     description: 'Fresh：最新发帖总流',
     group: 'scan'
   },
   {
     key: 'fresh-superlike',
-    name: '超like分区',
+    name: '超like分区扫描',
     pm2Name: 'scan-fresh-superlike',
     description: 'Fresh：超like分区',
     group: 'scan'
   },
   {
     key: 'fresh-yishanshui',
-    name: '一善水区',
+    name: '一善水区扫描',
     pm2Name: 'scan-fresh-yishanshui',
     description: 'Fresh：一善水区',
     group: 'scan'
   },
   {
     key: 'fresh-qa',
-    name: '答疑专区',
+    name: '答疑专区扫描',
     pm2Name: 'scan-fresh-qa',
     description: 'Fresh：答疑专区',
     group: 'scan'
   },
   {
     key: 'history',
-    name: 'History补扫',
+    name: 'History补充扫描',
     pm2Name: 'scan-history',
     description: '仅补最近48小时历史Resume',
     group: 'scan'
@@ -990,14 +990,14 @@ const SCRIPT_DEFINITIONS = [
   },
   {
     key: 'mode2',
-    name: 'Mode2',
+    name: 'Mode2 评论双队列（HOT 18-20每30秒独立；NORMAL 0-17按到期轮询；>=21删除）',
     pm2Name: 'superlike-mode2',
     description: '手动复检 Mode2',
     group: 'recheck'
   },
   {
     key: 'mode3',
-    name: 'Mode3',
+    name: 'Mode3全量UID分批轮询（jyz最高优先；只查询当天的>=70分的用户 变超like了立马删除）',
     pm2Name: 'superlike-mode3',
     description: '手动复检 Mode3',
     group: 'recheck'
@@ -1014,6 +1014,13 @@ const SCRIPT_DEFINITIONS = [
     name: '补经验值',
     pm2Name: 'superlike-jyz',
     description: '24小时补experience_7d；>=80自动清理候选',
+    group: 'service'
+  },
+  {
+    key: 'stale-refresh',
+    name: '旧帖刷新',
+    pm2Name: 'refresh-stale-superlike-posts',
+    description: '刷新前天及更早的旧帖；检查超LIKE、经验值并替换最新帖',
     group: 'service'
   },
   {
