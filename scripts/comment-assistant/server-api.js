@@ -18,6 +18,7 @@ const ADMIN_TOKEN = String(process.env.COMMENT_ADMIN_TOKEN || '').trim();
 const WORKER_TTL_MS = Math.max(30_000, Number(process.env.COMMENT_WORKER_TTL_MS || 2 * 60_000));
 const DEFAULT_TASK_ID = 'builtin-random-high-exp';
 const DEFAULT_TASK_NAME = '随机高经验值用户轮询';
+const DEFAULT_WORKER_ID = 'default';
 const TASK_TARGET_PER_ACCOUNT = 20;
 
 if (!TOKEN) {
@@ -380,12 +381,11 @@ app.post('/api/accounts/:name/login', userAuth, (req, res) => {
 });
 
 app.post('/api/heartbeat', userAuth, (req, res) => {
-  const worker = touchWorker(req.body?.worker, {
+  const worker = touchWorker(req.body?.worker || DEFAULT_WORKER_ID, {
     account: req.body?.account,
     status: req.body?.status,
     note: req.body?.note
   });
-  if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
   res.json({ success: true, data: worker });
 });
 
@@ -394,8 +394,7 @@ app.get('/api/available-tasks', userAuth, (req, res) => {
 });
 
 app.get('/api/my-tasks', userAuth, (req, res) => {
-  const worker = workerKey(req.query.worker);
-  if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
+  const worker = workerKey(req.query.worker || DEFAULT_WORKER_ID);
   const accountMap = new Map(listAccounts().map(item => [item.name, item]));
   const rows = db.prepare(`SELECT
       a.account,
@@ -425,10 +424,10 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
 
 app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
   try {
-    const worker = workerKey(req.body?.worker);
+    const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
     const account = sanitizeAccount(req.params.account);
     const action = String(req.body?.action || '').trim().toLowerCase();
-    if (!worker || !account) return res.status(400).json({ success: false, message: 'worker/account required' });
+    if (!account) return res.status(400).json({ success: false, message: 'account required' });
     if (!['interrupt', 'complete', 'delete'].includes(action)) {
       return res.status(400).json({ success: false, message: 'invalid action' });
     }
@@ -482,10 +481,9 @@ app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
 app.post('/api/tasks/:taskId/claim', userAuth, (req, res) => {
   try {
     const taskId = String(req.params.taskId || '').trim();
-    const worker = workerKey(req.body?.worker);
+    const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
     const accounts = Array.isArray(req.body?.accounts) ? req.body.accounts.map(sanitizeAccount).filter(Boolean) : [];
     const loops = Math.max(1, Math.min(Number(req.body?.loops || 1), 20));
-    if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
     if (!accounts.length) return res.status(400).json({ success: false, message: '至少选择一个账号' });
 
     const data = taskId === DEFAULT_TASK_ID
@@ -498,20 +496,19 @@ app.post('/api/tasks/:taskId/claim', userAuth, (req, res) => {
 });
 
 app.post('/api/tasks/claim', userAuth, (req, res) => {
-  const worker = workerKey(req.body?.worker);
+  const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
   const accounts = Array.isArray(req.body?.accounts) ? req.body.accounts.map(sanitizeAccount).filter(Boolean) : [];
   const loops = Math.max(1, Math.min(Number(req.body?.loops || 1), 20));
-  if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
   if (!accounts.length) return res.status(400).json({ success: false, message: '至少选择一个账号' });
   res.json({ success: true, data: claimBuiltinRandomHighExp(worker, accounts, loops) });
 });
 
 app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
   const taskId = String(req.params.taskId || '').trim();
-  const worker = workerKey(req.body?.worker);
+  const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
   const status = normalizeStatus(req.body?.status);
   const result = String(req.body?.result || '').trim().slice(0, 1000);
-  if (!worker || !taskId) return res.status(400).json({ success: false, message: 'worker/taskId required' });
+  if (!taskId) return res.status(400).json({ success: false, message: 'taskId required' });
   if (!['DONE', 'SKIPPED'].includes(status)) return res.status(400).json({ success: false, message: 'status must be DONE or SKIPPED' });
 
   const assignment = db.prepare(`SELECT task_id, account FROM comment_assistant_task_assignments
@@ -587,7 +584,6 @@ function userPage() {
     <div class="card">
         <div class="row">
             <div><div class="muted">API Token</div><input id="token" type="password" /></div>
-            <div><div class="muted">本机名称</div><input id="worker" placeholder="例如 PC-A" /></div>
             <button id="connect">连接</button><button class="blue" id="add">＋ 添加账号</button>
         </div>
         <div id="health" class="muted" style="margin-top: 10px">未连接</div>
@@ -606,9 +602,8 @@ function userPage() {
 <script>${clientCommon}
 (function(){
   var tokenEl=byId('token');
-  var workerEl=byId('worker');
+  var workerId='${DEFAULT_WORKER_ID}';
   tokenEl.value=sessionStorage.getItem('caToken')||'';
-  workerEl.value=localStorage.getItem('caWorker')||('PC-'+Math.random().toString(36).slice(2,6));
 
   function log(message){var el=byId('log');el.textContent+='['+new Date().toLocaleTimeString()+'] '+message+'\\n';el.scrollTop=el.scrollHeight}
   async function api(url,opt){opt=opt||{};var r=await fetch(url,Object.assign({},opt,{headers:Object.assign({'Content-Type':'application/json','Authorization':'Bearer '+tokenEl.value.trim()},opt.headers||{})}));var j;try{j=await r.json()}catch(_){j={success:false,message:'HTTP '+r.status}}if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
@@ -620,18 +615,18 @@ function userPage() {
   async function loadAvailableTasks(){var list=await api('/api/available-tasks');var body=byId('availableTasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="3" class="muted">暂无可领取任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');if(item.kind==='builtin')tr.className='builtin-task';var name=document.createElement('td');name.textContent=item.name||item.task_id;var note=document.createElement('td');note.textContent=item.note||'-';var action=document.createElement('td');var button=document.createElement('button');button.className='task-claim claim-task';button.type='button';button.dataset.taskId=item.task_id;button.textContent='领取任务';action.appendChild(button);tr.appendChild(name);tr.appendChild(note);tr.appendChild(action);body.appendChild(tr)})}
 
   function taskActionButton(account,action,text,className){var button=document.createElement('button');button.className='task-action '+className;button.type='button';button.textContent=text;button.dataset.account=account;button.dataset.action=action;return button}
-  async function loadTasks(){var worker=workerEl.value.trim();if(!worker)return;var list=await api('/api/my-tasks?worker='+encodeURIComponent(worker));var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="4" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var account=document.createElement('td');account.textContent=item.username||item.account||'-';if(item.uid&&item.uid!==item.account){var small=document.createElement('div');small.className='muted';small.textContent='UID: '+item.uid;account.appendChild(small)}var taskName=document.createElement('td');taskName.textContent=item.task_name||'-';var progress=document.createElement('td');progress.textContent=String(item.progress_count||0)+'/'+String(item.target_count||20);var actions=document.createElement('td');if(Number(item.running_count||0)>0){actions.appendChild(taskActionButton(item.account,'interrupt','中断','gray'))}actions.appendChild(taskActionButton(item.account,'complete','已完成','green'));actions.appendChild(taskActionButton(item.account,'delete','删除','red'));tr.appendChild(account);tr.appendChild(taskName);tr.appendChild(progress);tr.appendChild(actions);body.appendChild(tr)})}
+  async function loadTasks(){var list=await api('/api/my-tasks');var body=byId('tasks');body.innerHTML='';if(!list.length){body.innerHTML='<tr><td colspan="4" class="muted">暂无任务</td></tr>';return}list.forEach(function(item){var tr=document.createElement('tr');var account=document.createElement('td');account.textContent=item.username||item.account||'-';if(item.uid&&item.uid!==item.account){var small=document.createElement('div');small.className='muted';small.textContent='UID: '+item.uid;account.appendChild(small)}var taskName=document.createElement('td');taskName.textContent=item.task_name||'-';var progress=document.createElement('td');progress.textContent=String(item.progress_count||0)+'/'+String(item.target_count||20);var actions=document.createElement('td');if(Number(item.running_count||0)>0){actions.appendChild(taskActionButton(item.account,'interrupt','中断','gray'))}actions.appendChild(taskActionButton(item.account,'complete','已完成','green'));actions.appendChild(taskActionButton(item.account,'delete','删除','red'));tr.appendChild(account);tr.appendChild(taskName);tr.appendChild(progress);tr.appendChild(actions);body.appendChild(tr)})}
 
-  async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),status:'online'})})}catch(_){}}
-  async function connect(){sessionStorage.setItem('caToken',tokenEl.value.trim());localStorage.setItem('caWorker',workerEl.value.trim());try{var h=await api('/api/health');byId('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts+' | Workers='+h.workers;await loadAccounts();await loadAvailableTasks();await loadTasks();await heartbeat();log('连接成功')}catch(e){byId('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
+  async function heartbeat(){try{await api('/api/heartbeat',{method:'POST',body:JSON.stringify({worker:workerId,status:'online'})})}catch(_){}}
+  async function connect(){sessionStorage.setItem('caToken',tokenEl.value.trim());try{var h=await api('/api/health');byId('health').innerHTML='<span class="ok">● 已连接</span> | Host='+esc(h.host)+' | Accounts='+h.accounts;await loadAccounts();await loadAvailableTasks();await loadTasks();await heartbeat();log('连接成功')}catch(e){byId('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>';log('连接失败：'+e.message)}}
 
   byId('connect').addEventListener('click',connect);
   byId('add').addEventListener('click',async function(){var name=prompt('新微博账号名称');if(!name)return;try{var account=await api('/api/accounts',{method:'POST',body:JSON.stringify({name:name})});log('已创建账号目录：'+account.name);await loadAccounts();alert('账号目录已创建。可以直接点击该账号后的“再次登录”打开 Chromium 登录。')}catch(e){alert(e.message)}});
   byId('selectAllAccounts').addEventListener('change',function(){var checked=this.checked;document.querySelectorAll('.acct').forEach(function(x){x.checked=checked})});
   byId('accounts').addEventListener('change',function(){var all=document.querySelectorAll('.acct');var selected=document.querySelectorAll('.acct:checked');byId('selectAllAccounts').checked=all.length>0&&all.length===selected.length});
   byId('accounts').addEventListener('click',async function(e){var deleteButton=e.target.closest('.delete-account');if(deleteButton){var accountName=deleteButton.dataset.account;if(!confirm('确定删除用户 '+accountName+' 吗？这会删除本地登录 Profile，并清理该账号的任务分配和历史记录。'))return;deleteButton.disabled=true;try{var result=await api('/api/accounts/'+encodeURIComponent(accountName),{method:'DELETE'});log('已删除用户 '+result.account+'，清理任务='+result.released_tasks);await loadAccounts();await loadTasks()}catch(err){alert(err.message);log('删除用户失败：'+err.message)}return}var button=e.target.closest('.relogin-account');if(!button)return;button.disabled=true;var oldText=button.textContent;button.textContent='正在打开...';try{var data=await api('/api/accounts/'+encodeURIComponent(button.dataset.account)+'/login',{method:'POST',body:'{}'});log('已打开 '+data.account+' 的 Chromium 登录窗口');setTimeout(function(){loadAccounts().catch(function(){})},3000)}catch(err){alert(err.message);log('打开登录窗口失败：'+err.message)}finally{button.disabled=false;button.textContent=oldText}});
-  byId('availableTasks').addEventListener('click',async function(e){var button=e.target.closest('.claim-task');if(!button)return;var accounts=selectedAccounts();var loops=Number(byId('loops').value||1);if(!accounts.length){alert('请先在“当前可执行账号”里选择至少一个账号');return}button.disabled=true;var old=button.textContent;button.textContent='领取中...';try{var data=await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/claim',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),accounts:accounts,loops:loops})});log('任务 '+button.dataset.taskId+' 领取 '+data.count+' 条 | 账号='+accounts.join(',')+' | Loop='+loops);await loadAvailableTasks();await loadTasks()}catch(err){alert(err.message);log('领取任务失败：'+err.message)}finally{button.disabled=false;button.textContent=old}});
-  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-action');if(!button)return;var action=button.dataset.action;var account=button.dataset.account;if(action==='delete'&&!confirm('确定删除 '+account+' 的任务记录？未完成任务会释放回任务池。'))return;if(action==='interrupt'&&!confirm('确定中断 '+account+' 当前任务？'))return;button.disabled=true;try{await api('/api/my-tasks/'+encodeURIComponent(account)+'/action',{method:'POST',body:JSON.stringify({worker:workerEl.value.trim(),action:action})});log('账号 '+account+' → '+action);await loadTasks()}catch(err){alert(err.message);log('任务操作失败：'+err.message)}finally{button.disabled=false}});
+  byId('availableTasks').addEventListener('click',async function(e){var button=e.target.closest('.claim-task');if(!button)return;var accounts=selectedAccounts();var loops=Number(byId('loops').value||1);if(!accounts.length){alert('请先在“当前可执行账号”里选择至少一个账号');return}button.disabled=true;var old=button.textContent;button.textContent='领取中...';try{var data=await api('/api/tasks/'+encodeURIComponent(button.dataset.taskId)+'/claim',{method:'POST',body:JSON.stringify({worker:workerId,accounts:accounts,loops:loops})});log('任务 '+button.dataset.taskId+' 领取 '+data.count+' 条 | 账号='+accounts.join(',')+' | Loop='+loops);await loadAvailableTasks();await loadTasks()}catch(err){alert(err.message);log('领取任务失败：'+err.message)}finally{button.disabled=false;button.textContent=old}});
+  byId('tasks').addEventListener('click',async function(e){var button=e.target.closest('.task-action');if(!button)return;var action=button.dataset.action;var account=button.dataset.account;if(action==='delete'&&!confirm('确定删除 '+account+' 的任务记录？未完成任务会释放回任务池。'))return;if(action==='interrupt'&&!confirm('确定中断 '+account+' 当前任务？'))return;button.disabled=true;try{await api('/api/my-tasks/'+encodeURIComponent(account)+'/action',{method:'POST',body:JSON.stringify({worker:workerId,action:action})});log('账号 '+account+' → '+action);await loadTasks()}catch(err){alert(err.message);log('任务操作失败：'+err.message)}finally{button.disabled=false}});
   initCollapse('toggleAccounts','accountPanel','caAccountsCollapsed');
   initCollapse('toggleAvailableTasks','availableTasksPanel','caAvailableTasksCollapsed');
   initCollapse('toggleResults','resultsPanel','caResultsCollapsed');
@@ -676,5 +671,6 @@ app.listen(PORT, HOST, () => {
   console.log(`[Comment Assistant] http://${HOST}:${PORT}/user`);
   console.log(`[Comment Assistant] Admin: http://${HOST}:${PORT}/admin`);
   console.log(`[Comment Assistant] Profiles=${PROFILE_ROOT}`);
+  console.log(`[Comment Assistant] Worker=${DEFAULT_WORKER_ID}`);
   console.log(`[Comment Assistant] Admin=${ADMIN_TOKEN ? 'enabled' : 'disabled (set COMMENT_ADMIN_TOKEN)'}`);
 });
