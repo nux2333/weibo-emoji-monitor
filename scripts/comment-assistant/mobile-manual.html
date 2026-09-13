@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Comment Assistant Mobile</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202124;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{max-width:680px;margin:0 auto;padding:14px}.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 2px 12px rgba(0,0,0,.06)}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.muted{color:#777;font-size:13px}.title{font-size:20px;font-weight:700}.progress{font-size:28px;font-weight:700;margin:4px 0 12px}.post{font-size:16px;line-height:1.65;white-space:pre-wrap;word-break:break-word;min-height:120px;background:#fafafa;border-radius:12px;padding:14px}.note{margin-top:10px;font-size:13px;color:#666;white-space:pre-wrap}.input{width:100%;font-size:17px;padding:14px;border:1px solid #d7d7d7;border-radius:12px;outline:none}.btn{width:100%;border:0;border-radius:12px;padding:14px 12px;font-size:16px;font-weight:600;color:#fff;background:#111}.btn.secondary{background:#6b7280}.btn.blue{background:#1677ff}.btn:disabled{opacity:.45}.gap{height:8px}.hidden{display:none}.ok{color:#15803d}.bad{color:#b91c1c}select,input{font:inherit}.top-input{flex:1;min-width:140px;padding:10px;border:1px solid #ccc;border-radius:9px}.account-select{width:100%;padding:11px;border:1px solid #ccc;border-radius:10px;background:#fff}.link{display:inline-block;margin-top:10px;color:#1677ff;text-decoration:none}.status{min-height:20px;margin-top:8px}.hint{font-size:12px;color:#888;margin-top:8px}
+*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#202124;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{max-width:680px;margin:0 auto;padding:14px}.card{background:#fff;border-radius:16px;padding:16px;margin-bottom:12px;box-shadow:0 2px 12px rgba(0,0,0,.06)}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.muted{color:#777;font-size:13px}.title{font-size:20px;font-weight:700}.progress{font-size:28px;font-weight:700;margin:4px 0 12px}.post{font-size:16px;line-height:1.65;white-space:pre-wrap;word-break:break-word;min-height:120px;background:#fafafa;border-radius:12px;padding:14px}.note{margin-top:10px;font-size:13px;color:#666;white-space:pre-wrap}.input{width:100%;font-size:17px;padding:14px;border:1px solid #d7d7d7;border-radius:12px;outline:none}.btn{width:100%;border:0;border-radius:12px;padding:14px 12px;font-size:16px;font-weight:600;color:#fff;background:#111}.btn.secondary{background:#6b7280}.btn.blue{background:#1677ff}.btn.green{background:#15803d}.btn:disabled{opacity:.45}.gap{height:8px}.hidden{display:none}.ok{color:#15803d}.bad{color:#b91c1c}select,input{font:inherit}.top-input{flex:1;min-width:180px;padding:10px;border:1px solid #ccc;border-radius:9px}.account-select{width:100%;padding:11px;border:1px solid #ccc;border-radius:10px;background:#fff}.link{display:inline-block;margin-top:10px;color:#1677ff;text-decoration:none}.status{min-height:20px;margin-top:8px}.hint{font-size:12px;color:#888;margin-top:8px}.task-name{font-size:16px;font-weight:700;margin-bottom:4px}
 </style>
 </head>
 <body>
@@ -14,15 +14,25 @@
     <div class="title">手机手动任务</div>
     <div class="row" style="margin-top:12px">
       <input id="token" class="top-input" type="password" placeholder="API Token">
-      <input id="worker" class="top-input" placeholder="Worker，例如 PC-A">
       <button id="connect" class="btn blue" style="width:auto;padding:10px 16px" type="button">连接</button>
     </div>
     <div id="health" class="muted status">JS 加载中...</div>
   </div>
+
   <div class="card">
     <div class="muted">账号</div>
-    <select id="account" class="account-select"><option value="">请先连接</option></select>
+    <select id="account" class="account-select"><option value="mobile">mobile</option></select>
   </div>
+
+  <div class="card">
+    <div class="muted">默认任务</div>
+    <div class="task-name">随机高经验值用户轮询</div>
+    <div class="muted">经验值 ≥ 70、评论数 ≤ 19、当天帖子。每次把当前账号的待处理队列补到 20 条。</div>
+    <div class="gap"></div>
+    <button id="claimDefault" class="btn green" type="button">领取 / 补充 20 条</button>
+    <div id="claimStatus" class="status muted"></div>
+  </div>
+
   <div id="taskCard" class="card hidden">
     <div id="progress" class="progress">0 / 0</div>
     <div id="post" class="post"></div>
@@ -37,8 +47,9 @@
     <button id="skip" class="btn secondary" type="button">跳过并下一条</button>
     <div id="status" class="status muted"></div>
   </div>
+
   <div id="empty" class="card hidden">
-    <div class="title">这个账号没有待处理任务了</div>
+    <div class="title">当前没有待处理任务</div>
     <div id="emptyProgress" class="muted" style="margin-top:8px"></div>
   </div>
 </div>
@@ -47,7 +58,6 @@
   function el(id) { return document.getElementById(id); }
 
   var token = el('token');
-  var worker = el('worker');
   var account = el('account');
   var taskCard = el('taskCard');
   var empty = el('empty');
@@ -55,7 +65,6 @@
 
   el('health').textContent = 'JS 已启动，等待连接';
   token.value = sessionStorage.getItem('caToken') || '';
-  worker.value = localStorage.getItem('caWorker') || '';
 
   window.addEventListener('error', function (e) {
     el('health').textContent = 'JS错误：' + String(e.message || 'unknown');
@@ -76,11 +85,8 @@
     }, opt.headers || {});
     var r = await fetch(url, Object.assign({}, opt, { headers: headers }));
     var j;
-    try {
-      j = await r.json();
-    } catch (_) {
-      j = { success: false, message: 'HTTP ' + r.status };
-    }
+    try { j = await r.json(); }
+    catch (_) { j = { success: false, message: 'HTTP ' + r.status }; }
     if (!r.ok || !j.success) throw new Error(j.message || ('HTTP ' + r.status));
     return j.data;
   }
@@ -102,42 +108,34 @@
   }
 
   async function loadAccounts() {
-    var list = await api('/api/accounts?worker=' + encodeURIComponent(worker.value.trim()));
+    var list = await api('/api/accounts');
     account.innerHTML = '';
-    if (!list.length) {
-      var o = document.createElement('option');
-      o.value = '';
-      o.textContent = '暂无已领取任务';
-      account.appendChild(o);
-      taskCard.classList.add('hidden');
-      empty.classList.remove('hidden');
-      return;
-    }
     list.forEach(function (x) {
       var o = document.createElement('option');
       o.value = x.account;
       o.textContent = x.account + '（剩余 ' + Number(x.pending_count || 0) + '）';
       account.appendChild(o);
     });
+    if (!list.length) {
+      var o = document.createElement('option');
+      o.value = 'mobile';
+      o.textContent = 'mobile（剩余 0）';
+      account.appendChild(o);
+    }
     var saved = localStorage.getItem('caMobileAccount');
-    if (saved && list.some(function (x) { return x.account === saved; })) account.value = saved;
+    if (saved && Array.prototype.some.call(account.options, function (x) { return x.value === saved; })) account.value = saved;
     await loadNext();
   }
 
   async function loadNext() {
-    if (!account.value) {
-      taskCard.classList.add('hidden');
-      empty.classList.remove('hidden');
-      return;
-    }
-    localStorage.setItem('caMobileAccount', account.value);
-    var data = await api('/api/next?worker=' + encodeURIComponent(worker.value.trim()) + '&account=' + encodeURIComponent(account.value));
+    localStorage.setItem('caMobileAccount', account.value || 'mobile');
+    var data = await api('/api/next?account=' + encodeURIComponent(account.value || 'mobile'));
     var p = progressText(data.progress || {});
     currentTask = data.task;
     if (!currentTask) {
       taskCard.classList.add('hidden');
       empty.classList.remove('hidden');
-      el('emptyProgress').textContent = p.detail;
+      el('emptyProgress').textContent = p.detail + '。点击“领取 / 补充 20 条”开始。';
       return;
     }
     empty.classList.add('hidden');
@@ -157,6 +155,27 @@
     setStatus('');
   }
 
+  async function claimDefault() {
+    var button = el('claimDefault');
+    button.disabled = true;
+    el('claimStatus').textContent = '领取中...';
+    el('claimStatus').className = 'status muted';
+    try {
+      var data = await api('/api/default-task/claim', {
+        method: 'POST',
+        body: JSON.stringify({ account: account.value || 'mobile' })
+      });
+      el('claimStatus').textContent = '本次新增 ' + data.count + ' 条，当前待处理 ' + data.pending + '/' + data.target;
+      el('claimStatus').className = 'status ok';
+      await loadAccounts();
+    } catch (e) {
+      el('claimStatus').textContent = '领取失败：' + String(e.message);
+      el('claimStatus').className = 'status bad';
+    } finally {
+      button.disabled = false;
+    }
+  }
+
   async function finish(action) {
     if (!currentTask) return;
     el('done').disabled = true;
@@ -165,8 +184,7 @@
       await api('/api/task/' + encodeURIComponent(currentTask.task_id) + '/result', {
         method: 'POST',
         body: JSON.stringify({
-          worker: worker.value.trim(),
-          account: account.value,
+          account: account.value || 'mobile',
           action: action,
           manual_text: el('manualText').value
         })
@@ -184,20 +202,14 @@
     el('health').textContent = '连接中...';
     el('health').className = 'muted status';
     sessionStorage.setItem('caToken', token.value.trim());
-    localStorage.setItem('caWorker', worker.value.trim());
     if (!token.value.trim()) {
       el('health').textContent = '请先输入 API Token';
       el('health').className = 'bad status';
       return;
     }
-    if (!worker.value.trim()) {
-      el('health').textContent = '请先输入 Worker 名称';
-      el('health').className = 'bad status';
-      return;
-    }
     try {
       var h = await api('/api/health');
-      el('health').textContent = '● 已连接 ' + h.host;
+      el('health').textContent = '● 已连接 ' + h.host + ' ｜ 默认任务：' + h.default_task;
       el('health').className = 'ok status';
       await loadAccounts();
     } catch (e) {
@@ -207,6 +219,7 @@
   }
 
   el('connect').addEventListener('click', connect);
+  el('claimDefault').addEventListener('click', claimDefault);
   account.addEventListener('change', function () {
     loadNext().catch(function (e) {
       el('health').textContent = String(e.message);
@@ -229,6 +242,8 @@
       finish('done');
     }
   });
+
+  if (token.value.trim()) connect();
 }());
 </script>
 </body>
