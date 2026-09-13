@@ -63,6 +63,14 @@ module.exports = {
     },
     { ...common, name: 'superlike-mode4', script: path.join(__dirname, 'scripts', 'recheck-superlike-mode4.js'), env: { ...common.env, SUPERLIKE_RECHECK_MODE: '4', SUPERLIKE_LIST_NIGHT_INTERVAL_MS: String(3 * 60 * 1000), SUPERLIKE_LIST_BOUNDARY_SAFETY_MAX_PAGES: '150' } },
     { ...common, name: 'superlike-jyz', script: path.join(__dirname, 'scripts', 'backfill-today-jyz.js'), env: { ...common.env, PLAYWRIGHT_GOTO_HARD_TIMEOUT_MS: '10000', PLAYWRIGHT_EVALUATE_HARD_TIMEOUT_MS: '12000', JYZ_BACKFILL_PROXY_RETRIES: '2' } },
+    {
+      ...common,
+      name: 'refresh-stale-superlike-posts',
+      script: path.join(__dirname, 'scripts', 'refresh-stale-superlike-posts.js'),
+      autorestart: false,
+      max_restarts: 0,
+      env: { ...common.env }
+    },
     { ...common, name: 'weibo-proxy-pool', script: path.join(__dirname, 'scripts', 'build-weibo-proxy-pool.js') }
   ]
 };
