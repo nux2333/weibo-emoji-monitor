@@ -60,15 +60,21 @@ async function acquireScanProxyWaiting() {
         Number(assignment.nextReadyAt)
       )
     ) {
-      const waitMs =
+      const remainingMs =
         Math.max(
           1000,
           Number(assignment.nextReadyAt)
             - Date.now()
         );
 
+      const waitMs =
+        Math.min(
+          remainingMs,
+          60 * 1000
+        );
+
       console.log(
-        `[SuperLike] 健康代理全部冷却，等待最近代理恢复：约${Math.ceil(waitMs / 1000)}秒。`
+        `[SuperLike] 健康代理全部冷却，最近代理约${Math.ceil(remainingMs / 1000)}秒后恢复；本次最多等待${Math.ceil(waitMs / 1000)}秒后重新检查。`
       );
 
       await new Promise(
