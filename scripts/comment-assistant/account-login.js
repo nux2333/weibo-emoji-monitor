@@ -11,7 +11,8 @@ const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
-  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  // 保留 Unicode 字母/数字（包括中文、日文等），只替换不适合作为目录名的字符。
+  const safe = raw.replace(/[^\p{L}\p{N}_-]/gu, '_').slice(0, 80);
   return safe || null;
 }
 
