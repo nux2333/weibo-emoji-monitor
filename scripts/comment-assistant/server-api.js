@@ -1,9 +1,14 @@
 'use strict';
 
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const os = require('os');
 const { db, initDatabase } = require('../../src/db');
 
+const ROOT = path.join(__dirname, '..', '..');
+const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
+const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
 const HOST = String(process.env.COMMENT_WORKER_API_HOST || '127.0.0.1');
 const PORT = Number(process.env.COMMENT_WORKER_API_PORT || 3012);
 const TOKEN = String(process.env.COMMENT_API_TOKEN || '').trim();
@@ -15,6 +20,7 @@ if (!TOKEN) {
   process.exit(1);
 }
 
+fs.mkdirSync(PROFILE_ROOT, { recursive: true });
 initDatabase();
 db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
   account TEXT NOT NULL,
@@ -28,6 +34,56 @@ app.use(express.json({ limit: '64kb' }));
 
 const workers = new Map();
 const claims = new Map();
+
+function sanitizeAccount(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return null;
+  const safe = raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  return safe || null;
+}
+
+function hasProfileData(profileDir) {
+  if (!fs.existsSync(profileDir)) return false;
+  const candidates = [
+    path.join(profileDir, 'Default', 'Network', 'Cookies'),
+    path.join(profileDir, 'Default', 'Cookies'),
+    path.join(profileDir, 'Local State')
+  ];
+  return candidates.some(file => fs.existsSync(file));
+}
+
+function listAccounts() {
+  const result = [];
+  if (fs.existsSync(LEGACY_PROFILE_DIR)) {
+    result.push({ name: 'default', legacy: true, initialized: hasProfileData(LEGACY_PROFILE_DIR) });
+  }
+  try {
+    const entries = fs.readdirSync(PROFILE_ROOT, { withFileTypes: true })
+      .filter(entry => entry.isDirectory())
+      .map(entry => entry.name)
+      .sort((a, b) => a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' }));
+    for (const name of entries) {
+      result.push({
+        name,
+        legacy: false,
+        initialized: hasProfileData(path.join(PROFILE_ROOT, name))
+      });
+    }
+  } catch (error) {
+    console.warn(`[Comment Worker API] 读取账号目录失败：${error.message}`);
+  }
+  return result;
+}
+
+function createAccount(name) {
+  const safe = sanitizeAccount(name);
+  if (!safe) throw new Error('账号名称不能为空');
+  if (safe === 'default') throw new Error('default 为旧版保留名称，请换一个名字');
+  const dir = path.join(PROFILE_ROOT, safe);
+  if (fs.existsSync(dir)) throw new Error(`账号 ${safe} 已存在`);
+  fs.mkdirSync(dir, { recursive: true });
+  return { name: safe, legacy: false, initialized: false };
+}
 
 function formatShanghaiDate(value) {
   const date = value instanceof Date ? value : new Date(value);
@@ -117,8 +173,22 @@ app.get('/api/comment-worker/health', auth, (req, res) => {
     host: os.hostname(),
     now: new Date().toISOString(),
     workers: workers.size,
-    claims: claims.size
+    claims: claims.size,
+    accounts: listAccounts().length
   }});
+});
+
+app.get('/api/comment-worker/accounts', auth, (req, res) => {
+  res.json({ success: true, data: listAccounts() });
+});
+
+app.post('/api/comment-worker/accounts', auth, (req, res) => {
+  try {
+    const account = createAccount(req.body?.name);
+    res.json({ success: true, data: account });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
+  }
 });
 
 app.post('/api/comment-worker/heartbeat', auth, (req, res) => {
@@ -190,27 +260,31 @@ app.get('/', (req, res) => {
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Comment Assistant Remote</title>
 <style>
-body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1100px;margin:20px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}h1,h2{margin:0 0 12px}h1{font-size:22px}h2{font-size:17px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{display:block;font-size:12px;color:#666;margin-bottom:5px}input,button{font:inherit;padding:9px 10px;border-radius:8px}input{border:1px solid #ccc;min-width:180px}button{border:0;background:#111;color:#fff;cursor:pointer}.muted{font-size:13px;color:#666}.ok{color:#15803d}.bad{color:#b91c1c}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.box{border:1px solid #eee;border-radius:10px;padding:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}a{color:#1677ff;text-decoration:none}.scroll{overflow:auto;max-height:55vh}.mono{font-family:Consolas,monospace;font-size:12px}
+body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;margin:0;background:#f5f6f8;color:#222}.wrap{max-width:1100px;margin:20px auto;padding:0 14px}.card{background:#fff;border-radius:14px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px rgba(0,0,0,.06)}.topbar{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;flex-wrap:wrap}.accountTools{display:flex;gap:8px;align-items:center}h1,h2{margin:0 0 12px}h1{font-size:22px}h2{font-size:17px}.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}label{display:block;font-size:12px;color:#666;margin-bottom:5px}input,select,button{font:inherit;padding:9px 10px;border-radius:8px}input,select{border:1px solid #ccc;min-width:180px;background:#fff}button{border:0;background:#111;color:#fff;cursor:pointer}.secondary{background:#1677ff}.muted{font-size:13px;color:#666}.ok{color:#15803d}.bad{color:#b91c1c}.warn{color:#b45309}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.box{border:1px solid #eee;border-radius:10px;padding:10px}table{width:100%;border-collapse:collapse;font-size:13px}th,td{padding:8px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}a{color:#1677ff;text-decoration:none}.scroll{overflow:auto;max-height:55vh}.mono{font-family:Consolas,monospace;font-size:12px}
 </style></head><body><div class="wrap">
-<div class="card"><h1>Comment Assistant Remote</h1><div class="muted">只读候选/Worker 状态/历史同步控制台。Token 只保存在当前浏览器 sessionStorage。</div></div>
+<div class="card"><div class="topbar"><div><h1>Comment Assistant Remote</h1><div class="muted">读取 comment-assistant-profiles、候选、Worker 状态和历史。</div></div><div class="accountTools"><select id="accountSelect"><option value="">未连接</option></select><button class="secondary" id="addAccount">＋ 添加用户</button></div></div></div>
 <div class="card"><div class="row"><div><label>API Token</label><input id="token" type="password" placeholder="COMMENT_API_TOKEN"></div><button id="save">连接</button></div><div id="health" class="muted" style="margin-top:10px">未连接</div></div>
 <div class="card"><h2>在线 Worker</h2><div id="workers" class="grid"></div></div>
-<div class="card"><h2>账号候选</h2><div class="row"><div><label>账号</label><input id="account" placeholder="例如 account5"></div><div><label>数量</label><input id="limit" type="number" value="20" min="1" max="100" style="min-width:90px"></div><button id="load">读取候选</button><button id="historyBtn">读取历史</button></div><div id="summary" class="muted" style="margin:10px 0"></div><div class="scroll"><table><thead><tr><th>经验值</th><th>用户</th><th>评论</th><th>帖子</th><th>文案</th></tr></thead><tbody id="rows"></tbody></table></div></div>
+<div class="card"><h2>账号候选</h2><div class="row"><div><label>当前账号</label><input id="account" readonly placeholder="请从右上角选择"></div><div><label>数量</label><input id="limit" type="number" value="20" min="1" max="100" style="min-width:90px"></div><button id="load">读取候选</button><button id="historyBtn">读取历史</button></div><div id="summary" class="muted" style="margin:10px 0"></div><div class="scroll"><table><thead><tr><th>经验值</th><th>用户</th><th>评论</th><th>帖子</th><th>文案</th></tr></thead><tbody id="rows"></tbody></table></div></div>
 </div><script>
 const $=id=>document.getElementById(id);$('token').value=sessionStorage.getItem('commentApiToken')||'';
 async function api(path,opt={}){const token=$('token').value.trim();const r=await fetch(path,{...opt,headers:{'Content-Type':'application/json','Authorization':'Bearer '+token,...(opt.headers||{})}});const j=await r.json().catch(()=>({success:false,message:'HTTP '+r.status}));if(!r.ok||!j.success)throw new Error(j.message||('HTTP '+r.status));return j.data}
-async function health(){try{const d=await api('/api/comment-worker/health');$('health').innerHTML='<span class="ok">已连接</span> | Host='+d.host+' | Workers='+d.workers+' | Claims='+d.claims+' | '+d.now;await loadWorkers()}catch(e){$('health').innerHTML='<span class="bad">'+e.message+'</span>'}}
-async function loadWorkers(){try{const list=await api('/api/comment-worker/workers');$('workers').innerHTML=list.length?list.map(w=>'<div class="box"><b>'+esc(w.worker)+'</b><br>账号：'+esc(w.account||'-')+'<br>状态：'+esc(w.status||'-')+'<br><span class="muted">'+esc(w.lastSeenAt)+'</span></div>').join(''):'<div class="muted">暂无在线 Worker</div>'}catch(e){$('workers').textContent=e.message}}
 function esc(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function loadAccounts(){const list=await api('/api/comment-worker/accounts');const select=$('accountSelect');const previous=select.value||$('account').value;select.innerHTML='';if(!list.length){select.innerHTML='<option value="">暂无账号</option>';$('account').value='';return}for(const item of list){const option=document.createElement('option');option.value=item.name;option.textContent=item.name+(item.initialized?'':'（未初始化）');select.appendChild(option)}if(previous&&list.some(x=>x.name===previous))select.value=previous;$('account').value=select.value}
+async function health(){try{const d=await api('/api/comment-worker/health');$('health').innerHTML='<span class="ok">已连接</span> | Host='+esc(d.host)+' | Accounts='+d.accounts+' | Workers='+d.workers+' | Claims='+d.claims+' | '+esc(d.now);await Promise.all([loadWorkers(),loadAccounts()])}catch(e){$('health').innerHTML='<span class="bad">'+esc(e.message)+'</span>'}}
+async function loadWorkers(){try{const list=await api('/api/comment-worker/workers');$('workers').innerHTML=list.length?list.map(w=>'<div class="box"><b>'+esc(w.worker)+'</b><br>账号：'+esc(w.account||'-')+'<br>状态：'+esc(w.status||'-')+'<br><span class="muted">'+esc(w.lastSeenAt)+'</span></div>').join(''):'<div class="muted">暂无在线 Worker</div>'}catch(e){$('workers').textContent=e.message}}
+$('accountSelect').onchange=()=>{$('account').value=$('accountSelect').value;$('summary').textContent='';$('rows').innerHTML=''};
+$('addAccount').onclick=async()=>{const name=prompt('输入新用户名称，例如 account31');if(!name)return;try{const d=await api('/api/comment-worker/accounts',{method:'POST',body:JSON.stringify({name})});await loadAccounts();$('accountSelect').value=d.name;$('account').value=d.name;alert('用户 '+d.name+' 已添加。当前只创建 Profile 目录，首次登录仍需在执行电脑上初始化该账号。')}catch(e){alert(e.message)}};
 $('save').onclick=()=>{sessionStorage.setItem('commentApiToken',$('token').value.trim());health()};
-$('load').onclick=async()=>{try{const account=$('account').value.trim(),limit=Number($('limit').value||20);const worker='h5-'+Math.random().toString(36).slice(2,8);const d=await api('/api/comment-worker/claim',{method:'POST',body:JSON.stringify({account,limit,worker})});$('summary').textContent='候选 '+d.items.length+' 条 | claim '+Math.round(d.claim_ttl_ms/1000)+' 秒';$('rows').innerHTML=d.items.map(x=>'<tr><td>'+esc(x.experience_7d)+'</td><td>'+esc(x.username||x.uid)+'</td><td>'+esc(x.comments_count)+'</td><td><a target="_blank" href="'+esc(x.post_link)+'">打开</a><div class="mono">'+esc(x.post_id)+'</div></td><td>'+esc(x.post_text||'')+'</td></tr>').join('')}catch(e){alert(e.message)}};
-$('historyBtn').onclick=async()=>{try{const account=$('account').value.trim();const d=await api('/api/comment-worker/history?account='+encodeURIComponent(account)+'&limit=50');$('summary').textContent='历史评论记录：'+d.count+' 条';$('rows').innerHTML=d.items.map(x=>'<tr><td>-</td><td>'+esc(x.account)+'</td><td>-</td><td><span class="mono">'+esc(x.post_id)+'</span></td><td>'+esc(x.commented_at)+'</td></tr>').join('')}catch(e){alert(e.message)}};
+$('load').onclick=async()=>{try{const account=$('account').value.trim(),limit=Number($('limit').value||20);if(!account)throw new Error('请先选择账号');const worker='h5-'+Math.random().toString(36).slice(2,8);const d=await api('/api/comment-worker/claim',{method:'POST',body:JSON.stringify({account,limit,worker})});$('summary').textContent='候选 '+d.items.length+' 条 | claim '+Math.round(d.claim_ttl_ms/1000)+' 秒';$('rows').innerHTML=d.items.map(x=>'<tr><td>'+esc(x.experience_7d)+'</td><td>'+esc(x.username||x.uid)+'</td><td>'+esc(x.comments_count)+'</td><td><a target="_blank" href="'+esc(x.post_link)+'">打开</a><div class="mono">'+esc(x.post_id)+'</div></td><td>'+esc(x.post_text||'')+'</td></tr>').join('')}catch(e){alert(e.message)}};
+$('historyBtn').onclick=async()=>{try{const account=$('account').value.trim();if(!account)throw new Error('请先选择账号');const d=await api('/api/comment-worker/history?account='+encodeURIComponent(account)+'&limit=50');$('summary').textContent='历史评论记录：'+d.count+' 条';$('rows').innerHTML=d.items.map(x=>'<tr><td>-</td><td>'+esc(x.account)+'</td><td>-</td><td><span class="mono">'+esc(x.post_id)+'</span></td><td>'+esc(x.commented_at)+'</td></tr>').join('')}catch(e){alert(e.message)}};
 if($('token').value)health();setInterval(()=>{if($('token').value)health()},10000);
 </script></body></html>`);
 });
 
 app.listen(PORT, HOST, () => {
   console.log(`[Comment Worker API] http://${HOST}:${PORT}`);
+  console.log(`[Comment Worker API] Profiles=${PROFILE_ROOT}`);
   console.log(`[Comment Worker API] ClaimTTL=${CLAIM_TTL_MS}ms | WorkerTTL=${WORKER_TTL_MS}ms`);
   console.log('[Comment Worker API] 必须通过 Bearer COMMENT_API_TOKEN 访问 API；H5 页面本身不包含 Token。');
 });
