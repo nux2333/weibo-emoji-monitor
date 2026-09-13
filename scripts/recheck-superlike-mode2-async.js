@@ -170,8 +170,8 @@ async function runRound(round){
     if(!comments.ok){console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | Post=${post.post_id} | 评论失败 | ${comments.message}`);return;}
     const threshold=getDeleteThreshold(post); let verify=null;
     if(comments.commentsCount>=threshold){ verify=await withSessionRetry(`UID=${post.uid} allbadge`,s=>requestProfile(post,s)); }
-    if(comments.commentsCount>=threshold && verify?.ok && verify.hasSuperLike){ const reason=`SUPERLIKE_MODE2_CONFIRM_${threshold}`; const deleted=await graduate(post,reason); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | Post=${post.post_id} | 入库经验=${post.experience_7d??'-'} | 入库评论=${post.initial_comments_count??'-'} | 当前=${comments.commentsCount} | 阈值=${threshold} | 超LIKE=YES | 删除UID候选=${deleted}`); return; }
-    const next=await schedule(post,comments.commentsCount); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | Post=${post.post_id} | 当前=${comments.commentsCount} | 阈值=${threshold}${comments.commentsCount>=threshold?` | 超LIKE=${verify?.ok?(verify.hasSuperLike?'YES':'NO'):'FAILED'}`:''} | 保留 | 下次≈${next}分钟`);
+    if(comments.commentsCount>=threshold && verify?.ok && verify.hasSuperLike){ const reason=`SUPERLIKE_MODE2_CONFIRM_${threshold}`; const deleted=await graduate(post,reason); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'} | 超LIKE=YES | 删除UID候选=${deleted}`); return; }
+    const next=await schedule(post,comments.commentsCount); console.log(`[模式2][${index+1}/${posts.length}] UID=${post.uid} | 最新评论=${comments.commentsCount} | 初始评论=${post.initial_comments_count??'-'} | jyz=${post.experience_7d??'-'}${comments.commentsCount>=threshold?` | 超LIKE=${verify?.ok?(verify.hasSuperLike?'YES':'NO'):'FAILED'}`:' | 超LIKE=NO'} | 保留 | 下次≈${next}分钟`);
   });
   void results; const elapsed=Date.now()-started; logMemory('ROUND_END'); console.log(`[模式2] 第${round}轮完成 | 耗时=${Math.round(elapsed/1000)}秒 | Session generation=${visitorSession?.generation??0} | IP=${visitorSession?.proxyLabel||'-'}`); return elapsed;
 }
