@@ -7,6 +7,7 @@ const { chromium } = require('playwright');
 const ROOT = path.join(__dirname, '..', '..');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
 const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
+const LOGIN_URL = 'https://passport.weibo.com/sso/signin?entry=miniblog&source=miniblog&disp=popup&url=https%3A%2F%2Fweibo.com%2Fnewlogin%3Ftabtype%3Dweibo%26gid%3D102803%26openLoginLayer%3D0%26url%3Dhttps%3A%2F%2Fweibo.com%2F&from=weibopro';
 
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
@@ -106,12 +107,12 @@ async function main() {
   });
 
   const page = context.pages()[0] || await context.newPage();
-  await page.goto('https://weibo.com/', {
+  await page.goto(LOGIN_URL, {
     waitUntil: 'domcontentloaded',
     timeout: 30000
   }).catch(() => null);
 
-  console.log('[Comment Assistant Login] 请在打开的 Chromium 中完成扫码/重新登录。完成后直接关闭浏览器即可。');
+  console.log('[Comment Assistant Login] 已打开微博登录页，请完成登录。完成后直接关闭浏览器即可。');
 
   let timer = null;
   const refreshMeta = async () => {
