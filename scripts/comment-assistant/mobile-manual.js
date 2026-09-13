@@ -3,12 +3,18 @@
 const express = require('express');
 const os = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { db, initDatabase } = require('../../src/db');
 
 const HOST = String(process.env.COMMENT_MOBILE_HOST || '127.0.0.1');
 const PORT = Number(process.env.COMMENT_MOBILE_PORT || 3014);
 const TOKEN = String(process.env.COMMENT_API_TOKEN || '').trim();
 const PAGE_FILE = path.join(__dirname, 'mobile-manual.html');
+const WORKER_ID = 'default';
+const DEFAULT_ACCOUNT = 'mobile';
+const DEFAULT_TASK_ID = 'builtin-random-high-exp';
+const DEFAULT_TASK_NAME = '随机高经验值用户轮询';
+const DEFAULT_TASK_COUNT = 20;
 
 if (!TOKEN) {
   console.error('[Comment Assistant Mobile] COMMENT_API_TOKEN 未设置，拒绝启动。');
@@ -31,10 +37,6 @@ function auth(req, res, next) {
   next();
 }
 
-function workerKey(value) {
-  return String(value || '').trim().slice(0, 120);
-}
-
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
   if (!raw) return null;
@@ -42,34 +44,131 @@ function sanitizeAccount(value) {
   return safe || null;
 }
 
+function makeTaskId() {
+  return `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function listAccounts() {
+  const rows = db.prepare(`SELECT account, MAX(last_seen) AS last_seen
+    FROM (
+      SELECT account, MAX(claimed_at) AS last_seen
+      FROM comment_assistant_task_assignments
+      WHERE account IS NOT NULL AND account <> ''
+      GROUP BY account
+      UNION ALL
+      SELECT account, MAX(commented_at) AS last_seen
+      FROM comment_assistant_history
+      WHERE account IS NOT NULL AND account <> ''
+      GROUP BY account
+    ) x
+    GROUP BY account
+    ORDER BY MAX(last_seen) DESC`).all();
+
+  const names = rows.map(row => String(row.account || '').trim()).filter(Boolean);
+  if (!names.includes(DEFAULT_ACCOUNT)) names.unshift(DEFAULT_ACCOUNT);
+  return names;
+}
+
+function claimDefaultTask(account) {
+  const targetAccount = sanitizeAccount(account) || DEFAULT_ACCOUNT;
+  const existingPending = db.prepare(`SELECT COUNT(*) AS cnt
+    FROM comment_assistant_task_assignments
+    WHERE worker_id = ? AND account = ? AND status = 'CLAIMED'`).get(WORKER_ID, targetAccount);
+  const pending = Number(existingPending?.cnt || 0);
+  const need = Math.max(0, DEFAULT_TASK_COUNT - pending);
+  if (!need) return { account: targetAccount, count: 0, pending, target: DEFAULT_TASK_COUNT };
+
+  const candidates = db.prepare(`SELECT sp.post_id, sp.uid, sp.username, sp.post_link, sp.post_text,
+      sp.experience_7d, sp.comments_count
+    FROM superlike_posts sp
+    WHERE COALESCE(sp.current_has_superlike, 0) = 0
+      AND sp.experience_7d IS NOT NULL
+      AND sp.experience_7d >= 70
+      AND COALESCE(sp.comments_count, 0) <= 19
+      AND sp.post_link IS NOT NULL
+      AND CAST(sp.post_created_at AS date) = CAST(LOCALTIMESTAMP AS date)
+      AND NOT EXISTS (
+        SELECT 1 FROM black_fan_users b
+        WHERE CAST(b.uid AS TEXT) = CAST(sp.uid AS TEXT)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM comment_assistant_history h
+        WHERE h.account = ? AND h.post_id = CAST(sp.post_id AS TEXT)
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM comment_assistant_tasks t
+        JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id
+        WHERE a.worker_id = ?
+          AND a.account = ?
+          AND a.status = 'CLAIMED'
+          AND t.post_id = CAST(sp.post_id AS TEXT)
+      )
+    ORDER BY RANDOM()
+    LIMIT ?`).all(targetAccount, WORKER_ID, targetAccount, Math.max(need * 5, 100));
+
+  let count = 0;
+  for (const candidate of candidates) {
+    if (count >= need) break;
+    const taskId = makeTaskId();
+    const note = `${DEFAULT_TASK_NAME} | 经验值=${candidate.experience_7d ?? '-'} | UID=${candidate.uid || '-'}`;
+    try {
+      db.prepare(`INSERT INTO comment_assistant_tasks
+        (task_id, post_id, post_link, post_text, note, priority, status, created_by, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, 0, 'CLAIMED', ?, LOCALTIMESTAMP, LOCALTIMESTAMP)`).run(
+          taskId,
+          String(candidate.post_id),
+          candidate.post_link,
+          candidate.post_text || null,
+          note,
+          DEFAULT_TASK_ID
+        );
+      db.prepare(`INSERT INTO comment_assistant_task_assignments
+        (task_id, worker_id, account, status, claimed_at)
+        VALUES (?, ?, ?, 'CLAIMED', LOCALTIMESTAMP)`).run(taskId, WORKER_ID, targetAccount);
+      count += 1;
+    } catch (_) {
+      // Skip duplicate/race and continue filling the queue.
+    }
+  }
+
+  return { account: targetAccount, count, pending: pending + count, target: DEFAULT_TASK_COUNT };
+}
+
 app.get('/api/health', auth, (req, res) => {
-  res.json({ success: true, data: { host: os.hostname(), now: new Date().toISOString() } });
+  res.json({ success: true, data: {
+    host: os.hostname(),
+    now: new Date().toISOString(),
+    worker: WORKER_ID,
+    default_task: DEFAULT_TASK_NAME
+  }});
 });
 
 app.get('/api/accounts', auth, (req, res) => {
-  const worker = workerKey(req.query.worker);
-  if (!worker) return res.status(400).json({ success: false, message: 'worker required' });
-
-  const rows = db.prepare(`SELECT
-      a.account,
-      COUNT(*) AS total_count,
-      SUM(CASE WHEN a.status = 'DONE' THEN 1 ELSE 0 END) AS done_count,
-      SUM(CASE WHEN a.status = 'SKIPPED' THEN 1 ELSE 0 END) AS skipped_count,
-      SUM(CASE WHEN a.status = 'CLAIMED' THEN 1 ELSE 0 END) AS pending_count
-    FROM comment_assistant_task_assignments a
-    WHERE a.worker_id = ?
-    GROUP BY a.account
-    ORDER BY MAX(a.claimed_at) DESC`).all(worker);
-
+  const accounts = listAccounts();
+  const rows = accounts.map(account => {
+    const stats = db.prepare(`SELECT
+        COUNT(*) AS total_count,
+        SUM(CASE WHEN status = 'DONE' THEN 1 ELSE 0 END) AS done_count,
+        SUM(CASE WHEN status = 'SKIPPED' THEN 1 ELSE 0 END) AS skipped_count,
+        SUM(CASE WHEN status = 'CLAIMED' THEN 1 ELSE 0 END) AS pending_count
+      FROM comment_assistant_task_assignments
+      WHERE worker_id = ? AND account = ?`).get(WORKER_ID, account);
+    return { account, ...stats };
+  });
   res.json({ success: true, data: rows });
 });
 
-app.get('/api/next', auth, (req, res) => {
-  const worker = workerKey(req.query.worker);
-  const account = sanitizeAccount(req.query.account);
-  if (!worker || !account) {
-    return res.status(400).json({ success: false, message: 'worker/account required' });
+app.post('/api/default-task/claim', auth, (req, res) => {
+  try {
+    const account = sanitizeAccount(req.body?.account) || DEFAULT_ACCOUNT;
+    res.json({ success: true, data: claimDefaultTask(account) });
+  } catch (error) {
+    res.status(400).json({ success: false, message: error.message });
   }
+});
+
+app.get('/api/next', auth, (req, res) => {
+  const account = sanitizeAccount(req.query.account) || DEFAULT_ACCOUNT;
 
   const task = db.prepare(`SELECT
       a.task_id,
@@ -85,7 +184,7 @@ app.get('/api/next', auth, (req, res) => {
       AND a.account = ?
       AND a.status = 'CLAIMED'
     ORDER BY a.claimed_at ASC
-    LIMIT 1`).get(worker, account);
+    LIMIT 1`).get(WORKER_ID, account);
 
   const progress = db.prepare(`SELECT
       COUNT(*) AS total_count,
@@ -93,28 +192,25 @@ app.get('/api/next', auth, (req, res) => {
       SUM(CASE WHEN status = 'SKIPPED' THEN 1 ELSE 0 END) AS skipped_count,
       SUM(CASE WHEN status = 'CLAIMED' THEN 1 ELSE 0 END) AS pending_count
     FROM comment_assistant_task_assignments
-    WHERE worker_id = ? AND account = ?`).get(worker, account);
+    WHERE worker_id = ? AND account = ?`).get(WORKER_ID, account);
 
   res.json({ success: true, data: { task: task || null, progress } });
 });
 
 app.post('/api/task/:taskId/result', auth, (req, res) => {
   const taskId = String(req.params.taskId || '').trim();
-  const worker = workerKey(req.body?.worker);
-  const account = sanitizeAccount(req.body?.account);
+  const account = sanitizeAccount(req.body?.account) || DEFAULT_ACCOUNT;
   const action = String(req.body?.action || '').trim().toLowerCase();
   const manualText = String(req.body?.manual_text || '').trim().slice(0, 500);
 
-  if (!taskId || !worker || !account) {
-    return res.status(400).json({ success: false, message: 'taskId/worker/account required' });
-  }
+  if (!taskId) return res.status(400).json({ success: false, message: 'taskId required' });
   if (!['done', 'skip'].includes(action)) {
     return res.status(400).json({ success: false, message: 'action must be done or skip' });
   }
 
   const row = db.prepare(`SELECT task_id, status
     FROM comment_assistant_task_assignments
-    WHERE task_id = ? AND worker_id = ? AND account = ?`).get(taskId, worker, account);
+    WHERE task_id = ? AND worker_id = ? AND account = ?`).get(taskId, WORKER_ID, account);
 
   if (!row) return res.status(404).json({ success: false, message: '任务不存在' });
   if (row.status !== 'CLAIMED') {
@@ -129,11 +225,24 @@ app.post('/api/task/:taskId/result', auth, (req, res) => {
   db.prepare(`UPDATE comment_assistant_task_assignments
     SET status = ?, result = ?, completed_at = LOCALTIMESTAMP
     WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`)
-    .run(status, result, taskId, worker, account);
+    .run(status, result, taskId, WORKER_ID, account);
 
   db.prepare(`UPDATE comment_assistant_tasks
     SET status = ?, updated_at = LOCALTIMESTAMP
     WHERE task_id = ?`).run(status, taskId);
+
+  if (status === 'DONE') {
+    const task = db.prepare('SELECT post_id FROM comment_assistant_tasks WHERE task_id = ?').get(taskId);
+    if (task?.post_id) {
+      try {
+        db.prepare(`INSERT INTO comment_assistant_history (account, post_id, commented_at)
+          VALUES (?, ?, LOCALTIMESTAMP)
+          ON CONFLICT (account, post_id) DO NOTHING`).run(account, String(task.post_id));
+      } catch (_) {
+        // Older DB adapters may not support ON CONFLICT syntax; task result is already persisted.
+      }
+    }
+  }
 
   res.json({ success: true, data: { task_id: taskId, status } });
 });
@@ -144,5 +253,5 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, HOST, () => {
   console.log(`[Comment Assistant Mobile] http://${HOST}:${PORT}/`);
-  console.log('[Comment Assistant Mobile] Enter = 手动确认当前任务完成并进入下一条');
+  console.log(`[Comment Assistant Mobile] Worker=${WORKER_ID} | 默认任务=${DEFAULT_TASK_NAME} | 队列=${DEFAULT_TASK_COUNT}`);
 });
