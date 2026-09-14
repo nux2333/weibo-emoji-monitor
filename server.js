@@ -1029,6 +1029,13 @@ const SCRIPT_DEFINITIONS = [
     pm2Name: 'weibo-proxy-pool',
     description: '每15分钟维护健康代理池',
     group: 'service'
+  },
+  {
+    key: 'comment-assistant',
+    name: '评论助手',
+    pm2Name: 'comment-assistant',
+    description: 'Comment Assistant；由 PM2 常驻管理',
+    group: 'service'
   }
 ];
 
