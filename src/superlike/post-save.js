@@ -130,20 +130,51 @@ function saveTargetPost(monitorId, post, profileStatus = 'UNKNOWN') {
     rawJson = null;
   }
 
-  return saveSuperLikeTargetPost({
-    monitorId,
-    postId,
-    uid,
-    username,
-    postLink,
-    postText,
-    commentsCount,
-    iconSummary,
-    postCreatedAt,
-    postCreatedAtMs,
-    profileStatus,
-    rawJson
-  });
+  try {
+    return saveSuperLikeTargetPost({
+      monitorId,
+      postId,
+      uid,
+      username,
+      postLink,
+      postText,
+      commentsCount,
+      iconSummary,
+      postCreatedAt,
+      postCreatedAtMs,
+      profileStatus,
+      rawJson
+    });
+  } catch (error) {
+    /*
+     * PostgreSQL 23505 = unique_violation。
+     * 并发扫描时，同一个帖子可能在两个任务里同时通过“尚不存在”检查，
+     * 第二个 INSERT 会命中唯一约束。这个属于可安全忽略的重复保存，
+     * 不应该让整批 Promise.all / 整轮扫描中断。
+     *
+     * 同时保留 unique / 重复键 文案兜底，兼容不同数据库适配层。
+     */
+    const message = String(error?.message || '');
+    const isDuplicate =
+      String(error?.code || '') === '23505'
+      || message.toLowerCase().includes('unique')
+      || message.includes('重复键');
+
+    if (isDuplicate) {
+      console.log(
+        `[SuperLike][重复跳过] Monitor=${monitorId} | UID=${uid} | Post=${postId} | ${error?.constraint || 'unique_violation'}`
+      );
+
+      return {
+        status: 'kept_existing',
+        postId,
+        uid,
+        duplicate: true
+      };
+    }
+
+    throw error;
+  }
 }
 
 module.exports = {
