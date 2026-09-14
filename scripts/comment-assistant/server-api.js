@@ -6,8 +6,8 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
-const { chromium } = require('playwright');
 const { db, initDatabase } = require('../../src/db');
+const { openPostForAccount } = require('./http-session-common');
 
 const ROOT = path.join(__dirname, '..', '..');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
@@ -66,7 +66,6 @@ app.use(express.json({ limit: '128kb' }));
 app.use('/static', express.static(PUBLIC_DIR));
 
 const workers = new Map();
-const manualContexts = new Map();
 
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
@@ -195,26 +194,6 @@ function launchAccountLogin(name) {
   child.unref();
 
   return { account, pid: child.pid };
-}
-
-async function manualContextForAccount(account) {
-  const existing = manualContexts.get(account);
-  if (existing) return existing;
-
-  const profileDir = accountProfileDir(account);
-  if (!fs.existsSync(profileDir)) throw new Error(`账号 Profile 不存在：${account}`);
-
-  const context = await chromium.launchPersistentContext(profileDir, {
-    headless: false,
-    viewport: { width: 1280, height: 900 }
-  });
-
-  manualContexts.set(account, context);
-  context.once('close', () => {
-    if (manualContexts.get(account) === context) manualContexts.delete(account);
-  });
-
-  return context;
 }
 
 function bearer(req) {
@@ -552,11 +531,7 @@ app.post('/api/my-tasks/:account/open-current', userAuth, async (req, res) => {
       return res.status(404).json({ success: false, message: '当前账号没有待处理任务' });
     }
 
-    const context = await manualContextForAccount(account);
-    const pages = context.pages();
-    const page = pages[0] || (await context.newPage());
-    await page.goto(current.post_link, { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => null);
-    await page.bringToFront().catch(() => null);
+    await openPostForAccount(account, current.post_link);
 
     touchWorker(worker, {
       account,
