@@ -8,7 +8,6 @@ const ROOT = path.join(__dirname, '..', '..');
 const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
 const HTTP_TIMEOUT_MS = Number(process.env.COMMENT_HTTP_TIMEOUT_MS || 15000);
-const openPostContexts = new Map();
 
 function sanitizeAccountName(value) {
   const raw = String(value || 'default').trim();
@@ -45,37 +44,6 @@ async function launchProfileContext(accountName, options = {}) {
     viewport: { width: 1280, height: 900 },
     ignoreHTTPSErrors: true
   });
-}
-
-async function openPostForAccount(accountName, postLink, options = {}) {
-  const account = sanitizeAccountName(accountName);
-  const link = String(postLink || '').trim();
-  if (!link) throw new Error('postLink 不能为空');
-
-  let context = openPostContexts.get(account);
-  if (!context) {
-    context = await launchProfileContext(account, {
-      headless: options.headless === true
-    });
-    openPostContexts.set(account, context);
-    context.once('close', () => {
-      if (openPostContexts.get(account) === context) openPostContexts.delete(account);
-    });
-  }
-
-  const pages = context.pages();
-  const page = pages[0] || (await context.newPage());
-  await page.goto(link, {
-    waitUntil: 'domcontentloaded',
-    timeout: Number(options.timeout || 30000)
-  });
-  await page.bringToFront().catch(() => {});
-
-  return {
-    context,
-    page,
-    url: page.url()
-  };
 }
 
 async function hasWeiboLogin(context) {
@@ -165,7 +133,6 @@ module.exports = {
   accountProfileDir,
   hasProfileData,
   launchProfileContext,
-  openPostForAccount,
   hasWeiboLogin,
   collectBrowserSession,
   readSessionFromProfile,
