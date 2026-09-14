@@ -475,25 +475,37 @@
   });
 
   byId('clearAllTasks').addEventListener('click', async function () {
-    if (!confirm('确定清空执行结果中的所有任务吗？正在执行的任务也会从当前任务队列中移除。')) return;
-
-    this.disabled = true;
-    const oldText = this.textContent;
-    this.textContent = '清空中...';
     try {
-      const result = await api('/api/my-tasks/clear-all', {
-        method: 'POST',
-        body: JSON.stringify({ worker: workerId })
-      });
-      log(`已清空所有任务：${result.cleared_count || 0} 条`);
-      await loadTasks();
-      await loadAvailableTasks();
+      const list = await api('/api/my-tasks');
+      const running = list.reduce((sum, item) => sum + Number(item.running_count || 0), 0);
+      if (running > 0) {
+        alert(`还有 ${running} 条任务正在执行，请先点击“中断全部任务”，再清空。`);
+        return;
+      }
+      if (!list.length) {
+        alert('当前没有任务可以清空');
+        return;
+      }
+      if (!confirm(`确定清空执行结果中的所有任务吗？共 ${list.length} 个账号的任务记录。`)) return;
+
+      this.disabled = true;
+      const oldText = this.textContent;
+      this.textContent = '清空中...';
+      try {
+        const result = await api('/api/my-tasks/clear-all', {
+          method: 'POST',
+          body: JSON.stringify({ worker: workerId })
+        });
+        log(`已清空所有任务：${result.cleared_count || 0} 条`);
+        await loadTasks();
+        await loadAvailableTasks();
+      } finally {
+        this.disabled = false;
+        this.textContent = oldText;
+      }
     } catch (error) {
       alert(error.message);
       log(`清空所有任务失败：${error.message}`);
-    } finally {
-      this.disabled = false;
-      this.textContent = oldText;
     }
   });
 
