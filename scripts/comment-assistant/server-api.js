@@ -7,8 +7,11 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { db, initDatabase } = require('../../src/db');
+const { createFileLogger } = require('./file-logger');
 
 const ROOT = path.join(__dirname, '..', '..');
+const webLogger = createFileLogger('server');
+webLogger.installConsoleTee();
 const POSTGRES_PRELOAD = path.join(ROOT, 'src', 'postgres-preload.js');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
 const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
@@ -30,6 +33,8 @@ if (!TOKEN) {
 
 fs.mkdirSync(PROFILE_ROOT, { recursive: true });
 initDatabase();
+
+db.exec('DROP TABLE IF EXISTS comment_assistant_execution_logs');
 
 db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_history (
   account TEXT NOT NULL,
@@ -61,22 +66,15 @@ db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_task_assignments (
   result TEXT
 )`);
 
-db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_execution_logs (
-  log_id INTEGER PRIMARY KEY AUTOINCREMENT,
-  worker_id TEXT NOT NULL,
-  account TEXT NOT NULL,
-  task_id TEXT,
-  post_id TEXT,
-  post_link TEXT,
-  round_no INTEGER,
-  item_no INTEGER,
-  status TEXT NOT NULL,
-  detail TEXT,
-  created_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
-)`);
-
 const app = express();
 app.use(express.json({ limit: '128kb' }));
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on('finish', () => {
+    console.info(`[HTTP] ${req.method} ${req.originalUrl} -> ${res.statusCode} | ${Date.now() - startedAt}ms`);
+  });
+  next();
+});
 app.use('/static', express.static(PUBLIC_DIR));
 
 const workers = new Map();
@@ -157,6 +155,7 @@ function createAccount(name) {
   const dir = path.join(PROFILE_ROOT, safe);
   if (fs.existsSync(dir)) throw new Error(`账号 ${safe} 已存在`);
   fs.mkdirSync(dir, { recursive: true });
+  console.log(`[Account] 创建账号目录：${safe}`);
 
   return { name: safe, uid: null, username: safe, legacy: false, initialized: false };
 }
@@ -186,6 +185,7 @@ function deleteAccount(name) {
   db.prepare('DELETE FROM comment_assistant_task_assignments WHERE account = ?').run(account);
   db.prepare('DELETE FROM comment_assistant_history WHERE account = ?').run(account);
   fs.rmSync(profileDir, { recursive: true, force: true });
+  console.log(`[Account] 删除账号：${account} | 清理任务=${assignments.length}`);
 
   return { account, deleted: true, released_tasks: assignments.length };
 }
@@ -206,6 +206,7 @@ function launchAccountLogin(name) {
     env: { ...process.env, NODE_OPTIONS: '' }
   });
   child.unref();
+  console.log(`[Account] 打开登录窗口：${account} | pid=${child.pid}`);
 
   return { account, pid: child.pid };
 }
@@ -472,6 +473,7 @@ app.post('/api/accounts', userAuth, (req, res) => {
   try {
     res.json({ success: true, data: createAccount(req.body?.name) });
   } catch (error) {
+    console.error(`[Account] 创建失败：${error.message}`);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -480,6 +482,7 @@ app.delete('/api/accounts/:name', userAuth, (req, res) => {
   try {
     res.json({ success: true, data: deleteAccount(req.params.name) });
   } catch (error) {
+    console.error(`[Account] 删除失败：${error.message}`);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -488,6 +491,7 @@ app.post('/api/accounts/:name/login', userAuth, (req, res) => {
   try {
     res.json({ success: true, data: launchAccountLogin(req.params.name) });
   } catch (error) {
+    console.error(`[Account] 登录窗口启动失败：${error.message}`);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -532,25 +536,6 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
         progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
       };
     });
-  res.json({ success: true, data: rows });
-});
-
-app.get('/api/execution-logs', userAuth, (req, res) => {
-  const worker = workerKey(req.query.worker || DEFAULT_WORKER_ID);
-  const account = sanitizeAccount(req.query.account || '');
-  const limitValue = Number(req.query.limit || 200);
-  const limit = Math.max(1, Math.min(Number.isFinite(limitValue) ? limitValue : 200, 500));
-  const rows = account
-    ? db.prepare(`SELECT log_id, worker_id, account, task_id, post_id, post_link,
-        round_no, item_no, status, detail, created_at
-      FROM comment_assistant_execution_logs
-      WHERE worker_id = ? AND account = ?
-      ORDER BY log_id DESC LIMIT ?`).all(worker, account, limit)
-    : db.prepare(`SELECT log_id, worker_id, account, task_id, post_id, post_link,
-        round_no, item_no, status, detail, created_at
-      FROM comment_assistant_execution_logs
-      WHERE worker_id = ?
-      ORDER BY log_id DESC LIMIT ?`).all(worker, limit);
   res.json({ success: true, data: rows });
 });
 
@@ -610,8 +595,10 @@ app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
         WHERE worker_id = ? AND account = ?`).run(worker, account);
     }
 
+    console.log(`[Task] account=${account} | action=${action} | worker=${worker}`);
     res.json({ success: true, data: { account, action } });
   } catch (error) {
+    console.error(`[Task] 操作失败：${error.message}`);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -634,8 +621,10 @@ app.post('/api/tasks/:taskId/claim', userAuth, (req, res) => {
       ? claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes)
       : claimSinglePublishedTask(taskId, worker, accounts);
 
+    console.log(`[Task] 领取 task=${taskId} | worker=${worker} | accounts=${accounts.join(',')} | count=${data.count}`);
     res.json({ success: true, data });
   } catch (error) {
+    console.error(`[Task] 领取失败：${error.message}`);
     res.status(400).json({ success: false, message: error.message });
   }
 });
@@ -652,7 +641,9 @@ app.post('/api/tasks/claim', userAuth, (req, res) => {
     return res.status(400).json({ success: false, message: '至少选择一个账号' });
   }
 
-  res.json({ success: true, data: claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes) });
+  const data = claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes);
+  console.log(`[Task] 批量领取 | worker=${worker} | accounts=${accounts.join(',')} | count=${data.count}`);
+  res.json({ success: true, data });
 });
 
 app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
@@ -683,6 +674,7 @@ app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
     SET status = ?, updated_at = LOCALTIMESTAMP
     WHERE task_id = ?`).run(status, taskId);
 
+  console.log(`[Task] 结果 task=${taskId} | worker=${worker} | status=${status}`);
   res.json({ success: true });
 });
 
@@ -718,6 +710,7 @@ app.post('/api/admin/tasks', adminAuth, (req, res) => {
     note || null,
     priority
   );
+  console.log(`[Admin] 创建任务：${taskId}`);
   res.json({ success: true, data: { task_id: taskId } });
 });
 
@@ -726,6 +719,7 @@ app.post('/api/admin/tasks/:taskId/cancel', adminAuth, (req, res) => {
   db.prepare(`UPDATE comment_assistant_tasks
     SET status = 'CANCELLED', updated_at = LOCALTIMESTAMP
     WHERE task_id = ?`).run(taskId);
+  console.log(`[Admin] 取消任务：${taskId}`);
   res.json({ success: true });
 });
 
@@ -746,5 +740,6 @@ app.listen(PORT, HOST, () => {
   console.log(`[Comment Assistant] Admin: http://${HOST}:${PORT}/admin`);
   console.log(`[Comment Assistant] Profiles=${PROFILE_ROOT}`);
   console.log(`[Comment Assistant] Worker=${DEFAULT_WORKER_ID}`);
+  console.log(`[Comment Assistant] LogFile=${webLogger.logFile}`);
   console.log(`[Comment Assistant] Admin=${ADMIN_TOKEN ? 'enabled' : 'disabled (set COMMENT_ADMIN_TOKEN)'}`);
 });
