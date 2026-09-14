@@ -474,6 +474,29 @@
     }
   });
 
+  byId('clearAllTasks').addEventListener('click', async function () {
+    if (!confirm('确定清空执行结果中的所有任务吗？正在执行的任务也会从当前任务队列中移除。')) return;
+
+    this.disabled = true;
+    const oldText = this.textContent;
+    this.textContent = '清空中...';
+    try {
+      const result = await api('/api/my-tasks/clear-all', {
+        method: 'POST',
+        body: JSON.stringify({ worker: workerId })
+      });
+      log(`已清空所有任务：${result.cleared_count || 0} 条`);
+      await loadTasks();
+      await loadAvailableTasks();
+    } catch (error) {
+      alert(error.message);
+      log(`清空所有任务失败：${error.message}`);
+    } finally {
+      this.disabled = false;
+      this.textContent = oldText;
+    }
+  });
+
   initCollapse('toggleAccounts', 'accountPanel', 'caAccountsCollapsed');
   initCollapse('toggleAvailableTasks', 'availableTasksPanel', 'caAvailableTasksCollapsed');
   initCollapse('toggleResults', 'resultsPanel', 'caResultsCollapsed');
