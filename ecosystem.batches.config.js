@@ -71,6 +71,13 @@ module.exports = {
       max_restarts: 0,
       env: { ...common.env }
     },
-    { ...common, name: 'weibo-proxy-pool', script: path.join(__dirname, 'scripts', 'build-weibo-proxy-pool.js') }
+    { ...common, name: 'weibo-proxy-pool', script: path.join(__dirname, 'scripts', 'build-weibo-proxy-pool.js') },
+    {
+      ...common,
+      name: 'comment-assistant',
+      script: path.join(__dirname, 'scripts', 'comment-assistant', 'cli.js'),
+      node_args: ['--require', SKIP_DB_INIT_PRELOAD],
+      env: { ...common.env }
+    }
   ]
 };
