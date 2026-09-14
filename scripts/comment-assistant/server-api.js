@@ -61,6 +61,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_task_assignments (
   result TEXT
 )`);
 
+db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_execution_logs (
+  log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  worker_id TEXT NOT NULL,
+  account TEXT NOT NULL,
+  task_id TEXT,
+  post_id TEXT,
+  post_link TEXT,
+  round_no INTEGER,
+  item_no INTEGER,
+  status TEXT NOT NULL,
+  detail TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
+)`);
+
 const app = express();
 app.use(express.json({ limit: '128kb' }));
 app.use('/static', express.static(PUBLIC_DIR));
@@ -295,7 +309,35 @@ function availableTasks() {
   ];
 }
 
-function claimBuiltinRandomHighExp(worker, accounts, loops) {
+function spawnLoopExecutionForAccount(worker, account, loops = 1, intervalMinutes = 0) {
+  const script = path.join(__dirname, 'index-http.js');
+  const child = spawn(process.execPath, [script], {
+    cwd: ROOT,
+    stdio: 'inherit',
+    env: {
+      ...process.env,
+      COMMENT_ACCOUNT: account,
+      COMMENT_ASSISTANT_PROFILE: accountProfileDir(account),
+      COMMENT_TARGET_LIMIT: String(TASK_TARGET_PER_ACCOUNT),
+      COMMENT_LOOP_MODE: '1',
+      COMMENT_LOOP_COUNT: String(Math.max(1, Number(loops || 1))),
+      COMMENT_LOOP_INTERVAL_MINUTES: String(Math.max(0, Number(intervalMinutes || 0))),
+      COMMENT_WORKER_ID: worker
+    }
+  });
+
+  child.on('exit', (code, signal) => {
+    if (signal) {
+      console.warn(`[TaskLoop] 账号 ${account} 被信号 ${signal} 终止`);
+      return;
+    }
+    console.log(`[TaskLoop] 账号 ${account} 退出 | code=${code ?? 0}`);
+  });
+
+  return child;
+}
+
+function claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes = 0) {
   const targetCount = Math.min(accounts.length * TASK_TARGET_PER_ACCOUNT * loops, 2000);
   const poolSize = Math.max(targetCount * 8, 200);
   const candidates = db
@@ -382,6 +424,12 @@ function claimBuiltinRandomHighExp(worker, accounts, loops) {
     status: claimed.length ? 'tasks-claimed' : 'idle',
     note: `${DEFAULT_TASK_NAME}：领取 ${claimed.length} 条`
   });
+
+  if (claimed.length && accounts.length) {
+    for (const account of accounts) {
+      spawnLoopExecutionForAccount(worker, account, loops, intervalMinutes);
+    }
+  }
 
   return { worker, loops, accounts, count: claimed.length, items: claimed };
 }
@@ -504,6 +552,25 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
         current_post_text: current?.post_text || null
       };
     });
+  res.json({ success: true, data: rows });
+});
+
+app.get('/api/execution-logs', userAuth, (req, res) => {
+  const worker = workerKey(req.query.worker || DEFAULT_WORKER_ID);
+  const account = sanitizeAccount(req.query.account || '');
+  const limitValue = Number(req.query.limit || 200);
+  const limit = Math.max(1, Math.min(Number.isFinite(limitValue) ? limitValue : 200, 500));
+  const rows = account
+    ? db.prepare(`SELECT log_id, worker_id, account, task_id, post_id, post_link,
+        round_no, item_no, status, detail, created_at
+      FROM comment_assistant_execution_logs
+      WHERE worker_id = ? AND account = ?
+      ORDER BY log_id DESC LIMIT ?`).all(worker, account, limit)
+    : db.prepare(`SELECT log_id, worker_id, account, task_id, post_id, post_link,
+        round_no, item_no, status, detail, created_at
+      FROM comment_assistant_execution_logs
+      WHERE worker_id = ?
+      ORDER BY log_id DESC LIMIT ?`).all(worker, limit);
   res.json({ success: true, data: rows });
 });
 
@@ -679,14 +746,16 @@ app.post('/api/tasks/:taskId/claim', userAuth, (req, res) => {
       ? req.body.accounts.map(sanitizeAccount).filter(Boolean)
       : [];
     const loops = Math.max(1, Math.min(Number(req.body?.loops || 1), 20));
+    const intervalMinutes = Math.max(0, Math.min(Number(req.body?.interval_minutes || 0), 1440));
 
     if (!accounts.length) {
       return res.status(400).json({ success: false, message: '至少选择一个账号' });
     }
 
     const data = taskId === DEFAULT_TASK_ID
-      ? claimBuiltinRandomHighExp(worker, accounts, loops)
+      ? claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes)
       : claimSinglePublishedTask(taskId, worker, accounts);
+
     res.json({ success: true, data });
   } catch (error) {
     res.status(400).json({ success: false, message: error.message });
@@ -699,12 +768,13 @@ app.post('/api/tasks/claim', userAuth, (req, res) => {
     ? req.body.accounts.map(sanitizeAccount).filter(Boolean)
     : [];
   const loops = Math.max(1, Math.min(Number(req.body?.loops || 1), 20));
+  const intervalMinutes = Math.max(0, Math.min(Number(req.body?.interval_minutes || 0), 1440));
 
   if (!accounts.length) {
     return res.status(400).json({ success: false, message: '至少选择一个账号' });
   }
 
-  res.json({ success: true, data: claimBuiltinRandomHighExp(worker, accounts, loops) });
+  res.json({ success: true, data: claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes) });
 });
 
 app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {

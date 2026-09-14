@@ -31,6 +31,15 @@
 node -r ./src/postgres-preload.js .\scripts\comment-assistant\index.js
 ```
 
+网页领取任务需要另外启动任务 API：
+
+```powershell
+$env:COMMENT_API_TOKEN='请设置一个本机任务 API 密钥'
+npm.cmd run comment-assistant-api
+```
+
+然后打开 API 输出的 `http://127.0.0.1:3012/user`，在页面中输入同一个 API 密钥后点击“连接”。如果没有启动这个 API，点击“领取任务”不会提交到后端。
+
 也可以继续使用原来的 CLI / Web 入口，它们仍然调用 `index.js`。
 
 账号 Profile 默认保存在：

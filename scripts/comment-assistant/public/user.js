@@ -14,14 +14,19 @@
   }
 
   async function api(url, options = {}) {
-    const response = await fetch(url, {
-      ...options,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${tokenEl.value.trim()}`,
-        ...(options.headers || {})
-      }
-    });
+    let response;
+    try {
+      response = await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${tokenEl.value.trim()}`,
+          ...(options.headers || {})
+        }
+      });
+    } catch (_) {
+      throw new Error('无法连接评论任务 API，请先启动 comment-assistant-api');
+    }
 
     let json;
     try {
@@ -228,6 +233,8 @@
     list.forEach(item => {
       const row = document.createElement('tr');
       const hasRunning = Number(item.running_count || 0) > 0;
+      const completed = Number(item.progress_count || 0);
+      const target = Number(item.target_count || 20);
 
       const account = document.createElement('td');
       account.textContent = item.account || '-';
@@ -236,7 +243,8 @@
       taskName.textContent = item.task_name || '-';
 
       const progress = document.createElement('td');
-      progress.textContent = `${hasRunning ? '待处理 · ' : ''}${item.progress_count || 0}/${item.target_count || 20}`;
+      const progressText = `${completed}/${target}`;
+      progress.textContent = hasRunning ? `待处理 · ${progressText}` : progressText;
 
       const confirmTd = document.createElement('td');
       if (hasRunning) {
@@ -279,6 +287,44 @@
       }
 
       row.append(account, taskName, progress, confirmTd, actions);
+      body.appendChild(row);
+    });
+  }
+
+  async function loadExecutionLogs() {
+    const list = await api('/api/execution-logs?worker=' + encodeURIComponent(workerId));
+    const body = byId('executionLogs');
+    body.innerHTML = '';
+
+    if (!list.length) {
+      body.innerHTML = '<tr><td colspan="6" class="muted">暂无执行记录</td></tr>';
+      return;
+    }
+
+    list.forEach(item => {
+      const row = document.createElement('tr');
+      const time = document.createElement('td');
+      time.textContent = item.created_at || '-';
+      const account = document.createElement('td');
+      account.textContent = item.account || '-';
+      const round = document.createElement('td');
+      round.textContent = item.round_no ? `${item.round_no} / ${item.item_no || '-'}` : '-';
+      const status = document.createElement('td');
+      status.textContent = item.status || '-';
+      const linkCell = document.createElement('td');
+      if (item.post_link) {
+        const link = document.createElement('a');
+        link.href = item.post_link;
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        link.textContent = item.post_link;
+        linkCell.appendChild(link);
+      } else {
+        linkCell.textContent = '-';
+      }
+      const detail = document.createElement('td');
+      detail.textContent = item.detail || '-';
+      row.append(time, account, round, status, linkCell, detail);
       body.appendChild(row);
     });
   }
@@ -334,6 +380,7 @@
       await loadAccounts();
       await loadAvailableTasks();
       await loadTasks();
+      await loadExecutionLogs();
       await heartbeat();
       log('连接成功');
     } catch (error) {
@@ -433,7 +480,13 @@
     const row = button.closest('tr');
     const loopInput = row?.querySelector('.task-loops');
     const intervalInput = row?.querySelector('.task-interval');
-    const loops = loopInput ? Math.max(1, Math.min(Number(loopInput.value || 1), 20)) : 1;
+    const isBuiltinLoopTask = button.dataset.taskId === 'builtin-random-high-exp';
+
+    // 与 CLI `npm.cmd run comment-assistant -- loop 1` 的执行语义保持一致：
+    // - 只处理当前页面已勾选的账号
+    // - 不实际启动一个新 npm 子进程
+    // - 内建任务强制按 1 轮循环执行，单账号上限按 20 条看待
+    const loops = isBuiltinLoopTask ? 1 : (loopInput ? Math.max(1, Math.min(Number(loopInput.value || 1), 20)) : 1);
     const intervalMinutes = intervalInput
       ? Math.max(0, Math.min(Number(intervalInput.value || 0), 1440))
       : 0;
@@ -449,9 +502,17 @@
     try {
       const data = await api(`/api/tasks/${encodeURIComponent(button.dataset.taskId)}/claim`, {
         method: 'POST',
-        body: JSON.stringify({ worker: workerId, accounts, loops })
+        body: JSON.stringify({
+          worker: workerId,
+          accounts,
+          loops,
+          interval_minutes: intervalMinutes,
+          mode: isBuiltinLoopTask ? 'cli-loop-1' : 'manual'
+        })
       });
-      log(`任务 ${button.dataset.taskId} 领取 ${data.count} 条 | 账号=${accounts.join(',')} | Loop=${loops} | 间隔=${intervalMinutes}分钟`);
+
+      const modeLabel = isBuiltinLoopTask ? 'CLI loop 1' : 'manual';
+      log(`任务 ${button.dataset.taskId} 按 ${modeLabel} 逻辑领取 ${data.count} 条 | 账号=${accounts.join(',')} | Loop=${loops} | 间隔=${intervalMinutes}分钟`);
       await loadAvailableTasks();
       await loadTasks();
     } catch (error) {
@@ -586,5 +647,6 @@
     heartbeat();
     loadAvailableTasks().catch(() => {});
     loadTasks().catch(() => {});
-  }, 15000);
+    loadExecutionLogs().catch(() => {});
+  }, 3000);
 })();

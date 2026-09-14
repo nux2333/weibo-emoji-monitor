@@ -6,6 +6,7 @@ const readline = require('readline/promises');
 const { stdin: input, stdout: output } = require('process');
 const { chromium, request } = require('playwright');
 const { db, initDatabase } = require('../../src/db');
+const { createCommentAutoService } = require('./comment-auto-service');
 
 const ROOT = path.join(__dirname, '..', '..');
 function sanitizeAccountName(value) {
@@ -35,6 +36,8 @@ const COMMENT_FP = process.env.COMMENT_FP || '';
 const COMMENT_BROWSER_PROXY = String(process.env.COMMENT_BROWSER_PROXY || '').trim();
 const HTTP_TIMEOUT_MS = Number(process.env.COMMENT_HTTP_TIMEOUT_MS || 15000);
 const PROXY_RETRIES = Math.max(1, Number(process.env.COMMENT_PROXY_RETRIES || 3));
+const LOOP_COUNT = Math.max(1, Number(process.env.COMMENT_LOOP_COUNT || 1));
+const LOOP_INTERVAL_MINUTES = Math.max(0, Number(process.env.COMMENT_LOOP_INTERVAL_MINUTES || 0));
 const LOGIN_TEST_URL = 'https://weibo.com/newlogin?tabtype=weibo&gid=102803&openLoginLayer=0&url=https://weibo.com/';
 let ACCOUNT_PROXY = null;
 let PROXY_POOL = [];
@@ -142,6 +145,19 @@ function initCommentHistory() {
     commented_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (account, post_id)
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_execution_logs (
+    log_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL,
+    account TEXT NOT NULL,
+    task_id TEXT,
+    post_id TEXT,
+    post_link TEXT,
+    round_no INTEGER,
+    item_no INTEGER,
+    status TEXT NOT NULL,
+    detail TEXT,
+    created_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP
+  )`);
 }
 function hasCommented(postId) {
   return Boolean(db.prepare('SELECT 1 FROM comment_assistant_history WHERE account = ? AND post_id = ? LIMIT 1').get(ACCOUNT, String(postId)));
@@ -156,7 +172,72 @@ function getCommentedCount() {
   return Number(row?.cnt || 0);
 }
 
+function findAssignedTaskForPost(postId) {
+  const worker = String(process.env.COMMENT_WORKER_ID || 'default');
+  const row = db.prepare(`SELECT a.task_id, a.worker_id, a.account, t.post_id, t.post_link, t.post_text
+    FROM comment_assistant_task_assignments a
+    JOIN comment_assistant_tasks t ON t.task_id = a.task_id
+    WHERE a.account = ? AND a.worker_id = ? AND a.status = 'CLAIMED' AND t.post_id = ?
+    LIMIT 1`).get(ACCOUNT, worker, String(postId));
+  return row || null;
+}
+
+function markAssignedTaskDone(postId) {
+  const row = findAssignedTaskForPost(postId);
+  if (!row) return null;
+
+  db.prepare(`UPDATE comment_assistant_task_assignments
+    SET status = 'DONE', result = '自动评论成功', completed_at = LOCALTIMESTAMP
+    WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(row.task_id, row.worker_id, row.account);
+  db.prepare(`UPDATE comment_assistant_tasks
+    SET status = 'DONE', updated_at = LOCALTIMESTAMP
+    WHERE task_id = ?`).run(row.task_id);
+  return row.task_id;
+}
+
+function writeExecutionLog(row, roundNo, itemNo, status, detail) {
+  const worker = String(process.env.COMMENT_WORKER_ID || 'default');
+  const assignment = findAssignedTaskForPost(row.post_id);
+  db.prepare(`INSERT INTO comment_assistant_execution_logs
+    (worker_id, account, task_id, post_id, post_link, round_no, item_no, status, detail)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+    worker,
+    ACCOUNT,
+    assignment?.task_id || null,
+    row.post_id == null ? null : String(row.post_id),
+    row.post_link || null,
+    roundNo,
+    itemNo,
+    String(status || 'INFO').slice(0, 40),
+    String(detail || '').slice(0, 1000)
+  );
+}
+
 function getTargets() {
+  const worker = String(process.env.COMMENT_WORKER_ID || 'default');
+  const assignedRows = db.prepare(`SELECT t.post_id, t.post_link, t.post_text, t.note,
+      t.priority, a.account, t.created_at
+    FROM comment_assistant_task_assignments a
+    JOIN comment_assistant_tasks t ON t.task_id = a.task_id
+    WHERE a.account = ? AND a.worker_id = ? AND a.status = 'CLAIMED'
+    ORDER BY a.claimed_at ASC, t.created_at ASC
+    LIMIT ?`).all(ACCOUNT, worker, LIMIT);
+
+  if (assignedRows.length) {
+    return assignedRows.filter(row => row.post_link && String(row.post_link).trim()).map(row => ({
+      post_id: row.post_id,
+      uid: null,
+      username: ACCOUNT,
+      post_link: row.post_link,
+      post_text: row.post_text,
+      experience_7d: null,
+      comments_count: 0,
+      initial_comments_count: 0,
+      post_created_at: new Date().toISOString(),
+      first_seen_at: row.created_at || new Date().toISOString()
+    }));
+  }
+
   const today = getShanghaiToday();
   const rows = db.prepare(`SELECT post_id, uid, username, post_link, post_text, experience_7d,
     comments_count, initial_comments_count, post_created_at, first_seen_at
@@ -322,6 +403,9 @@ function summarizeResult(result) {
   return [`HTTP ${result.status}`, code !== null ? `code=${code}` : '', message ? `msg=${message}` : '',
     result.csrfSource ? `csrf=${result.csrfSource}` : ''].filter(Boolean).join(' | ');
 }
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 async function rebuildHttpSession(rl, forceLogin = false, existingSession = null) {
   const browserSession = existingSession || await browserLoginSession(rl, forceLogin);
   const api = await createHttpContext(browserSession);
@@ -384,11 +468,26 @@ async function main() {
   initDatabase();
   initCommentHistory();
   initializeAccountProxy();
+
+  const commentAutoService = createCommentAutoService({
+    logger: console,
+    httpTimeoutMs: HTTP_TIMEOUT_MS,
+    proxyRetries: PROXY_RETRIES,
+    commentFp: COMMENT_FP,
+    defaultComment: DEFAULT_COMMENT,
+    rotateSessionFn: async (currentApi, session) => rotateHttpSession(currentApi, session),
+    isHttpProxyFailureFn: isHttpProxyFailure,
+    isLoginUrlFn: isLoginUrl,
+    shortErrorFn: shortError
+  });
+
   const rl = readline.createInterface({ input, output });
   let api = null;
   let browserSession = null;
   try {
     ({ api, browserSession } = await rebuildHttpSession(rl, false));
+    commentAutoService.setRuntime(api, browserSession);
+
     const targets = getTargets();
     const commentedCount = getCommentedCount();
     console.log(`[去重] 账号=${ACCOUNT} | 已评论记录=${commentedCount}`);
@@ -399,108 +498,100 @@ async function main() {
     console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`);
     console.log(`默认评论：${DEFAULT_COMMENT}`);
 
-    for (let i = 0; i < targets.length; i += 1) {
-      const row = targets[i];
-      console.log('\n==============================================');
-      console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'} | UID=${row.uid || '-'} | ${row.username || '-'}`);
-      console.log(`Link=${row.post_link}`);
-
-      let warm = null;
-      let warmError = null;
-      for (let attempt = 1; attempt <= PROXY_RETRIES; attempt += 1) {
-        try {
-          const candidateWarm = await warmPost(api, row.post_link);
-          if (isHttpProxyFailure(candidateWarm.status)) {
-            console.warn(`[HTTP评论] 帖子GET HTTP ${candidateWarm.status}，自动切换代理`);
-            if (attempt >= PROXY_RETRIES) {
-              warmError = new Error(`HTTP ${candidateWarm.status}`);
-              break;
-            }
-            const nextApi = await rotateHttpSession(api, browserSession);
-            if (!nextApi) {
-              warmError = new Error(`HTTP ${candidateWarm.status}，没有可切换代理`);
-              break;
-            }
-            api = nextApi;
-            continue;
-          }
-          warm = candidateWarm;
-          warmError = null;
-          if (attempt > 1) console.log(`[HTTP评论] 重试成功 | HTTP=${warm.status}`);
-          break;
-        } catch (error) {
-          warmError = error;
-          console.warn(`[HTTP评论] 帖子GET失败：${shortError(error)}`);
-          if (attempt >= PROXY_RETRIES) break;
-          const nextApi = await rotateHttpSession(api, browserSession);
-          if (!nextApi) break;
-          api = nextApi;
-        }
+    for (let round = 1; round <= LOOP_COUNT; round += 1) {
+      const targets = getTargets();
+      if (!targets.length) {
+        console.log(`[Loop ${round}/${LOOP_COUNT}] 当前账号没有更多待处理任务，退出循环。`);
+        break;
       }
-      if (!warm) {
-        console.warn(`[HTTP评论] 重试后仍失败，跳过本条${warmError ? `：${shortError(warmError)}` : ''}`);
-        continue;
-      }
-      if (isLoginUrl(warm.url)) {
-        if (skipLoopAccountForExpiredLogin('帖子 GET 被重定向到登录页')) return;
-        console.log('[登录] HTTP会话已失效，只为当前账号临时启动 Chromium 重新登录。');
-        await api.dispose().catch(() => {});
-        ({ api, browserSession } = await rebuildHttpSession(rl, true));
-        i -= 1;
-        continue;
-      }
+      console.log(`\n#################### Loop ${round}/${LOOP_COUNT} ####################`);
 
-      const csrfState = await refreshCsrfBeforePrompt(api, browserSession, row.post_link);
-      api = csrfState.api;
-      if (!csrfState.csrf) {
-        if (skipLoopAccountForExpiredLogin(`CSRF 无法恢复${csrfState.error ? `：${shortError(csrfState.error)}` : ''}`)) return;
-        console.log(`[登录] CSRF 无法恢复${csrfState.error ? `：${shortError(csrfState.error)}` : ''}，重新登录。`);
-        await api.dispose().catch(() => {});
-        ({ api, browserSession } = await rebuildHttpSession(rl, true));
-        console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动发表评论。');
-        i -= 1;
-        continue;
-      }
+      for (let i = 0; i < targets.length; i += 1) {
+        const row = targets[i];
+        const itemNo = i + 1;
+        console.log('\n==============================================');
+        console.log(`[${i + 1}/${targets.length}] 经验值=${row.experience_7d} | 初始评论=${row.initial_comments_count ?? '-'} | UID=${row.uid || '-'} | ${row.username || '-'}`);
+        console.log(`Link=${row.post_link}`);
 
-     /* const answer = (await rl.question(`发送评论“${DEFAULT_COMMENT}”？输入 y 发送；s 跳过；q 退出：`)).trim().toLowerCase();
-      if (answer === 'q') break;
-      if (answer !== 'y') continue;*/
+        const result = await commentAutoService.submitComment({
+          postId: row.post_id,
+          postLink: row.post_link,
+          commentText: DEFAULT_COMMENT
+        });
 
-      try {
-        const result = await sendCommentHttp(api, row.post_id, row.post_link, DEFAULT_COMMENT);
-        const success = isCommentSuccess(result);
-        console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(result)}`);
-        if (success) rememberCommented(row.post_id);
-        if (!success && result?.text) console.log(`[微博返回] ${String(result.text).slice(0, 500)}`);
-        if (!success && isHttpProxyFailure(result?.status)) {
-          const nextApi = await rotateHttpSession(api, browserSession);
-          if (nextApi) {
-            api = nextApi;
-            console.log(`[HTTP评论] HTTP ${result.status} → 已切换代理；当前帖子重新显示，不会自动重发。`);
-            i -= 1;
-            continue;
-          }
-          console.warn(`[HTTP评论] HTTP ${result.status}，但没有其他可用代理可切换。`);
-        }
-        if (isLoginExpiredResult(result)) {
-          if (skipLoopAccountForExpiredLogin(`微博评论接口返回登录失效：${summarizeResult(result)}`)) return;
-          console.log('[登录] 微博会话失效，只为当前账号临时启动 Chromium 重新登录。');
-          await api.dispose().catch(() => {});
-          ({ api, browserSession } = await rebuildHttpSession(rl, true));
-          console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动重发。');
-          i -= 1;
-        }
-      } catch (error) {
-        const reason = shortError(error);
-        console.error(`[评论失败] ${reason}`);
-        const nextApi = await rotateHttpSession(api, browserSession);
-        if (nextApi) {
-          api = nextApi;
-          console.log(`[HTTP评论] POST ${reason} → 已切换代理；当前帖子重新显示，不会自动重发。`);
+        api = result.api || api;
+        commentAutoService.setRuntime(api, browserSession);
+
+        if (result.type === 'retry') {
+          writeExecutionLog(row, round, itemNo, 'RETRY', '代理已切换，当前帖子将重试');
+          console.log(`[HTTP评论] 已切换代理并重试当前帖子，等待下一轮处理。`);
           i -= 1;
           continue;
         }
-        console.warn(`[HTTP评论] POST ${reason}，但没有其他可用代理可切换。`);
+
+        if (result.type === 'login-expired') {
+          writeExecutionLog(row, round, itemNo, 'LOGIN_EXPIRED', result.error ? shortError(result.error) : '登录已失效');
+          if (skipLoopAccountForExpiredLogin(`自动评论链路已检测到登录失效${result.error ? `：${shortError(result.error)}` : ''}`)) return;
+          console.log('[登录] 自动评论链路已失效，只为当前账号临时启动 Chromium 重新登录。');
+          await api.dispose().catch(() => {});
+          ({ api, browserSession } = await rebuildHttpSession(rl, true));
+          commentAutoService.setRuntime(api, browserSession);
+          console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动发表评论。');
+          i -= 1;
+          continue;
+        }
+
+        if (result.type === 'error') {
+          writeExecutionLog(row, round, itemNo, 'FAILED', result.error ? shortError(result.error) : '自动评论链路失败');
+          console.warn(`[HTTP评论] 自动评论链路失败${result.error ? `：${shortError(result.error)}` : ''}`);
+          if (result.warmResult?.status && isHttpProxyFailure(result.warmResult.status)) {
+            console.warn(`[HTTP评论] HTTP ${result.warmResult.status}，但没有其他可用代理可切换。`);
+          }
+          continue;
+        }
+
+        const commentResult = result.commentResult;
+        const success = isCommentSuccess(commentResult);
+        writeExecutionLog(row, round, itemNo, success ? 'SUCCESS' : 'FAILED', summarizeResult(commentResult));
+        console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(commentResult)}`);
+        if (success) {
+          rememberCommented(row.post_id);
+          markAssignedTaskDone(row.post_id);
+        }
+        if (!success && commentResult?.text) console.log(`[微博返回] ${String(commentResult.text).slice(0, 500)}`);
+
+        if (!success && commentResult?.status && isHttpProxyFailure(commentResult.status)) {
+          const nextApi = await rotateHttpSession(api, browserSession);
+          if (nextApi) {
+            api = nextApi;
+            browserSession = browserSession;
+            commentAutoService.setRuntime(api, browserSession);
+            console.log(`[HTTP评论] HTTP ${commentResult.status} → 已切换代理；当前帖子重新显示，不会自动重发。`);
+            i -= 1;
+            continue;
+          }
+          console.warn(`[HTTP评论] HTTP ${commentResult.status}，但没有其他可用代理可切换。`);
+        }
+
+        if (isLoginExpiredResult(commentResult)) {
+          if (skipLoopAccountForExpiredLogin(`微博评论接口返回登录失效：${summarizeResult(commentResult)}`)) return;
+          console.log('[登录] 微博会话失效，只为当前账号临时启动 Chromium 重新登录。');
+          await api.dispose().catch(() => {});
+          ({ api, browserSession } = await rebuildHttpSession(rl, true));
+          commentAutoService.setRuntime(api, browserSession);
+          console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动重发。');
+          i -= 1;
+        }
+
+        if (LOOP_INTERVAL_MINUTES > 0 && i < targets.length - 1) {
+          console.log(`[间隔] 等待 ${LOOP_INTERVAL_MINUTES} 分钟后继续下一条...`);
+          await sleep(LOOP_INTERVAL_MINUTES * 60 * 1000);
+        }
+      }
+
+      if (LOOP_INTERVAL_MINUTES > 0 && round < LOOP_COUNT) {
+        console.log(`[间隔] 本轮结束，等待 ${LOOP_INTERVAL_MINUTES} 分钟后开始下一轮...`);
+        await sleep(LOOP_INTERVAL_MINUTES * 60 * 1000);
       }
     }
   } finally {
