@@ -37,6 +37,10 @@ function createFileLogger(component = 'server') {
 
   const safeComponent = sanitizeComponent(component);
   const logFile = path.join(dateDir, `${safeComponent}_${formatTimestamp(startedAt)}_${process.pid}.log`);
+
+  // Windows 上部分编辑器会把无 BOM 的 UTF-8 日志误判成 ANSI/GBK。
+  // 新建日志时先写 UTF-8 BOM，后续内容继续按 UTF-8 追加。
+  fs.writeFileSync(logFile, '\uFEFF', { encoding: 'utf8', flag: 'wx' });
   const stream = fs.createWriteStream(logFile, { flags: 'a', encoding: 'utf8' });
   const originalConsole = {
     log: console.log.bind(console),
