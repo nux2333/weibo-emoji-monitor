@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { db, initDatabase } = require('../../src/db');
 const { createFileLogger } = require('./file-logger');
+const { findActiveRequest } = require('./login-request-store');
 
 const ROOT = path.join(__dirname, '..', '..');
 const webLogger = createFileLogger('server');
@@ -169,11 +170,30 @@ function deleteAccount(name) {
   const profileDir = accountProfileDir(account);
   if (!fs.existsSync(profileDir)) throw new Error(`账号 ${account} 不存在`);
 
+  const activeLogin = findActiveRequest(account);
+  if (activeLogin && ['PENDING', 'STARTING', 'OPENED'].includes(activeLogin.status)) {
+    throw new Error(`账号 ${account} 的登录窗口仍在使用中，请先关闭登录窗口再删除`);
+  }
+
   const assignments = db
     .prepare(`SELECT task_id, status
       FROM comment_assistant_task_assignments
       WHERE account = ?`)
     .all(account);
+
+  const runningCount = assignments.filter(item => item.status === 'CLAIMED').length;
+  if (runningCount > 0) {
+    throw new Error(`账号 ${account} 还有 ${runningCount} 条任务正在执行，请先中断该账号任务再删除`);
+  }
+
+  try {
+    fs.rmSync(profileDir, { recursive: true, force: true });
+  } catch (error) {
+    if (['EBUSY', 'EPERM', 'ENOTEMPTY', 'EACCES'].includes(error?.code)) {
+      throw new Error(`账号 ${account} 的 Chromium Profile 正在被占用，请关闭该账号 Chromium 窗口并等待几秒后再删除`);
+    }
+    throw error;
+  }
 
   for (const item of assignments) {
     if (item.status === 'CLAIMED' || item.status === 'SKIPPED' || item.status === 'FAILED') {
@@ -185,7 +205,6 @@ function deleteAccount(name) {
 
   db.prepare('DELETE FROM comment_assistant_task_assignments WHERE account = ?').run(account);
   db.prepare('DELETE FROM comment_assistant_history WHERE account = ?').run(account);
-  fs.rmSync(profileDir, { recursive: true, force: true });
   console.log(`[Account] 删除账号：${account} | 清理任务=${assignments.length}`);
 
   return { account, deleted: true, released_tasks: assignments.length };
@@ -193,6 +212,8 @@ function deleteAccount(name) {
 
 function loginProfileConflictMessage(text) {
   const source = String(text || '');
+  const helperError = source.match(/LOGIN_HELPER_ERROR:\s*([^\r\n]+)/i);
+  if (helperError?.[1]) return helperError[1].trim();
   if (/ProcessSingleton|profile directory.*already in use|Lock file can not be created/i.test(source)) {
     return '该账号的 Chromium Profile 正在被其他进程使用。请先中断该账号当前任务，等待几秒后再点“再次登录”。';
   }
