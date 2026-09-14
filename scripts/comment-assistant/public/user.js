@@ -212,6 +212,7 @@
       const processed = success + failed + skipped;
       const target = Math.max(Number(item.target_count || 0), assigned, 1);
       const hasRunning = pending > 0;
+      const percent = Math.max(0, Math.min(100, Math.round((processed / target) * 100)));
 
       const account = document.createElement('td');
       account.textContent = item.account || '-';
@@ -220,13 +221,43 @@
       taskName.textContent = item.task_name || '-';
 
       const progress = document.createElement('td');
-      const summary = document.createElement('div');
-      summary.textContent = `${hasRunning ? '执行中' : '已结束'} · ${processed}/${target}`;
-      const detail = document.createElement('div');
-      detail.className = 'muted';
-      detail.style.marginTop = '4px';
-      detail.textContent = `成功 ${success} ｜ 失败 ${failed} ｜ 跳过 ${skipped} ｜ 待处理 ${pending}`;
-      progress.append(summary, detail);
+      progress.className = 'task-progress-cell';
+
+      const progressBox = document.createElement('div');
+      progressBox.className = 'task-progress';
+
+      const head = document.createElement('div');
+      head.className = 'task-progress-head';
+      const state = document.createElement('span');
+      state.className = hasRunning ? 'task-state running' : 'task-state done';
+      state.textContent = hasRunning ? '执行中' : '已结束';
+      const count = document.createElement('strong');
+      count.textContent = `${processed}/${target}`;
+      head.append(state, count);
+
+      const track = document.createElement('div');
+      track.className = 'task-progress-track';
+      const fill = document.createElement('div');
+      fill.className = 'task-progress-fill';
+      fill.style.width = `${percent}%`;
+      track.appendChild(fill);
+
+      const stats = document.createElement('div');
+      stats.className = 'task-stats';
+      [
+        ['success', '✓', '成功', success],
+        ['failed', '✕', '失败', failed],
+        ['skipped', '↷', '跳过', skipped],
+        ['pending', '…', '待处理', pending]
+      ].forEach(([kind, icon, label, value]) => {
+        const stat = document.createElement('div');
+        stat.className = `task-stat ${kind}`;
+        stat.innerHTML = `<span class="task-stat-icon">${icon}</span><span>${label}</span><strong>${value}</strong>`;
+        stats.appendChild(stat);
+      });
+
+      progressBox.append(head, track, stats);
+      progress.appendChild(progressBox);
 
       const actions = document.createElement('td');
       if (hasRunning) {
