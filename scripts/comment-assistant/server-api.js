@@ -175,10 +175,10 @@ function deleteAccount(name) {
     .all(account);
 
   for (const item of assignments) {
-    if (item.status === 'CLAIMED' || item.status === 'SKIPPED') {
+    if (item.status === 'CLAIMED' || item.status === 'SKIPPED' || item.status === 'FAILED') {
       db.prepare(`UPDATE comment_assistant_tasks
         SET status = 'OPEN', updated_at = LOCALTIMESTAMP
-        WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED')`).run(item.task_id);
+        WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED', 'FAILED')`).run(item.task_id);
     }
   }
 
@@ -268,7 +268,7 @@ function makeTaskId() {
 
 function normalizeStatus(value) {
   const status = String(value || '').toUpperCase();
-  return ['OPEN', 'CLAIMED', 'DONE', 'SKIPPED', 'CANCELLED'].includes(status) ? status : null;
+  return ['OPEN', 'CLAIMED', 'DONE', 'FAILED', 'SKIPPED', 'CANCELLED'].includes(status) ? status : null;
 }
 
 function availableTasks() {
@@ -515,6 +515,7 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
   const rows = db
     .prepare(`SELECT a.account, COUNT(*) AS assigned_count,
         SUM(CASE WHEN a.status = 'DONE' THEN 1 ELSE 0 END) AS completed_count,
+        SUM(CASE WHEN a.status = 'FAILED' THEN 1 ELSE 0 END) AS failed_count,
         SUM(CASE WHEN a.status = 'CLAIMED' THEN 1 ELSE 0 END) AS running_count,
         SUM(CASE WHEN a.status = 'SKIPPED' THEN 1 ELSE 0 END) AS interrupted_count,
         SUM(CASE WHEN t.created_by = ? THEN 1 ELSE 0 END) AS default_task_count,
@@ -527,13 +528,17 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
     .all(DEFAULT_TASK_ID, worker)
     .map(row => {
       const account = accountMap.get(row.account) || {};
+      const successCount = Number(row.completed_count || 0);
+      const failedCount = Number(row.failed_count || 0);
+      const skippedCount = Number(row.interrupted_count || 0);
+      const assignedCount = Number(row.assigned_count || 0);
       return {
         ...row,
         uid: account.uid || null,
         username: account.name || row.account,
         task_name: Number(row.default_task_count || 0) > 0 ? DEFAULT_TASK_NAME : '自定义任务',
-        target_count: TASK_TARGET_PER_ACCOUNT,
-        progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
+        target_count: Math.max(assignedCount, 1),
+        progress_count: successCount + failedCount + skippedCount
       };
     });
   res.json({ success: true, data: rows });
@@ -589,7 +594,7 @@ app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
       for (const taskId of ids) {
         db.prepare(`UPDATE comment_assistant_tasks
           SET status = 'OPEN', updated_at = LOCALTIMESTAMP
-          WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED')`).run(taskId);
+          WHERE task_id = ? AND status IN ('CLAIMED', 'SKIPPED', 'FAILED')`).run(taskId);
       }
       db.prepare(`DELETE FROM comment_assistant_task_assignments
         WHERE worker_id = ? AND account = ?`).run(worker, account);
@@ -653,8 +658,8 @@ app.post('/api/tasks/:taskId/result', userAuth, (req, res) => {
   const result = String(req.body?.result || '').trim().slice(0, 1000);
 
   if (!taskId) return res.status(400).json({ success: false, message: 'taskId required' });
-  if (!['DONE', 'SKIPPED'].includes(status)) {
-    return res.status(400).json({ success: false, message: 'status must be DONE or SKIPPED' });
+  if (!['DONE', 'FAILED', 'SKIPPED'].includes(status)) {
+    return res.status(400).json({ success: false, message: 'status must be DONE, FAILED or SKIPPED' });
   }
 
   const assignment = db
