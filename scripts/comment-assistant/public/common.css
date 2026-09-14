@@ -266,6 +266,79 @@ a {
   white-space: nowrap;
 }
 
+.task-progress {
+  min-width: 180px;
+}
+
+.task-progress-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.task-state {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 2px 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.task-state.running {
+  background: #eff6ff;
+  color: #1d4ed8;
+}
+
+.task-state.done {
+  background: #f3f4f6;
+  color: #4b5563;
+}
+
+.task-progress-track {
+  height: 7px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e5e7eb;
+}
+
+.task-progress-fill {
+  height: 100%;
+  min-width: 0;
+  border-radius: inherit;
+  background: #2563eb;
+  transition: width 0.25s ease;
+}
+
+.task-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.task-stat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  min-width: 0;
+  padding: 4px 5px;
+  border-radius: 7px;
+  background: #f8fafc;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.task-stat strong { font-size: 12px; }
+.task-stat.success { color: #15803d; background: #f0fdf4; }
+.task-stat.failed { color: #b91c1c; background: #fef2f2; }
+.task-stat.skipped { color: #b45309; background: #fffbeb; }
+.task-stat.pending { color: #4b5563; background: #f3f4f6; }
+.task-stat-icon { font-weight: 700; }
+
 .section-gap { margin-top: 18px; }
 .builtin-task td { background: #f8fff9; }
 
@@ -305,5 +378,12 @@ a {
   .task-claim { display: block; width: 100%; min-width: 0; max-width: none; padding: 7px 3px; }
   .task-action { display: block; width: 100%; margin: 3px 0 0; padding: 5px 4px; }
   .scroll table { width: 100%; table-layout: fixed; }
+  .task-progress { min-width: 0; }
+  .task-progress-cell { padding-left: 3px; padding-right: 3px; }
+  .task-progress-head { margin-bottom: 5px; }
+  .task-progress-head strong { font-size: 13px; }
+  .task-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; }
+  .task-stat { justify-content: flex-start; padding: 4px; font-size: 10px; }
+  .task-stat strong { margin-left: auto; font-size: 11px; }
   h2 { font-size: 20px; }
 }
