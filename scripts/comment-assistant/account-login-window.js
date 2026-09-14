@@ -90,17 +90,22 @@ async function main() {
 
   console.log(`[Comment Assistant Login] 打开账号：${account}`);
   console.log(`[Comment Assistant Login] Profile：${profileDir}`);
+  console.log('[Comment Assistant Login] 使用系统 Google Chrome 打开可见登录窗口。');
 
   const context = await chromium.launchPersistentContext(profileDir, {
+    channel: 'chrome',
     headless: false,
-    viewport: { width: 1280, height: 900 }
+    viewport: null,
+    args: ['--start-maximized']
   });
 
   const page = context.pages()[0] || await context.newPage();
+  await page.bringToFront().catch(() => null);
   await page.goto(LOGIN_URL, {
     waitUntil: 'domcontentloaded',
     timeout: 30000
   }).catch(() => null);
+  await page.bringToFront().catch(() => null);
 
   console.log('[Comment Assistant Login] 已打开微博登录页，请完成登录。完成后直接关闭浏览器即可。');
 
