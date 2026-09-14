@@ -7,9 +7,7 @@
   tokenEl.value = sessionStorage.getItem('caToken') || '';
 
   function log(message) {
-    const el = byId('log');
-    el.textContent += `[${new Date().toLocaleTimeString()}] ${message}\n`;
-    el.scrollTop = el.scrollHeight;
+    console.info(`[Comment Assistant UI] ${message}`);
   }
 
   async function api(url, options = {}) {
@@ -233,44 +231,6 @@
     });
   }
 
-  async function loadExecutionLogs() {
-    const list = await api('/api/execution-logs?worker=' + encodeURIComponent(workerId));
-    const body = byId('executionLogs');
-    body.innerHTML = '';
-
-    if (!list.length) {
-      body.innerHTML = '<tr><td colspan="6" class="muted">暂无执行记录</td></tr>';
-      return;
-    }
-
-    list.forEach(item => {
-      const row = document.createElement('tr');
-      const time = document.createElement('td');
-      time.textContent = item.created_at || '-';
-      const account = document.createElement('td');
-      account.textContent = item.account || '-';
-      const round = document.createElement('td');
-      round.textContent = item.round_no ? `${item.round_no} / ${item.item_no || '-'}` : '-';
-      const status = document.createElement('td');
-      status.textContent = item.status || '-';
-      const linkCell = document.createElement('td');
-      if (item.post_link) {
-        const link = document.createElement('a');
-        link.href = item.post_link;
-        link.target = '_blank';
-        link.rel = 'noreferrer';
-        link.textContent = item.post_link;
-        linkCell.appendChild(link);
-      } else {
-        linkCell.textContent = '-';
-      }
-      const detail = document.createElement('td');
-      detail.textContent = item.detail || '-';
-      row.append(time, account, round, status, linkCell, detail);
-      body.appendChild(row);
-    });
-  }
-
   async function heartbeat() {
     try {
       await api('/api/heartbeat', {
@@ -288,7 +248,6 @@
       await loadAccounts();
       await loadAvailableTasks();
       await loadTasks();
-      await loadExecutionLogs();
       await heartbeat();
       log('连接成功');
     } catch (error) {
@@ -435,8 +394,7 @@
     const { action, account } = button.dataset;
 
     if (action === 'restart') {
-      const checkbox = Array.from(document.querySelectorAll('.acct'))
-        .find(item => item.value === account);
+      const checkbox = Array.from(document.querySelectorAll('.acct')).find(item => item.value === account);
       if (checkbox) checkbox.checked = true;
 
       const all = document.querySelectorAll('.acct');
@@ -497,7 +455,7 @@
 
       log(`中断全部任务完成：成功=${ok}，失败=${failed}`);
       await loadTasks();
-      if (failed) alert(`已中断 ${ok} 个账号，失败 ${failed} 个，请查看 Log`);
+      if (failed) alert(`已中断 ${ok} 个账号，失败 ${failed} 个`);
     } catch (error) {
       alert(error.message);
       log(`中断全部任务失败：${error.message}`);
@@ -510,7 +468,6 @@
   initCollapse('toggleAccounts', 'accountPanel', 'caAccountsCollapsed');
   initCollapse('toggleAvailableTasks', 'availableTasksPanel', 'caAvailableTasksCollapsed');
   initCollapse('toggleResults', 'resultsPanel', 'caResultsCollapsed');
-  initCollapse('toggleLog', 'logPanel', 'caLogCollapsed');
 
   if (tokenEl.value) connect();
   setInterval(() => {
@@ -518,6 +475,5 @@
     heartbeat();
     loadAvailableTasks().catch(() => {});
     loadTasks().catch(() => {});
-    loadExecutionLogs().catch(() => {});
   }, 3000);
 })();
