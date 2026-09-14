@@ -194,17 +194,56 @@ function findAssignedTaskForPost(postId) {
   return row || null;
 }
 
-function markAssignedTaskDone(postId) {
+function markAssignedTaskResult(postId, status, result) {
   const row = findAssignedTaskForPost(postId);
   if (!row) return null;
 
+  const normalized = String(status || '').toUpperCase();
+  if (!['DONE', 'FAILED', 'SKIPPED'].includes(normalized)) return null;
+
   db.prepare(`UPDATE comment_assistant_task_assignments
-    SET status = 'DONE', result = '自动评论成功', completed_at = LOCALTIMESTAMP
-    WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(row.task_id, row.worker_id, row.account);
+    SET status = ?, result = ?, completed_at = LOCALTIMESTAMP
+    WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(
+    normalized,
+    String(result || '').slice(0, 1000),
+    row.task_id,
+    row.worker_id,
+    row.account
+  );
   db.prepare(`UPDATE comment_assistant_tasks
-    SET status = 'DONE', updated_at = LOCALTIMESTAMP
-    WHERE task_id = ?`).run(row.task_id);
+    SET status = ?, updated_at = LOCALTIMESTAMP
+    WHERE task_id = ?`).run(normalized, row.task_id);
   return row.task_id;
+}
+
+function markAllPendingAssignedTasks(status, result) {
+  const worker = String(process.env.COMMENT_WORKER_ID || 'default');
+  const normalized = String(status || '').toUpperCase();
+  if (!['FAILED', 'SKIPPED'].includes(normalized)) return 0;
+
+  const rows = db.prepare(`SELECT task_id
+    FROM comment_assistant_task_assignments
+    WHERE account = ? AND worker_id = ? AND status = 'CLAIMED'`).all(ACCOUNT, worker);
+
+  for (const row of rows) {
+    db.prepare(`UPDATE comment_assistant_task_assignments
+      SET status = ?, result = ?, completed_at = LOCALTIMESTAMP
+      WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(
+      normalized,
+      String(result || '').slice(0, 1000),
+      row.task_id,
+      worker,
+      ACCOUNT
+    );
+    db.prepare(`UPDATE comment_assistant_tasks
+      SET status = ?, updated_at = LOCALTIMESTAMP
+      WHERE task_id = ?`).run(normalized, row.task_id);
+  }
+  return rows.length;
+}
+
+function markAssignedTaskDone(postId) {
+  return markAssignedTaskResult(postId, 'DONE', '自动评论成功');
 }
 
 function writeExecutionLog(row, roundNo, itemNo, status, detail) {
@@ -575,7 +614,11 @@ async function main() {
         }
 
         if (result.type === 'login-expired') {
-          writeExecutionLog(row, round, itemNo, 'LOGIN_EXPIRED', result.error ? shortError(result.error) : '登录已失效');
+          const loginDetail = result.error ? shortError(result.error) : '登录已失效';
+          writeExecutionLog(row, round, itemNo, 'LOGIN_EXPIRED', loginDetail);
+          if (LOOP_MODE) {
+            markAllPendingAssignedTasks('SKIPPED', `登录失效：${loginDetail}`);
+          }
           if (skipLoopAccountForExpiredLogin(`自动评论链路已检测到登录失效${result.error ? `：${shortError(result.error)}` : ''}`)) return;
           console.log('[登录] 自动评论链路已失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
@@ -589,6 +632,7 @@ async function main() {
         if (result.type === 'error') {
           const detail = result.error ? detailedError(result.error) : '自动评论链路失败';
           writeExecutionLog(row, round, itemNo, 'FAILED', detail);
+          markAssignedTaskResult(row.post_id, 'FAILED', detail);
           console.warn(`[HTTP评论] 自动评论链路失败：${detail} | proxy=${ACCOUNT_PROXY ? maskProxy(ACCOUNT_PROXY) : 'DIRECT'} | timeout=${HTTP_TIMEOUT_MS}ms`);
           if (result.warmResult?.status && isHttpProxyFailure(result.warmResult.status)) {
             console.warn(`[HTTP评论] HTTP ${result.warmResult.status}，但没有其他可用代理可切换。`);
@@ -598,8 +642,9 @@ async function main() {
 
         const commentResult = result.commentResult;
         const success = isCommentSuccess(commentResult);
-        writeExecutionLog(row, round, itemNo, success ? 'SUCCESS' : 'FAILED', summarizeResult(commentResult));
-        console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${summarizeResult(commentResult)}`);
+        const resultSummary = summarizeResult(commentResult);
+        writeExecutionLog(row, round, itemNo, success ? 'SUCCESS' : 'FAILED', resultSummary);
+        console.log(`[评论结果] ${success ? '✅ 成功' : '❌ 失败'} | ${resultSummary}`);
         if (success) {
           rememberCommented(row.post_id);
           markAssignedTaskDone(row.post_id);
@@ -620,13 +665,21 @@ async function main() {
         }
 
         if (isLoginExpiredResult(commentResult)) {
-          if (skipLoopAccountForExpiredLogin(`微博评论接口返回登录失效：${summarizeResult(commentResult)}`)) return;
+          if (LOOP_MODE) {
+            markAllPendingAssignedTasks('SKIPPED', `登录失效：${resultSummary}`);
+          }
+          if (skipLoopAccountForExpiredLogin(`微博评论接口返回登录失效：${resultSummary}`)) return;
           console.log('[登录] 微博会话失效，只为当前账号临时启动 Chromium 重新登录。');
           await api.dispose().catch(() => {});
           ({ api, browserSession } = await rebuildHttpSession(rl, true));
           commentAutoService.setRuntime(api, browserSession);
           console.log('[登录] 已恢复HTTP会话；当前帖子重新显示，不会自动重发。');
           i -= 1;
+          continue;
+        }
+
+        if (!success) {
+          markAssignedTaskResult(row.post_id, 'FAILED', resultSummary);
         }
 
         if (LOOP_INTERVAL_MINUTES > 0 && i < targets.length - 1) {
@@ -648,6 +701,7 @@ async function main() {
 
 main().catch(error => {
   if (LOOP_MODE && isLoopLoginExpiredError(error)) {
+    markAllPendingAssignedTasks('SKIPPED', `登录失效：${shortError(error)}`);
     skipLoopAccountForExpiredLogin(shortError(error));
     return;
   }
