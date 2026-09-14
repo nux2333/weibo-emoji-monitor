@@ -46,6 +46,33 @@ async function launchProfileContext(accountName, options = {}) {
   });
 }
 
+async function openPostForAccount(accountName, postLink, options = {}) {
+  const link = String(postLink || '').trim();
+  if (!link) throw new Error('postLink 不能为空');
+
+  const context = await launchProfileContext(accountName, {
+    headless: options.headless === true
+  });
+
+  try {
+    const page = context.pages()[0] || (await context.newPage());
+    await page.goto(link, {
+      waitUntil: 'domcontentloaded',
+      timeout: Number(options.timeout || 30000)
+    });
+    await page.bringToFront().catch(() => {});
+
+    return {
+      context,
+      page,
+      url: page.url()
+    };
+  } catch (error) {
+    await context.close().catch(() => {});
+    throw error;
+  }
+}
+
 async function hasWeiboLogin(context) {
   const cookies = await context.cookies('https://weibo.com');
   return cookies.some(cookie => cookie.name === 'SUB' && cookie.value);
@@ -133,6 +160,7 @@ module.exports = {
   accountProfileDir,
   hasProfileData,
   launchProfileContext,
+  openPostForAccount,
   hasWeiboLogin,
   collectBrowserSession,
   readSessionFromProfile,
