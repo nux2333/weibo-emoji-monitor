@@ -18,6 +18,18 @@
 const path = require('path');
 const { Worker } = require('worker_threads');
 
+if (process.env.COMMENT_ACCOUNT) {
+  try {
+    const { createFileLogger } = require('../scripts/comment-assistant/file-logger');
+    const component = `worker-${String(process.env.COMMENT_ACCOUNT).replace(/[^\p{L}\p{N}_.-]/gu, '_')}`;
+    const workerLogger = createFileLogger(component);
+    workerLogger.installConsoleTee();
+    console.log(`[Comment Assistant] LogFile=${workerLogger.logFile}`);
+  } catch (error) {
+    console.warn(`[Comment Assistant] 文件日志初始化失败：${error.message}`);
+  }
+}
+
 const PATCHED = Symbol.for('weibo.postgres.databaseSync.patched');
 const MAX_RESPONSE_BYTES = Math.max(
   8 * 1024 * 1024,
@@ -37,6 +49,23 @@ function requireDatabaseUrl() {
     );
   }
   return url;
+}
+
+function isCommentAssistantExecutionLogCreate(sql) {
+  return /CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+comment_assistant_execution_logs\b/i.test(String(sql || ''));
+}
+
+function isCommentAssistantExecutionLogInsert(sql) {
+  return /INSERT\s+INTO\s+comment_assistant_execution_logs\b/i.test(String(sql || ''));
+}
+
+function logCommentAssistantExecution(params) {
+  const [worker, account, taskId, postId, postLink, roundNo, itemNo, status, detail] = params;
+  console.info(
+    `[EXEC] worker=${worker || '-'} | account=${account || '-'} | task=${taskId || '-'} | ` +
+    `post=${postId || '-'} | round=${roundNo || '-'} | item=${itemNo || '-'} | ` +
+    `status=${status || 'INFO'} | link=${postLink || '-'} | detail=${detail || '-'}`
+  );
 }
 
 /*
@@ -137,6 +166,11 @@ class PostgresSyncStatement {
   }
 
   run(...params) {
+    if (isCommentAssistantExecutionLogInsert(this.sql)) {
+      logCommentAssistantExecution(params);
+      return { changes: 0, lastInsertRowid: 0 };
+    }
+
     return this.database._request({
       sql: this.sql,
       params,
@@ -220,6 +254,10 @@ class PostgresSyncDatabase {
 
   exec(sql) {
     this._assertOpen();
+
+    if (isCommentAssistantExecutionLogCreate(sql)) {
+      return this;
+    }
 
     const postgresSql = stripSqlitePragmas(sql);
 
