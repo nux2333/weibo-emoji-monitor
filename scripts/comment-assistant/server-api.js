@@ -270,19 +270,6 @@ function normalizeStatus(value) {
   return ['OPEN', 'CLAIMED', 'DONE', 'SKIPPED', 'CANCELLED'].includes(status) ? status : null;
 }
 
-function currentTaskForAccount(worker, account) {
-  return (
-    db
-      .prepare(`SELECT a.task_id, t.post_id, t.post_link, t.post_text, t.note, a.claimed_at
-        FROM comment_assistant_task_assignments a
-        JOIN comment_assistant_tasks t ON t.task_id = a.task_id
-        WHERE a.worker_id = ? AND a.account = ? AND a.status = 'CLAIMED'
-        ORDER BY a.claimed_at ASC, a.task_id ASC
-        LIMIT 1`)
-      .get(worker, account) || null
-  );
-}
-
 function availableTasks() {
   const rows = db
     .prepare(`SELECT task_id, post_id, post_link, post_text, note, priority, created_at
@@ -536,20 +523,13 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
     .all(DEFAULT_TASK_ID, worker)
     .map(row => {
       const account = accountMap.get(row.account) || {};
-      const current = Number(row.running_count || 0) > 0
-        ? currentTaskForAccount(worker, row.account)
-        : null;
       return {
         ...row,
         uid: account.uid || null,
         username: account.name || row.account,
         task_name: Number(row.default_task_count || 0) > 0 ? DEFAULT_TASK_NAME : '自定义任务',
         target_count: TASK_TARGET_PER_ACCOUNT,
-        progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT),
-        current_task_id: current?.task_id || null,
-        current_post_id: current?.post_id || null,
-        current_post_link: current?.post_link || null,
-        current_post_text: current?.post_text || null
+        progress_count: Math.min(Number(row.completed_count || 0), TASK_TARGET_PER_ACCOUNT)
       };
     });
   res.json({ success: true, data: rows });
@@ -572,19 +552,6 @@ app.get('/api/execution-logs', userAuth, (req, res) => {
       WHERE worker_id = ?
       ORDER BY log_id DESC LIMIT ?`).all(worker, limit);
   res.json({ success: true, data: rows });
-});
-
-app.get('/api/my-tasks/:account/current', userAuth, (req, res) => {
-  const worker = workerKey(req.query.worker || DEFAULT_WORKER_ID);
-  const account = sanitizeAccount(req.params.account);
-  if (!account) return res.status(400).json({ success: false, message: 'account required' });
-
-  const current = currentTaskForAccount(worker, account);
-  if (!current) {
-    return res.status(404).json({ success: false, message: '当前账号没有待处理任务' });
-  }
-
-  res.json({ success: true, data: { account, ...current } });
 });
 
 app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
