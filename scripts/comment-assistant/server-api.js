@@ -7,7 +7,6 @@ const os = require('os');
 const crypto = require('crypto');
 const { spawn } = require('child_process');
 const { db, initDatabase } = require('../../src/db');
-const { openPostForAccount } = require('./http-session-common');
 
 const ROOT = path.join(__dirname, '..', '..');
 const POSTGRES_PRELOAD = path.join(ROOT, 'src', 'postgres-preload.js');
@@ -588,95 +587,6 @@ app.get('/api/my-tasks/:account/current', userAuth, (req, res) => {
   res.json({ success: true, data: { account, ...current } });
 });
 
-app.post('/api/my-tasks/:account/open-current', userAuth, async (req, res) => {
-  try {
-    const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
-    const account = sanitizeAccount(req.params.account);
-    if (!account) return res.status(400).json({ success: false, message: 'account required' });
-
-    const current = currentTaskForAccount(worker, account);
-    if (!current) {
-      return res.status(404).json({ success: false, message: '当前账号没有待处理任务' });
-    }
-
-    await openPostForAccount(account, current.post_link);
-
-    touchWorker(worker, {
-      account,
-      status: 'waiting-manual',
-      note: `${account}：已打开当前帖子，等待人工处理`
-    });
-
-    res.json({ success: true, data: { account, ...current } });
-  } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
-  }
-});
-
-app.post('/api/my-tasks/:account/confirm-next', userAuth, (req, res) => {
-  try {
-    const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
-    const account = sanitizeAccount(req.params.account);
-    const confirmValue = String(req.body?.confirm || '').trim().toLowerCase();
-
-    if (!account) return res.status(400).json({ success: false, message: 'account required' });
-    if (confirmValue !== 'y') {
-      return res.status(400).json({ success: false, message: '请输入 y 确认当前任务' });
-    }
-
-    const current = currentTaskForAccount(worker, account);
-    if (!current) {
-      return res.status(404).json({ success: false, message: '当前账号没有等待确认的任务' });
-    }
-
-    db.prepare(`UPDATE comment_assistant_task_assignments
-      SET status = 'DONE', result = '用户输入 y 确认完成', completed_at = LOCALTIMESTAMP
-      WHERE task_id = ? AND worker_id = ? AND account = ? AND status = 'CLAIMED'`).run(
-      current.task_id,
-      worker,
-      account
-    );
-    db.prepare(`UPDATE comment_assistant_tasks
-      SET status = 'DONE', updated_at = LOCALTIMESTAMP
-      WHERE task_id = ?`).run(current.task_id);
-
-    if (current.post_id) {
-      db.prepare(`INSERT INTO comment_assistant_history (account, post_id, commented_at)
-        VALUES (?, ?, LOCALTIMESTAMP)
-        ON CONFLICT(account, post_id) DO NOTHING`).run(account, String(current.post_id));
-    }
-
-    const counts = db
-      .prepare(`SELECT
-          SUM(CASE WHEN status = 'DONE' THEN 1 ELSE 0 END) AS done_count,
-          SUM(CASE WHEN status = 'CLAIMED' THEN 1 ELSE 0 END) AS remaining_count
-        FROM comment_assistant_task_assignments
-        WHERE worker_id = ? AND account = ?`)
-      .get(worker, account) || {};
-
-    const remaining = Number(counts.remaining_count || 0);
-    touchWorker(worker, {
-      account,
-      status: remaining > 0 ? 'waiting-confirm' : 'idle',
-      note: remaining > 0 ? `${account}：等待确认下一条` : `${account}：当前任务已完成`
-    });
-
-    res.json({
-      success: true,
-      data: {
-        account,
-        task_id: current.task_id,
-        post_id: current.post_id || null,
-        post_link: current.post_link || null,
-        done_count: Number(counts.done_count || 0),
-        remaining_count: remaining
-      }
-    });
-  } catch (error) {
-    res.status(400).json({ success: false, message: error.message });
-  }
-});
-
 app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
   try {
     const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
@@ -816,7 +726,7 @@ app.get('/api/admin/tasks', adminAuth, (req, res) => {
     LEFT JOIN comment_assistant_task_assignments a ON a.task_id = t.task_id`;
   const rows = status
     ? db.prepare(`${sql} WHERE t.status = ? ORDER BY t.priority DESC, t.created_at DESC LIMIT 500`).all(status)
-    : db.prepare(`${sql} ORDER BY t.created_at DESC LIMIT 500`).all();
+    : db.prepare(`${sql} ORDER BY t.priority DESC, t.created_at DESC LIMIT 500`).all();
   res.json({ success: true, data: rows });
 });
 
