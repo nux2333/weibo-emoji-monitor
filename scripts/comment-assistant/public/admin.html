@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Comment Assistant 管理员</title>
+    <link rel="stylesheet" href="/static/common.css" />
+  </head>
+  <body>
+    <div class="wrap">
+      <div id="fatal" class="fatal"></div>
+
+      <div class="card">
+        <div class="top">
+          <div>
+            <h1>Comment Assistant 管理员</h1>
+            <div class="muted">发布任务、查看领取与完成状态</div>
+          </div>
+          <a href="/user">← 用户画面</a>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row">
+          <div>
+            <div class="muted">Admin Token</div>
+            <input id="token" type="password" />
+          </div>
+          <button id="connect">连接</button>
+        </div>
+        <div id="state" class="muted" style="margin-top: 8px">未连接</div>
+      </div>
+
+      <div class="card">
+        <h2>发布任务</h2>
+        <div class="row">
+          <input id="postId" placeholder="Post ID（可选）" />
+          <input id="link" placeholder="帖子链接" style="min-width: 320px" />
+          <input id="priority" type="number" value="0" placeholder="优先级" style="width: 90px" />
+        </div>
+        <div class="row" style="margin-top: 8px">
+          <textarea id="text" placeholder="帖子文案/说明（可选）" rows="2" style="min-width: 320px"></textarea>
+          <textarea id="note" placeholder="任务备注（可选）" rows="2" style="min-width: 260px"></textarea>
+          <button class="blue" id="publish">发布任务</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="top">
+          <h2>任务列表</h2>
+          <div>
+            <select id="status">
+              <option value="">全部</option>
+              <option>OPEN</option>
+              <option>CLAIMED</option>
+              <option>DONE</option>
+              <option>SKIPPED</option>
+              <option>CANCELLED</option>
+            </select>
+            <button id="refresh">刷新</button>
+          </div>
+        </div>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>状态</th><th>优先级</th><th>帖子</th><th>领取人</th><th>账号</th><th>结果</th><th>操作</th></tr>
+            </thead>
+            <tbody id="tasks"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>在线 Worker</h2>
+        <div id="workers" class="grid"></div>
+      </div>
+    </div>
+
+    <script src="/static/common.js"></script>
+    <script src="/static/admin.js"></script>
+  </body>
+</html>
