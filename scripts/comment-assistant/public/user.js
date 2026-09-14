@@ -204,9 +204,14 @@
 
     list.forEach(item => {
       const row = document.createElement('tr');
-      const hasRunning = Number(item.running_count || 0) > 0;
-      const completed = Number(item.progress_count || 0);
-      const target = Number(item.target_count || 20);
+      const success = Number(item.completed_count || 0);
+      const skipped = Number(item.interrupted_count || 0);
+      const pending = Number(item.running_count || 0);
+      const assigned = Number(item.assigned_count || 0);
+      const failed = Math.max(0, Number(item.failed_count || 0) || (assigned - success - skipped - pending));
+      const processed = success + failed + skipped;
+      const target = Math.max(Number(item.target_count || 0), assigned, 1);
+      const hasRunning = pending > 0;
 
       const account = document.createElement('td');
       account.textContent = item.account || '-';
@@ -215,8 +220,13 @@
       taskName.textContent = item.task_name || '-';
 
       const progress = document.createElement('td');
-      const progressText = `${completed}/${target}`;
-      progress.textContent = hasRunning ? `待处理 · ${progressText}` : progressText;
+      const summary = document.createElement('div');
+      summary.textContent = `${hasRunning ? '执行中' : '已结束'} · ${processed}/${target}`;
+      const detail = document.createElement('div');
+      detail.className = 'muted';
+      detail.style.marginTop = '4px';
+      detail.textContent = `成功 ${success} ｜ 失败 ${failed} ｜ 跳过 ${skipped} ｜ 待处理 ${pending}`;
+      progress.append(summary, detail);
 
       const actions = document.createElement('td');
       if (hasRunning) {
@@ -257,7 +267,6 @@
   }
 
   byId('connect').addEventListener('click', connect);
-
   byId('add').addEventListener('click', async () => {
     const name = prompt('新微博账号名称');
     if (!name) return;
