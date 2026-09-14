@@ -319,7 +319,15 @@ function createCommentAutoService({
     }
 
     // 第一步：访问帖子页面，确认会话是否正常、代理是否有效。
-    const warmResult = await warmPost(postLink);
+    let warmResult;
+    try {
+      warmResult = await warmPost(postLink);
+    } catch (error) {
+      error.phase = 'warmPost';
+      error.postId = String(postId);
+      error.postLink = postLink;
+      return { type: 'error', api, warmResult: null, commentResult: null, error };
+    }
     if (isHttpProxyFailure(warmResult.status)) {
       const nextApi = await rotateApi();
       if (nextApi) {
@@ -338,7 +346,15 @@ function createCommentAutoService({
     }
 
     // 第三步：执行正式提交评论。
-    const commentResult = await sendCommentHttp(postId, postLink, commentText);
+    let commentResult;
+    try {
+      commentResult = await sendCommentHttp(postId, postLink, commentText);
+    } catch (error) {
+      error.phase = 'sendCommentHttp';
+      error.postId = String(postId);
+      error.postLink = postLink;
+      return { type: 'error', api, warmResult, commentResult: null, error };
+    }
     return { type: 'comment', api: api || csrfState.api, warmResult, commentResult };
   }
 

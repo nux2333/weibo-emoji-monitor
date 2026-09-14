@@ -129,6 +129,18 @@ function shortError(error) {
   const match = first.match(/(ECONNREFUSED|ECONNRESET|ETIMEDOUT|ERR_[A-Z_]+|socket hang up|Timeout[^:]*)/i);
   return match ? match[1] : first.replace(/^apiRequestContext\.(?:get|post):\s*/i, '').slice(0, 180);
 }
+function detailedError(error) {
+  const lines = [
+    `name=${error?.name || 'Error'}`,
+    `message=${String(error?.message || error || 'unknown error')}`,
+    error?.code ? `code=${error.code}` : '',
+    error?.phase ? `phase=${error.phase}` : '',
+    error?.postId ? `postId=${error.postId}` : '',
+    error?.postLink ? `postLink=${error.postLink}` : '',
+    error?.stack ? `stack=${error.stack}` : ''
+  ].filter(Boolean);
+  return lines.join(' | ');
+}
 function isHttpProxyFailure(status) {
   const code = Number(status);
   if (code === 400) return false;
@@ -238,9 +250,43 @@ function getTargets() {
     }));
   }
 
-  const today = getShanghaiToday();
   const rows = db.prepare(`SELECT post_id, uid, username, post_link, post_text, experience_7d,
     comments_count, initial_comments_count, post_created_at, first_seen_at
+    FROM superlike_posts
+    WHERE COALESCE(current_has_superlike, 0) = 0
+      AND experience_7d IS NOT NULL AND experience_7d >= ?
+      AND COALESCE(comments_count, 0) <= ?
+      AND post_link IS NOT NULL AND TRIM(post_link) <> ''
+      AND post_created_at IS NOT NULL
+      AND NULLIF(TRIM(post_created_at), '')::date = CURRENT_DATE
+      AND NOT EXISTS (
+        SELECT 1 FROM black_fan_users b
+        WHERE CAST(b.uid AS TEXT) = CAST(superlike_posts.uid AS TEXT)
+      )
+    ORDER BY experience_7d DESC, first_seen_at DESC`).all(MIN_EXPERIENCE, MAX_COMMENTS);
+  rows.sort((a, b) => {
+    const e = Number(b.experience_7d || 0) - Number(a.experience_7d || 0);
+    if (e !== 0) return e;
+    const p = new Date(b.post_created_at).getTime() - new Date(a.post_created_at).getTime();
+    if (Number.isFinite(p) && p !== 0) return p;
+    return new Date(b.first_seen_at || 0).getTime() - new Date(a.first_seen_at || 0).getTime();
+  });
+  return rows.filter(row => !hasCommented(row.post_id)).slice(0, LIMIT);
+}
+
+function getCandidateDiagnostics() {
+  const countRow = db.prepare(`SELECT COUNT(*) AS total_count
+    FROM superlike_posts
+    WHERE COALESCE(current_has_superlike, 0) = 0
+      AND experience_7d IS NOT NULL AND experience_7d >= ?
+      AND COALESCE(comments_count, 0) <= ?
+      AND post_link IS NOT NULL AND TRIM(post_link) <> ''
+      AND post_created_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM black_fan_users b
+        WHERE CAST(b.uid AS TEXT) = CAST(superlike_posts.uid AS TEXT)
+      )`).get(MIN_EXPERIENCE, MAX_COMMENTS) || {};
+  const latest = db.prepare(`SELECT post_created_at, first_seen_at
     FROM superlike_posts
     WHERE COALESCE(current_has_superlike, 0) = 0
       AND experience_7d IS NOT NULL AND experience_7d >= ?
@@ -251,16 +297,13 @@ function getTargets() {
         SELECT 1 FROM black_fan_users b
         WHERE CAST(b.uid AS TEXT) = CAST(superlike_posts.uid AS TEXT)
       )
-    ORDER BY experience_7d DESC, first_seen_at DESC`).all(MIN_EXPERIENCE, MAX_COMMENTS);
-  const todayRows = rows.filter(row => formatShanghaiDate(row.post_created_at) === today);
-  todayRows.sort((a, b) => {
-    const e = Number(b.experience_7d || 0) - Number(a.experience_7d || 0);
-    if (e !== 0) return e;
-    const p = new Date(b.post_created_at).getTime() - new Date(a.post_created_at).getTime();
-    if (Number.isFinite(p) && p !== 0) return p;
-    return new Date(b.first_seen_at || 0).getTime() - new Date(a.first_seen_at || 0).getTime();
-  });
-  return todayRows.filter(row => !hasCommented(row.post_id)).slice(0, LIMIT);
+    ORDER BY first_seen_at DESC
+    LIMIT 1`).get(MIN_EXPERIENCE, MAX_COMMENTS) || {};
+  return {
+    totalCount: Number(countRow.total_count || 0),
+    latestPostCreatedAt: latest.post_created_at || '-',
+    latestFirstSeenAt: latest.first_seen_at || '-'
+  };
 }
 
 async function launchBrowser(headless, useProxy = true) {
@@ -492,7 +535,9 @@ async function main() {
     const commentedCount = getCommentedCount();
     console.log(`[去重] 账号=${ACCOUNT} | 已评论记录=${commentedCount}`);
     if (!targets.length) {
+      const diagnostics = getCandidateDiagnostics();
       console.log(`没有符合条件且该账号未评论过的当天帖子：experience_7d >= ${MIN_EXPERIENCE}, comments_count <= ${MAX_COMMENTS}`);
+      console.log(`[候选诊断] 全部符合基础条件=${diagnostics.totalCount} 条 | 最新帖子时间=${diagnostics.latestPostCreatedAt} | 最新入库时间=${diagnostics.latestFirstSeenAt} | 当前上海日期=${getShanghaiToday()}`);
       return;
     }
     console.log(`当天候选帖子 ${targets.length} 条，按经验值从高到低。`);
@@ -542,8 +587,9 @@ async function main() {
         }
 
         if (result.type === 'error') {
-          writeExecutionLog(row, round, itemNo, 'FAILED', result.error ? shortError(result.error) : '自动评论链路失败');
-          console.warn(`[HTTP评论] 自动评论链路失败${result.error ? `：${shortError(result.error)}` : ''}`);
+          const detail = result.error ? detailedError(result.error) : '自动评论链路失败';
+          writeExecutionLog(row, round, itemNo, 'FAILED', detail);
+          console.warn(`[HTTP评论] 自动评论链路失败：${detail} | proxy=${ACCOUNT_PROXY ? maskProxy(ACCOUNT_PROXY) : 'DIRECT'} | timeout=${HTTP_TIMEOUT_MS}ms`);
           if (result.warmResult?.status && isHttpProxyFailure(result.warmResult.status)) {
             console.warn(`[HTTP评论] HTTP ${result.warmResult.status}，但没有其他可用代理可切换。`);
           }
@@ -605,6 +651,6 @@ main().catch(error => {
     skipLoopAccountForExpiredLogin(shortError(error));
     return;
   }
-  console.error(`[comment-assistant] 异常：${shortError(error)}`);
+  console.error(`[comment-assistant] 异常：${detailedError(error)}`);
   process.exitCode = 1;
 });

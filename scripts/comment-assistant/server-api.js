@@ -10,6 +10,7 @@ const { db, initDatabase } = require('../../src/db');
 const { openPostForAccount } = require('./http-session-common');
 
 const ROOT = path.join(__dirname, '..', '..');
+const POSTGRES_PRELOAD = path.join(ROOT, 'src', 'postgres-preload.js');
 const PROFILE_ROOT = path.join(ROOT, 'data', 'comment-assistant-profiles');
 const LEGACY_PROFILE_DIR = path.join(ROOT, 'data', 'comment-assistant-profile');
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -311,7 +312,7 @@ function availableTasks() {
 
 function spawnLoopExecutionForAccount(worker, account, loops = 1, intervalMinutes = 0) {
   const script = path.join(__dirname, 'index-http.js');
-  const child = spawn(process.execPath, [script], {
+  const child = spawn(process.execPath, ['-r', POSTGRES_PRELOAD, script], {
     cwd: ROOT,
     stdio: 'inherit',
     env: {
@@ -349,7 +350,7 @@ function claimBuiltinRandomHighExp(worker, accounts, loops, intervalMinutes = 0)
         AND sp.experience_7d >= 70
         AND COALESCE(sp.comments_count, 0) <= 19
         AND sp.post_link IS NOT NULL
-        AND CAST(sp.post_created_at AS date) = CAST(LOCALTIMESTAMP AS date)
+        AND NULLIF(TRIM(sp.post_created_at), '')::date = CURRENT_DATE
         AND NOT EXISTS (
           SELECT 1
           FROM black_fan_users b
