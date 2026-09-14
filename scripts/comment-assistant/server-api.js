@@ -78,6 +78,7 @@ app.use((req, res, next) => {
 app.use('/static', express.static(PUBLIC_DIR));
 
 const workers = new Map();
+const loginChildren = new Map();
 
 function sanitizeAccount(value) {
   const raw = String(value || '').trim();
@@ -190,24 +191,80 @@ function deleteAccount(name) {
   return { account, deleted: true, released_tasks: assignments.length };
 }
 
-function launchAccountLogin(name) {
+function loginProfileConflictMessage(text) {
+  const source = String(text || '');
+  if (/ProcessSingleton|profile directory.*already in use|Lock file can not be created/i.test(source)) {
+    return '该账号的 Chromium Profile 正在被其他进程使用。请先中断该账号当前任务，等待几秒后再点“再次登录”。';
+  }
+  return null;
+}
+
+async function launchAccountLogin(name) {
   const account = sanitizeAccount(name);
   if (!account) throw new Error('账号名称不能为空');
 
   const profileDir = accountProfileDir(account);
   if (!fs.existsSync(profileDir)) throw new Error(`账号 ${account} 不存在`);
 
+  const existing = loginChildren.get(account);
+  if (existing && existing.exitCode === null && !existing.killed) {
+    throw new Error(`账号 ${account} 的登录窗口已经在运行`);
+  }
+
   const script = path.join(__dirname, 'account-login.js');
   const child = spawn(process.execPath, [script, account], {
     cwd: ROOT,
-    detached: true,
-    stdio: 'ignore',
+    detached: false,
+    stdio: ['ignore', 'pipe', 'pipe'],
     windowsHide: false,
     env: { ...process.env, NODE_OPTIONS: '' }
   });
-  child.unref();
-  console.log(`[Account] 打开登录窗口：${account} | pid=${child.pid}`);
 
+  loginChildren.set(account, child);
+  let stderrText = '';
+  child.stdout?.on('data', chunk => {
+    const text = String(chunk || '').trimEnd();
+    if (text) console.log(`[Login:${account}] ${text}`);
+  });
+  child.stderr?.on('data', chunk => {
+    const text = String(chunk || '');
+    stderrText += text;
+    if (text.trim()) console.warn(`[Login:${account}] ${text.trimEnd()}`);
+  });
+  child.on('exit', (code, signal) => {
+    if (loginChildren.get(account) === child) loginChildren.delete(account);
+    console.log(`[Account] 登录窗口结束：${account} | code=${code ?? '-'} | signal=${signal || '-'}`);
+  });
+
+  const earlyExit = await new Promise(resolve => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve(null);
+    }, 1200);
+    child.once('exit', (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ code, signal });
+    });
+    child.once('error', error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ error });
+    });
+  });
+
+  if (earlyExit) {
+    if (earlyExit.error) throw earlyExit.error;
+    const conflict = loginProfileConflictMessage(stderrText);
+    if (conflict) throw new Error(conflict);
+    throw new Error(`登录窗口启动后立即退出（code=${earlyExit.code ?? '-'}${earlyExit.signal ? `, signal=${earlyExit.signal}` : ''}）`);
+  }
+
+  console.log(`[Account] 打开登录窗口：${account} | pid=${child.pid}`);
   return { account, pid: child.pid };
 }
 
@@ -487,12 +544,12 @@ app.delete('/api/accounts/:name', userAuth, (req, res) => {
   }
 });
 
-app.post('/api/accounts/:name/login', userAuth, (req, res) => {
+app.post('/api/accounts/:name/login', userAuth, async (req, res) => {
   try {
-    res.json({ success: true, data: launchAccountLogin(req.params.name) });
+    res.json({ success: true, data: await launchAccountLogin(req.params.name) });
   } catch (error) {
     console.error(`[Account] 登录窗口启动失败：${error.message}`);
-    res.status(400).json({ success: false, message: error.message });
+    res.status(409).json({ success: false, message: error.message });
   }
 });
 
@@ -532,13 +589,24 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
       const failedCount = Number(row.failed_count || 0);
       const skippedCount = Number(row.interrupted_count || 0);
       const assignedCount = Number(row.assigned_count || 0);
+      const recentFailures = failedCount > 0
+        ? db.prepare(`SELECT result
+            FROM comment_assistant_task_assignments
+            WHERE worker_id = ? AND account = ? AND status = 'FAILED'
+              AND COALESCE(TRIM(result), '') <> ''
+            ORDER BY completed_at DESC NULLS LAST, claimed_at DESC
+            LIMIT 3`).all(worker, row.account)
+          .map(item => String(item.result || '').trim())
+          .filter(Boolean)
+        : [];
       return {
         ...row,
         uid: account.uid || null,
         username: account.name || row.account,
         task_name: Number(row.default_task_count || 0) > 0 ? DEFAULT_TASK_NAME : '自定义任务',
         target_count: Math.max(assignedCount, 1),
-        progress_count: successCount + failedCount + skippedCount
+        progress_count: successCount + failedCount + skippedCount,
+        recent_failed_reasons: recentFailures
       };
     });
   res.json({ success: true, data: rows });
