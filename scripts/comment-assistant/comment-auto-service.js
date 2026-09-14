@@ -53,16 +53,17 @@ function createCommentAutoService({
   /**
    * 判断当前 HTTP 状态码是否属于典型代理/接口异常。
    *
-   * 例如 4xx / 5xx 通常意味着代理失效、被拦截、登录状态异常或接口问题。
-   * 若业务需要特别处理 400，允许在外层覆盖这个判断逻辑。
+  * 例如 401-499 / 5xx 通常意味着代理失效、被拦截、登录状态异常或接口问题。
+  * 400 交给业务层处理，不触发代理切换。
    *
-   * @param {number|string|null} status HTTP 状态码
+   * @param {{status?: number|string|null, error?: Error|string, message?: string}} input HTTP 状态码或网络错误信息
    * @returns {boolean} 是否属于代理错误或请求异常
    */
-  const isHttpProxyFailure = isHttpProxyFailureFn || ((status) => {
+  const isHttpProxyFailure = isHttpProxyFailureFn || (({ status = null, error = null, message = '' } = {}) => {
     const code = Number(status);
-    if (code === 400) return false;
-    return (code >= 400 && code < 500) || (code >= 500 && code < 600);
+    if (code !== 400 && code >= 401 && code < 600) return true;
+    const text = String(error?.message || error || message || '');
+    return /Timeout|AbortError|ETIMEDOUT|ECONNRESET|ECONNREFUSED|socket hang up|proxy|context.*closed|browser.*closed|apiRequestContext.*closed/i.test(text);
   });
 
   /**
@@ -265,7 +266,7 @@ function createCommentAutoService({
         if (isLoginUrl(lastWarm.url)) {
           return { api: currentApi, csrf: null, loginExpired: true, error: null };
         }
-        if (isHttpProxyFailure(lastWarm.status)) {
+        if (isHttpProxyFailure({ status: lastWarm.status })) {
           logger.warn?.(`[CSRF] 刷新帖子 HTTP ${lastWarm.status}，自动切换代理`);
           if (attempt >= proxyRetries) break;
           const nextApi = await rotateApi();
@@ -326,9 +327,16 @@ function createCommentAutoService({
       error.phase = 'warmPost';
       error.postId = String(postId);
       error.postLink = postLink;
+      if (isHttpProxyFailure({ error })) {
+        logger.warn?.(`[HTTP评论] warm 请求网络异常，尝试切换代理：${shortError(error)}`);
+        const nextApi = await rotateApi();
+        if (nextApi) {
+          return { type: 'retry', api: nextApi, warmResult: null, commentResult: null, error };
+        }
+      }
       return { type: 'error', api, warmResult: null, commentResult: null, error };
     }
-    if (isHttpProxyFailure(warmResult.status)) {
+    if (isHttpProxyFailure({ status: warmResult.status })) {
       const nextApi = await rotateApi();
       if (nextApi) {
         return { type: 'retry', api: nextApi, warmResult, commentResult: null };
@@ -353,6 +361,13 @@ function createCommentAutoService({
       error.phase = 'sendCommentHttp';
       error.postId = String(postId);
       error.postLink = postLink;
+      if (isHttpProxyFailure({ error })) {
+        logger.warn?.(`[HTTP评论] 评论 POST 网络异常，尝试切换代理：${shortError(error)}`);
+        const nextApi = await rotateApi();
+        if (nextApi) {
+          return { type: 'retry', api: nextApi, warmResult, commentResult: null, error };
+        }
+      }
       return { type: 'error', api, warmResult, commentResult: null, error };
     }
     return { type: 'comment', api: api || csrfState.api, warmResult, commentResult };
