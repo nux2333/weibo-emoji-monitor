@@ -3,6 +3,7 @@
   const workerId = 'default';
   let taskLoops = 1;
   let taskInterval = 0;
+  const expandedFailureAccounts = new Set();
 
   tokenEl.value = sessionStorage.getItem('caToken') || '';
 
@@ -213,6 +214,10 @@
       const target = Math.max(Number(item.target_count || 0), assigned, 1);
       const hasRunning = pending > 0;
       const percent = Math.max(0, Math.min(100, Math.round((processed / target) * 100)));
+      const recentFailures = Array.isArray(item.recent_failed_reasons)
+        ? item.recent_failed_reasons.filter(Boolean).slice(0, 3)
+        : [];
+      const accountKey = String(item.account || '');
 
       const account = document.createElement('td');
       account.textContent = item.account || '-';
@@ -252,11 +257,38 @@
       ].forEach(([kind, icon, label, value]) => {
         const stat = document.createElement('div');
         stat.className = `task-stat ${kind}`;
-        stat.innerHTML = `<span class="task-stat-icon">${icon}</span><span>${label}</span><strong>${value}</strong>`;
+        const suffix = kind === 'failed' && recentFailures.length ? '<span class="task-stat-arrow">›</span>' : '';
+        stat.innerHTML = `<span class="task-stat-icon">${icon}</span><span>${label}</span><strong>${value}</strong>${suffix}`;
+        if (kind === 'failed' && recentFailures.length) {
+          stat.classList.add('clickable');
+          stat.title = '查看最近失败原因';
+          stat.addEventListener('click', () => {
+            if (expandedFailureAccounts.has(accountKey)) expandedFailureAccounts.delete(accountKey);
+            else expandedFailureAccounts.add(accountKey);
+            loadTasks().catch(() => {});
+          });
+        }
         stats.appendChild(stat);
       });
 
       progressBox.append(head, track, stats);
+
+      if (recentFailures.length && expandedFailureAccounts.has(accountKey)) {
+        const reasonBox = document.createElement('div');
+        reasonBox.className = 'task-failure-reasons';
+        const title = document.createElement('div');
+        title.className = 'task-failure-title';
+        title.textContent = '最近失败原因';
+        reasonBox.appendChild(title);
+        recentFailures.forEach(reason => {
+          const line = document.createElement('div');
+          line.className = 'task-failure-line';
+          line.textContent = `• ${String(reason).slice(0, 180)}`;
+          reasonBox.appendChild(line);
+        });
+        progressBox.appendChild(reasonBox);
+      }
+
       progress.appendChild(progressBox);
 
       const actions = document.createElement('td');
