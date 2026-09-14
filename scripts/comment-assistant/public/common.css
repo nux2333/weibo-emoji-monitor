@@ -259,18 +259,13 @@ a {
   vertical-align: bottom;
 }
 
-.task-action,
-.open-current {
+.task-action {
   padding: 5px 9px;
   margin-right: 6px;
   font-size: 12px;
   white-space: nowrap;
 }
 
-.open-current { background: #1677ff; }
-.confirm-wrap { display: flex; gap: 6px; align-items: center; }
-.confirm-input { width: 52px; box-sizing: border-box; padding: 6px 7px; text-align: center; }
-.confirm-next { padding: 6px 10px; background: #15803d; white-space: nowrap; }
 .section-gap { margin-top: 18px; }
 .builtin-task td { background: #f8fff9; }
 
@@ -308,10 +303,6 @@ a {
   .task-setting { min-width: 0; }
   .task-setting input { width: 100%; min-width: 0; }
   .task-claim { display: block; width: 100%; min-width: 0; max-width: none; padding: 7px 3px; }
-  .confirm-wrap { display: grid; grid-template-columns: 48px 1fr; gap: 4px; }
-  .confirm-input { width: 100%; min-width: 0; }
-  .confirm-next { padding: 6px 4px; }
-  .open-current,
   .task-action { display: block; width: 100%; margin: 3px 0 0; padding: 5px 4px; }
   .scroll table { width: 100%; table-layout: fixed; }
   h2 { font-size: 20px; }
