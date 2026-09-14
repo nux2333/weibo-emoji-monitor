@@ -3,7 +3,6 @@
   const workerId = 'default';
   let taskLoops = 1;
   let taskInterval = 0;
-  const confirmDrafts = {};
 
   tokenEl.value = sessionStorage.getItem('caToken') || '';
 
@@ -39,31 +38,6 @@
       throw new Error(json.message || `HTTP ${response.status}`);
     }
     return json.data;
-  }
-
-  async function copyText(text) {
-    const value = String(text || '');
-    if (!value) return false;
-
-    try {
-      await navigator.clipboard.writeText(value);
-      return true;
-    } catch (_) {
-      const textarea = document.createElement('textarea');
-      textarea.value = value;
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-
-      let ok = false;
-      try {
-        ok = document.execCommand('copy');
-      } catch (_) {}
-
-      document.body.removeChild(textarea);
-      return ok;
-    }
   }
 
   function initCollapse(buttonId, panelId, storageKey) {
@@ -226,7 +200,7 @@
     body.innerHTML = '';
 
     if (!list.length) {
-      body.innerHTML = '<tr><td colspan="5" class="muted">暂无任务</td></tr>';
+      body.innerHTML = '<tr><td colspan="4" class="muted">暂无任务</td></tr>';
       return;
     }
 
@@ -246,47 +220,15 @@
       const progressText = `${completed}/${target}`;
       progress.textContent = hasRunning ? `待处理 · ${progressText}` : progressText;
 
-      const confirmTd = document.createElement('td');
-      if (hasRunning) {
-        const wrap = document.createElement('div');
-        wrap.className = 'confirm-wrap';
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.inputMode = 'text';
-        input.autocomplete = 'off';
-        input.maxLength = 1;
-        input.placeholder = 'y';
-        input.className = 'confirm-input';
-        input.dataset.account = item.account;
-        input.value = confirmDrafts[item.account] || '';
-
-        const confirmButton = document.createElement('button');
-        confirmButton.type = 'button';
-        confirmButton.className = 'confirm-next';
-        confirmButton.dataset.account = item.account;
-        confirmButton.textContent = '确认';
-
-        wrap.append(input, confirmButton);
-        confirmTd.appendChild(wrap);
-      } else {
-        confirmTd.textContent = '-';
-      }
-
       const actions = document.createElement('td');
       if (hasRunning) {
-        const openButton = document.createElement('button');
-        openButton.type = 'button';
-        openButton.className = 'open-current';
-        openButton.dataset.account = item.account;
-        openButton.textContent = '打开帖子';
-        actions.appendChild(openButton);
         actions.appendChild(taskActionButton(item.account, 'interrupt', '中断', 'gray'));
       } else {
+        actions.appendChild(taskActionButton(item.account, 'restart', '再开始', 'blue'));
         actions.appendChild(taskActionButton(item.account, 'delete', '删除', 'red'));
       }
 
-      row.append(account, taskName, progress, confirmTd, actions);
+      row.append(account, taskName, progress, actions);
       body.appendChild(row);
     });
   }
@@ -327,40 +269,6 @@
       row.append(time, account, round, status, linkCell, detail);
       body.appendChild(row);
     });
-  }
-
-  async function confirmNext(account, input, button) {
-    const value = String(input?.value || '').trim().toLowerCase();
-    if (value !== 'y') {
-      alert('请输入 y 确认当前任务');
-      input?.focus();
-      return;
-    }
-
-    if (button) button.disabled = true;
-    if (input) input.disabled = true;
-
-    try {
-      const data = await api(`/api/my-tasks/${encodeURIComponent(account)}/confirm-next`, {
-        method: 'POST',
-        body: JSON.stringify({ worker: workerId, confirm: 'y' })
-      });
-
-      confirmDrafts[account] = '';
-      log(`账号 ${account} → y确认完成1条 | 已完成=${data.done_count} | 剩余=${data.remaining_count} | Link=${data.post_link || '-'}`);
-      await loadTasks();
-
-      const next = document.querySelector(`.confirm-input[data-account="${CSS.escape(account)}"]`);
-      next?.focus();
-    } catch (error) {
-      alert(error.message);
-      log(`确认任务失败：${error.message}`);
-      if (input) {
-        input.disabled = false;
-        input.focus();
-      }
-      if (button) button.disabled = false;
-    }
   }
 
   async function heartbeat() {
@@ -482,10 +390,6 @@
     const intervalInput = row?.querySelector('.task-interval');
     const isBuiltinLoopTask = button.dataset.taskId === 'builtin-random-high-exp';
 
-    // 与 CLI `npm.cmd run comment-assistant -- loop 1` 的执行语义保持一致：
-    // - 只处理当前页面已勾选的账号
-    // - 不实际启动一个新 npm 子进程
-    // - 内建任务强制按 1 轮循环执行，单账号上限按 20 条看待
     const loops = isBuiltinLoopTask ? 1 : (loopInput ? Math.max(1, Math.min(Number(loopInput.value || 1), 20)) : 1);
     const intervalMinutes = intervalInput
       ? Math.max(0, Math.min(Number(intervalInput.value || 0), 1440))
@@ -524,59 +428,26 @@
     }
   });
 
-  byId('tasks').addEventListener('input', event => {
-    if (event.target.classList.contains('confirm-input')) {
-      confirmDrafts[event.target.dataset.account] = event.target.value;
-    }
-  });
-
-  byId('tasks').addEventListener('keydown', event => {
-    if (!event.target.classList.contains('confirm-input') || event.key !== 'Enter') return;
-    event.preventDefault();
-    const account = event.target.dataset.account;
-    const button = event.target.closest('td').querySelector('.confirm-next');
-    confirmNext(account, event.target, button);
-  });
-
   byId('tasks').addEventListener('click', async event => {
-    const openButton = event.target.closest('.open-current');
-    if (openButton) {
-      const accountName = openButton.dataset.account;
-      openButton.disabled = true;
-      const oldText = openButton.textContent;
-      openButton.textContent = '打开中...';
-
-      try {
-        const current = await api(`/api/my-tasks/${encodeURIComponent(accountName)}/open-current`, {
-          method: 'POST',
-          body: JSON.stringify({ worker: workerId })
-        });
-        const copied = await copyText(current.post_text || '');
-        log(`账号 ${accountName} → 已打开当前帖子 | Link=${current.post_link || '-'} | 评论文案${copied ? '已复制' : '复制失败'}`);
-        if (!copied && current.post_text) {
-          alert('帖子已打开，但浏览器未允许自动复制。请手动复制评论文案。');
-        }
-      } catch (error) {
-        alert(error.message);
-        log(`打开当前帖子失败：${error.message}`);
-      } finally {
-        openButton.disabled = false;
-        openButton.textContent = oldText;
-      }
-      return;
-    }
-
-    const confirmButton = event.target.closest('.confirm-next');
-    if (confirmButton) {
-      const confirmInput = confirmButton.closest('td').querySelector('.confirm-input');
-      await confirmNext(confirmButton.dataset.account, confirmInput, confirmButton);
-      return;
-    }
-
     const button = event.target.closest('.task-action');
     if (!button) return;
 
     const { action, account } = button.dataset;
+
+    if (action === 'restart') {
+      const checkbox = Array.from(document.querySelectorAll('.acct'))
+        .find(item => item.value === account);
+      if (checkbox) checkbox.checked = true;
+
+      const all = document.querySelectorAll('.acct');
+      const selected = document.querySelectorAll('.acct:checked');
+      byId('selectAllAccounts').checked = all.length > 0 && all.length === selected.length;
+
+      byId('availableTasksPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      log(`账号 ${account} 已重新选中，请在任务列表选择任务并点击“领取任务”`);
+      return;
+    }
+
     if (action === 'delete' && !confirm(`确定删除 ${account} 的任务记录？未完成任务会释放回任务池。`)) return;
     if (action === 'interrupt' && !confirm(`确定中断 ${account} 当前任务？`)) return;
 
