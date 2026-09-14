@@ -544,6 +544,55 @@ app.get('/api/my-tasks', userAuth, (req, res) => {
   res.json({ success: true, data: rows });
 });
 
+app.post('/api/my-tasks/clear-all', userAuth, (req, res) => {
+  try {
+    const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
+    const assignments = db.prepare(`SELECT a.task_id, a.status, t.created_by
+      FROM comment_assistant_task_assignments a
+      JOIN comment_assistant_tasks t ON t.task_id = a.task_id
+      WHERE a.worker_id = ?`).all(worker);
+
+    const runningCount = assignments.filter(item => item.status === 'CLAIMED').length;
+    if (runningCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: `还有 ${runningCount} 条任务正在执行，请先中断全部任务后再清空`
+      });
+    }
+
+    for (const item of assignments) {
+      if (item.created_by !== DEFAULT_TASK_ID) {
+        db.prepare(`UPDATE comment_assistant_tasks
+          SET status = 'OPEN', updated_at = LOCALTIMESTAMP
+          WHERE task_id = ? AND status <> 'CANCELLED'`).run(item.task_id);
+      }
+    }
+
+    db.prepare('DELETE FROM comment_assistant_task_assignments WHERE worker_id = ?').run(worker);
+
+    let deletedBuiltin = 0;
+    for (const item of assignments) {
+      if (item.created_by === DEFAULT_TASK_ID) {
+        db.prepare('DELETE FROM comment_assistant_tasks WHERE task_id = ?').run(item.task_id);
+        deletedBuiltin += 1;
+      }
+    }
+
+    console.log(`[Task] 清空全部任务 | worker=${worker} | assignments=${assignments.length} | builtinDeleted=${deletedBuiltin}`);
+    res.json({
+      success: true,
+      data: {
+        worker,
+        cleared_count: assignments.length,
+        deleted_builtin_count: deletedBuiltin
+      }
+    });
+  } catch (error) {
+    console.error(`[Task] 清空全部任务失败：${error.message}`);
+    res.status(400).json({ success: false, message: error.message });
+  }
+});
+
 app.post('/api/my-tasks/:account/action', userAuth, (req, res) => {
   try {
     const worker = workerKey(req.body?.worker || DEFAULT_WORKER_ID);
