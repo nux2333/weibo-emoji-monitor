@@ -66,11 +66,14 @@
             <h2 style="margin:0">评论文案</h2>
             <span id="commentCopyCount" class="pill">1 条</span>
           </div>
+          <button id="toggleCommentCopies" class="collapse-toggle" type="button">收起 ▲</button>
         </div>
-        <div id="commentCopyList" class="comment-copy-list"></div>
-        <div class="comment-copy-footer">
-          <button id="addCommentCopy" class="comment-copy-add" type="button" title="新增文案">＋</button>
-          <span class="muted">每次评论时随机选择其中一条</span>
+        <div id="commentCopyPanel" class="collapsible-panel">
+          <div id="commentCopyList" class="comment-copy-list"></div>
+          <div class="comment-copy-footer">
+            <button id="addCommentCopy" class="comment-copy-add" type="button" title="新增文案">＋</button>
+            <span class="muted">每条帖子发送前随机选择其中一条</span>
+          </div>
         </div>
       </div>
 
@@ -121,21 +124,23 @@
         const countEl = document.getElementById('commentCopyCount');
         const addEl = document.getElementById('addCommentCopy');
         const storageKey = 'commentAssistantRandomCopiesPreview';
-        const defaultCopy = '田栩宁天天开心';
+        const defaultCopy = '#田栩宁[超话]##微博星宝养成计划##微博星宝#泥嚎～交个朋友吧 ​';
+        const oldPreviewCopy = '田栩宁天天开心';
 
         let copies = (localStorage.getItem(storageKey) || '')
           .split(/\r?\n/)
           .map(v => v.trim())
           .filter(Boolean);
-        if (!copies.length) copies = [defaultCopy];
+        if (!copies.length || (copies.length === 1 && copies[0] === oldPreviewCopy)) copies = [defaultCopy];
 
-        function save() {
-          const values = Array.from(listEl.querySelectorAll('.comment-copy-input'))
-            .map(input => input.value.trim())
-            .filter(Boolean);
-          copies = values.length ? values : [defaultCopy];
-          localStorage.setItem(storageKey, copies.join('\n'));
-          countEl.textContent = `${copies.length} 条`;
+        function persist() {
+          localStorage.setItem(storageKey, copies.filter(Boolean).join('\n'));
+          countEl.textContent = `${copies.filter(Boolean).length || 1} 条`;
+        }
+
+        function syncFromInputs() {
+          copies = Array.from(listEl.querySelectorAll('.comment-copy-input')).map(input => input.value.trim());
+          persist();
         }
 
         function render() {
@@ -149,7 +154,7 @@
             input.type = 'text';
             input.value = copy;
             input.placeholder = '请输入评论文案';
-            input.addEventListener('input', save);
+            input.addEventListener('input', syncFromInputs);
 
             const remove = document.createElement('button');
             remove.className = 'comment-copy-remove';
@@ -159,24 +164,54 @@
             remove.addEventListener('click', () => {
               copies.splice(index, 1);
               if (!copies.length) copies.push(defaultCopy);
-              localStorage.setItem(storageKey, copies.join('\n'));
+              persist();
               render();
             });
 
             row.append(input, remove);
             listEl.appendChild(row);
           });
-          countEl.textContent = `${copies.length} 条`;
+          persist();
         }
 
         addEl.addEventListener('click', () => {
-          save();
+          syncFromInputs();
           copies.push('');
           render();
           const inputs = listEl.querySelectorAll('.comment-copy-input');
-          const last = inputs[inputs.length - 1];
-          if (last) last.focus();
+          inputs[inputs.length - 1]?.focus();
         });
+
+        const copyPanel = document.getElementById('commentCopyPanel');
+        const copyToggle = document.getElementById('toggleCommentCopies');
+        const collapseKey = 'commentAssistantCommentCopiesCollapsed';
+        function applyCollapse(collapsed) {
+          copyPanel.classList.toggle('collapsed', collapsed);
+          copyToggle.textContent = collapsed ? '展开 ▼' : '收起 ▲';
+        }
+        applyCollapse(localStorage.getItem(collapseKey) === '1');
+        copyToggle.addEventListener('click', () => {
+          const collapsed = !copyPanel.classList.contains('collapsed');
+          applyCollapse(collapsed);
+          localStorage.setItem(collapseKey, collapsed ? '1' : '0');
+        });
+
+        // user.js 不需要感知文案 UI：在领取任务请求发出前自动附加当前文案数组。
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init = {}) => {
+          try {
+            const url = typeof input === 'string' ? input : String(input?.url || '');
+            const method = String(init.method || 'GET').toUpperCase();
+            if (method === 'POST' && /^\/api\/(?:tasks\/claim|tasks\/[^/]+\/claim)(?:\?|$)/.test(url)) {
+              syncFromInputs();
+              const validCopies = copies.map(v => v.trim()).filter(Boolean);
+              const body = init.body ? JSON.parse(init.body) : {};
+              body.comment_copies = validCopies.length ? validCopies : [defaultCopy];
+              init = { ...init, body: JSON.stringify(body) };
+            }
+          } catch (_) {}
+          return nativeFetch(input, init);
+        };
 
         render();
       })();
