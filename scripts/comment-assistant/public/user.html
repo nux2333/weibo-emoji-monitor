@@ -5,6 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Comment Assistant 用户端</title>
     <link rel="stylesheet" href="/static/common.css" />
+    <style>
+      .comment-copy-list { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
+      .comment-copy-row { display:flex; align-items:center; gap:8px; }
+      .comment-copy-input { flex:1; min-width:0; box-sizing:border-box; padding:9px 11px; border-radius:8px; }
+      .comment-copy-remove, .comment-copy-add { width:34px; height:34px; min-width:34px; padding:0; border-radius:50%; font-size:21px; line-height:1; display:inline-flex; align-items:center; justify-content:center; }
+      .comment-copy-remove { background:#fff1f1; color:#d33; border:1px solid #f0bcbc; }
+      .comment-copy-add { background:#eef6ff; color:#1677ff; border:1px solid #b9d7ff; }
+      .comment-copy-footer { display:flex; align-items:center; gap:10px; margin-top:10px; flex-wrap:wrap; }
+    </style>
   </head>
   <body>
     <div class="wrap">
@@ -53,20 +62,15 @@
 
       <div class="card">
         <div class="top">
-          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+          <div style="display:flex; gap:8px; align-items:center">
             <h2 style="margin:0">评论文案</h2>
-            <span id="commentCopyCount" class="pill">0 条</span>
+            <span id="commentCopyCount" class="pill">1 条</span>
           </div>
         </div>
-        <div style="margin-top:10px">
-          <textarea id="commentCopies" rows="7" placeholder="每行一条评论文案，例如：&#10;田栩宁天天开心&#10;今天也来支持一下&#10;期待新的作品" style="width:100%; box-sizing:border-box; resize:vertical; padding:10px; border-radius:8px"></textarea>
-          <div class="muted" style="margin-top:6px">每行一条，空行自动忽略。执行评论时将从有效文案中随机选择一条。</div>
-          <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap">
-            <button id="saveCommentCopies" class="blue" type="button">保存文案</button>
-            <button id="previewRandomComment" class="gray" type="button">随机预览</button>
-            <span id="commentCopyStatus" class="muted">当前仅用于页面效果预览</span>
-          </div>
-          <div id="randomCommentPreview" style="display:none; margin-top:10px; padding:10px; border-radius:8px; background:rgba(127,127,127,.08)"></div>
+        <div id="commentCopyList" class="comment-copy-list"></div>
+        <div class="comment-copy-footer">
+          <button id="addCommentCopy" class="comment-copy-add" type="button" title="新增文案">＋</button>
+          <span class="muted">每次评论时随机选择其中一条</span>
         </div>
       </div>
 
@@ -113,43 +117,68 @@
 
     <script>
       (() => {
-        const textarea = document.getElementById('commentCopies');
-        const count = document.getElementById('commentCopyCount');
-        const status = document.getElementById('commentCopyStatus');
-        const preview = document.getElementById('randomCommentPreview');
+        const listEl = document.getElementById('commentCopyList');
+        const countEl = document.getElementById('commentCopyCount');
+        const addEl = document.getElementById('addCommentCopy');
         const storageKey = 'commentAssistantRandomCopiesPreview';
+        const defaultCopy = '田栩宁天天开心';
 
-        const values = () => textarea.value
+        let copies = (localStorage.getItem(storageKey) || '')
           .split(/\r?\n/)
           .map(v => v.trim())
           .filter(Boolean);
+        if (!copies.length) copies = [defaultCopy];
 
-        const refreshCount = () => {
-          count.textContent = `${values().length} 条`;
-        };
+        function save() {
+          const values = Array.from(listEl.querySelectorAll('.comment-copy-input'))
+            .map(input => input.value.trim())
+            .filter(Boolean);
+          copies = values.length ? values : [defaultCopy];
+          localStorage.setItem(storageKey, copies.join('\n'));
+          countEl.textContent = `${copies.length} 条`;
+        }
 
-        textarea.value = localStorage.getItem(storageKey) || '';
-        refreshCount();
-        textarea.addEventListener('input', refreshCount);
+        function render() {
+          listEl.innerHTML = '';
+          copies.forEach((copy, index) => {
+            const row = document.createElement('div');
+            row.className = 'comment-copy-row';
 
-        document.getElementById('saveCommentCopies').addEventListener('click', () => {
-          const list = values();
-          localStorage.setItem(storageKey, list.join('\n'));
-          textarea.value = list.join('\n');
-          refreshCount();
-          status.textContent = `已保存 ${list.length} 条（页面预览）`;
+            const input = document.createElement('input');
+            input.className = 'comment-copy-input';
+            input.type = 'text';
+            input.value = copy;
+            input.placeholder = '请输入评论文案';
+            input.addEventListener('input', save);
+
+            const remove = document.createElement('button');
+            remove.className = 'comment-copy-remove';
+            remove.type = 'button';
+            remove.title = '删除这条文案';
+            remove.textContent = '−';
+            remove.addEventListener('click', () => {
+              copies.splice(index, 1);
+              if (!copies.length) copies.push(defaultCopy);
+              localStorage.setItem(storageKey, copies.join('\n'));
+              render();
+            });
+
+            row.append(input, remove);
+            listEl.appendChild(row);
+          });
+          countEl.textContent = `${copies.length} 条`;
+        }
+
+        addEl.addEventListener('click', () => {
+          save();
+          copies.push('');
+          render();
+          const inputs = listEl.querySelectorAll('.comment-copy-input');
+          const last = inputs[inputs.length - 1];
+          if (last) last.focus();
         });
 
-        document.getElementById('previewRandomComment').addEventListener('click', () => {
-          const list = values();
-          if (!list.length) {
-            preview.style.display = 'block';
-            preview.textContent = '请先输入至少一条评论文案。';
-            return;
-          }
-          preview.style.display = 'block';
-          preview.textContent = list[Math.floor(Math.random() * list.length)];
-        });
+        render();
       })();
     </script>
     <script src="/static/common.js"></script>
