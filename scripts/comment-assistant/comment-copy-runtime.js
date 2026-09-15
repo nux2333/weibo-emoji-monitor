@@ -10,6 +10,12 @@ function normalizeCommentCopies(value) {
   return copies.length ? copies : [DEFAULT_COMMENT];
 }
 
+function normalizeWorkerId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return 'default';
+  return raw.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 120) || 'default';
+}
+
 let currentCommentCopies = [DEFAULT_COMMENT];
 try {
   if (process.env.COMMENT_TEXTS_JSON) {
@@ -17,32 +23,121 @@ try {
   }
 } catch (_) {}
 
-// server-api 进程：领取任务时捕获页面传来的文案，并传给随后启动的 index-http 子进程。
+let storeDb = null;
+function getStoreDb() {
+  if (storeDb) return storeDb;
+  const dbModule = require('../../src/db');
+  storeDb = dbModule.db;
+  try { dbModule.initDatabase(); } catch (_) {}
+  storeDb.exec(`CREATE TABLE IF NOT EXISTS comment_assistant_worker_comment_copies (
+    worker_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL,
+    comment_text TEXT NOT NULL,
+    updated_at TIMESTAMP NOT NULL DEFAULT LOCALTIMESTAMP,
+    PRIMARY KEY (worker_id, sort_order)
+  )`);
+  return storeDb;
+}
+
+function loadWorkerCopies(workerId) {
+  const worker = normalizeWorkerId(workerId);
+  try {
+    const rows = getStoreDb().prepare(`SELECT comment_text
+      FROM comment_assistant_worker_comment_copies
+      WHERE worker_id = ?
+      ORDER BY sort_order ASC`).all(worker);
+    const values = rows.map(row => String(row.comment_text || '').trim()).filter(Boolean);
+    return values.length ? normalizeCommentCopies(values) : [DEFAULT_COMMENT];
+  } catch (error) {
+    console.warn(`[评论文案] 读取 worker=${worker} 文案失败：${error.message}`);
+    return [DEFAULT_COMMENT];
+  }
+}
+
+function saveWorkerCopies(workerId, value) {
+  const worker = normalizeWorkerId(workerId);
+  const copies = normalizeCommentCopies(value);
+  const db = getStoreDb();
+  const tx = db.transaction(() => {
+    db.prepare('DELETE FROM comment_assistant_worker_comment_copies WHERE worker_id = ?').run(worker);
+    const insert = db.prepare(`INSERT INTO comment_assistant_worker_comment_copies
+      (worker_id, sort_order, comment_text, updated_at)
+      VALUES (?, ?, ?, LOCALTIMESTAMP)`);
+    copies.forEach((text, index) => insert.run(worker, index, text));
+  });
+  tx();
+  console.log(`[评论文案] worker=${worker} 已保存 ${copies.length} 条文案`);
+  return copies;
+}
+
+// server-api 进程：增加按 worker 保存/读取文案的 API。
+// 通过 application.use 注入在原有 API 路由之前，沿用 COMMENT_API_TOKEN 鉴权。
+try {
+  const express = require('express');
+  const originalUse = express.application.use;
+  let middlewareInstalled = false;
+
+  express.application.use = function patchedUse(...args) {
+    const result = originalUse.apply(this, args);
+    if (middlewareInstalled) return result;
+    middlewareInstalled = true;
+
+    originalUse.call(this, (req, res, next) => {
+      if (!/^\/api\/comment-copies(?:\?|$)/.test(String(req.originalUrl || req.url || ''))) return next();
+
+      const token = String(process.env.COMMENT_API_TOKEN || '').trim();
+      const auth = String(req.headers?.authorization || '');
+      if (!token || auth !== `Bearer ${token}`) {
+        return res.status(401).json({ success: false, message: 'Unauthorized' });
+      }
+
+      try {
+        const worker = normalizeWorkerId(
+          req.method === 'GET' ? req.query?.worker : req.body?.worker
+        );
+        if (req.method === 'GET') {
+          return res.json({ success: true, data: { worker, copies: loadWorkerCopies(worker) } });
+        }
+        if (req.method === 'PUT' || req.method === 'POST') {
+          const copies = saveWorkerCopies(worker, req.body?.copies);
+          return res.json({ success: true, data: { worker, copies } });
+        }
+        return res.status(405).json({ success: false, message: 'Method Not Allowed' });
+      } catch (error) {
+        console.error(`[评论文案] API失败：${error.message}`);
+        return res.status(400).json({ success: false, message: error.message });
+      }
+    });
+    return result;
+  };
+} catch (_) {}
+
+// server-api 进程：启动某个 worker 的账号任务时，从数据库读取该 worker 自己的文案。
 const childProcess = require('child_process');
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function patchedSpawn(command, args, options) {
   const argv = Array.isArray(args) ? args : [];
   const isCommentWorker = argv.some(value => /comment-assistant[\\/]index-http\.js$/i.test(String(value)));
 
-  if (!isCommentWorker) {
-    return originalSpawn.apply(this, arguments);
-  }
+  if (!isCommentWorker) return originalSpawn.apply(this, arguments);
 
   const nextOptions = options || {};
+  const workerId = normalizeWorkerId(nextOptions.env?.COMMENT_WORKER_ID || 'default');
+  const workerCopies = loadWorkerCopies(workerId);
   const existingNodeOptions = String(nextOptions.env?.NODE_OPTIONS || process.env.NODE_OPTIONS || '').trim();
   const preloadOption = `--require=${__filename}`;
   nextOptions.env = {
     ...process.env,
     ...(nextOptions.env || {}),
-    COMMENT_TEXTS_JSON: JSON.stringify(currentCommentCopies),
+    COMMENT_TEXTS_JSON: JSON.stringify(workerCopies),
     NODE_OPTIONS: [existingNodeOptions, preloadOption].filter(Boolean).join(' ')
   };
 
-  console.log(`[评论文案] 启动账号任务：已传入 ${currentCommentCopies.length} 条随机文案`);
+  console.log(`[评论文案] 启动 worker=${workerId} 账号任务：数据库载入 ${workerCopies.length} 条随机文案`);
   return originalSpawn.call(this, command, args, nextOptions);
 };
 
-// server-api 进程：不改原路由实现，只在领取任务 handler 前读取 comment_copies。
+// 兼容旧页面：领取请求如果仍携带 comment_copies，也按 worker 保存，而不是使用全局内存。
 try {
   const express = require('express');
   const originalPost = express.application.post;
@@ -53,8 +148,10 @@ try {
 
     const captureCommentCopies = (req, res, next) => {
       if (Array.isArray(req.body?.comment_copies)) {
-        currentCommentCopies = normalizeCommentCopies(req.body.comment_copies);
-        console.log(`[评论文案] 页面提交 ${currentCommentCopies.length} 条文案`);
+        const worker = normalizeWorkerId(req.body?.worker || 'default');
+        try { saveWorkerCopies(worker, req.body.comment_copies); } catch (error) {
+          console.warn(`[评论文案] 领取任务前保存失败：${error.message}`);
+        }
       }
       next();
     };
@@ -62,7 +159,7 @@ try {
   };
 } catch (_) {}
 
-// index-http 子进程：包一层 submitComment，每次真正发送前重新随机一条。
+// index-http 子进程：每次真正发送前重新随机一条。
 if (/index-http\.js$/i.test(String(process.argv[1] || ''))) {
   try {
     const commentAutoModule = require('./comment-auto-service');
