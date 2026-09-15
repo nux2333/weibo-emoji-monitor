@@ -53,6 +53,25 @@
 
       <div class="card">
         <div class="top">
+          <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+            <h2 style="margin:0">评论文案</h2>
+            <span id="commentCopyCount" class="pill">0 条</span>
+          </div>
+        </div>
+        <div style="margin-top:10px">
+          <textarea id="commentCopies" rows="7" placeholder="每行一条评论文案，例如：&#10;田栩宁天天开心&#10;今天也来支持一下&#10;期待新的作品" style="width:100%; box-sizing:border-box; resize:vertical; padding:10px; border-radius:8px"></textarea>
+          <div class="muted" style="margin-top:6px">每行一条，空行自动忽略。执行评论时将从有效文案中随机选择一条。</div>
+          <div style="display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap">
+            <button id="saveCommentCopies" class="blue" type="button">保存文案</button>
+            <button id="previewRandomComment" class="gray" type="button">随机预览</button>
+            <span id="commentCopyStatus" class="muted">当前仅用于页面效果预览</span>
+          </div>
+          <div id="randomCommentPreview" style="display:none; margin-top:10px; padding:10px; border-radius:8px; background:rgba(127,127,127,.08)"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="top">
           <h2 style="margin: 0">任务列表</h2>
           <button id="toggleAvailableTasks" class="collapse-toggle" type="button">收起 ▲</button>
         </div>
@@ -92,6 +111,47 @@
       </div>
     </div>
 
+    <script>
+      (() => {
+        const textarea = document.getElementById('commentCopies');
+        const count = document.getElementById('commentCopyCount');
+        const status = document.getElementById('commentCopyStatus');
+        const preview = document.getElementById('randomCommentPreview');
+        const storageKey = 'commentAssistantRandomCopiesPreview';
+
+        const values = () => textarea.value
+          .split(/\r?\n/)
+          .map(v => v.trim())
+          .filter(Boolean);
+
+        const refreshCount = () => {
+          count.textContent = `${values().length} 条`;
+        };
+
+        textarea.value = localStorage.getItem(storageKey) || '';
+        refreshCount();
+        textarea.addEventListener('input', refreshCount);
+
+        document.getElementById('saveCommentCopies').addEventListener('click', () => {
+          const list = values();
+          localStorage.setItem(storageKey, list.join('\n'));
+          textarea.value = list.join('\n');
+          refreshCount();
+          status.textContent = `已保存 ${list.length} 条（页面预览）`;
+        });
+
+        document.getElementById('previewRandomComment').addEventListener('click', () => {
+          const list = values();
+          if (!list.length) {
+            preview.style.display = 'block';
+            preview.textContent = '请先输入至少一条评论文案。';
+            return;
+          }
+          preview.style.display = 'block';
+          preview.textContent = list[Math.floor(Math.random() * list.length)];
+        });
+      })();
+    </script>
     <script src="/static/common.js"></script>
     <script src="/static/user.js"></script>
   </body>
