@@ -1,3 +1,4 @@
+const fs = require('fs');
 const path = require('path');
 
 const NODE_EXE = process.execPath;
@@ -5,6 +6,8 @@ const PLAYWRIGHT_GUARD = path.join(__dirname, 'src', 'playwright-hardening.js');
 const POSTGRES_PRELOAD = path.join(__dirname, 'src', 'postgres-preload.js');
 const SKIP_DB_INIT_PRELOAD = path.join(__dirname, 'src', 'skip-db-init-preload.js');
 const UNIFIED_SCAN_RESUME_PRELOAD = path.join(__dirname, 'src', 'unified-scan-resume-preload.js');
+const COMMENT_ASSISTANT_LOG_DIR = path.resolve(__dirname, '..', 'logs', 'comment-assistant');
+fs.mkdirSync(COMMENT_ASSISTANT_LOG_DIR, { recursive: true });
 
 /* 仅供扫描 / 复检 / 补数等后台 Worker 使用。 */
 const common = {
@@ -77,6 +80,9 @@ module.exports = {
       name: 'comment-assistant',
       script: path.join(__dirname, 'scripts', 'comment-assistant', 'cli.js'),
       node_args: ['--require', SKIP_DB_INIT_PRELOAD],
+      out_file: path.join(COMMENT_ASSISTANT_LOG_DIR, 'comment-assistant-out.log'),
+      error_file: path.join(COMMENT_ASSISTANT_LOG_DIR, 'comment-assistant-error.log'),
+      log_date_format: 'YYYY-MM-DD HH:mm:ss',
       env: { ...common.env }
     }
   ]
