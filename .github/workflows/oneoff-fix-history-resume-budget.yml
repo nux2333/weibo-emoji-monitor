@@ -1,0 +1,99 @@
+name: One-off fix history resume budget
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/oneoff-fix-history-resume-budget.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Patch monitor-scanner
+        shell: python
+        run: |
+          from pathlib import Path
+          p = Path('src/superlike/monitor-scanner.js')
+          s = p.read_text(encoding='utf-8')
+
+          old_deadline = """const deadline =
+                  HISTORY_CONTINUOUS
+                    ? Number.POSITIVE_INFINITY
+                    : Date.now()
+                      + RESUME_TIME_BUDGET_MS;"""
+          new_deadline = """const deadline =
+                  Date.now() + RESUME_TIME_BUDGET_MS;"""
+          if s.count(old_deadline) != 2:
+              raise SystemExit(f'expected 2 history deadline blocks, found {s.count(old_deadline)}')
+          s = s.replace(old_deadline, new_deadline, 2)
+
+          cutoff = """const historyCutoffMs =
+                  getConfiguredHistoryCutoffMs();"""
+          if s.count(cutoff) != 2:
+              raise SystemExit(f'expected 2 cutoff blocks, found {s.count(cutoff)}')
+          s = s.replace(cutoff, cutoff + "\n\n              const historyStartPages = pagesScanned;", 2)
+
+          old_log = """HISTORY_CONTINUOUS
+                    ? `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 不限时 | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
+                    : `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`"""
+          new_log = """`[SuperLike][History开始] 分区=最新发帖 | Resume page=${latestResume.next_page} | 本轮最多=${MAX_PAGES}页/${Math.ceil(RESUME_TIME_BUDGET_MS / 60000)}分钟 | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`"""
+          if old_log not in s:
+              raise SystemExit('latest history start log pattern not found')
+          s = s.replace(old_log, new_log, 1)
+
+          old = """queue.length > 0
+                    &&
+                    Date.now() < deadline"""
+          new = """queue.length > 0
+                    &&
+                    pagesScanned - historyStartPages < MAX_PAGES
+                    &&
+                    Date.now() < deadline"""
+          if old not in s:
+              raise SystemExit('tag outer budget pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = """resume.next_since_id
+                      &&
+                      Date.now() < deadline"""
+          new = """resume.next_since_id
+                      &&
+                      pagesScanned - historyStartPages < MAX_PAGES
+                      &&
+                      Date.now() < deadline"""
+          if old not in s:
+              raise SystemExit('tag inner budget pattern not found')
+          s = s.replace(old, new, 1)
+
+          old = """latestResume
+                  &&
+                  Date.now() < deadline"""
+          new = """latestResume
+                  &&
+                  pagesScanned - historyStartPages < MAX_PAGES
+                  &&
+                  Date.now() < deadline"""
+          if old not in s:
+              raise SystemExit('latest budget pattern not found')
+          s = s.replace(old, new, 1)
+
+          p.write_text(s, encoding='utf-8')
+      - name: Syntax check
+        run: node --check src/superlike/monitor-scanner.js
+      - name: Commit fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add src/superlike/monitor-scanner.js
+          git commit -m "fix: preserve history resume across round budgets"
+          git push origin main
