@@ -66,6 +66,14 @@ const {
 const { processPagePosts } = require('./page-processor');
 
 const {
+  HISTORY_ZERO_POST_THRESHOLD,
+  updateEmptyPageStreak,
+  shouldFinishForEmptyPages,
+  getConfiguredHistoryCutoffMs,
+  pageReachedConfiguredCutoff
+} = require('./history-resume-policy');
+
+const {
   initDatabase,
   getSuperLikeMonitors,
   superLikePostIdExists,
@@ -284,8 +292,9 @@ const NIGHT_FRESH_FIRST_PAGES =
 /*
  * Legacy/Fresh 兼容逻辑仍保留历史 Resume 时间预算。
  * 独立 History Worker 不再使用时间预算，会持续扫描直到：
- * - 到达中国时间昨天 00:00 边界
- * - 没有下一页
+ * - Response 明确没有下一页
+ * - 连续3个真正空页
+ * - 达到显式配置的历史截止日期
  * - 请求失败 / 418
  */
 const RESUME_TIME_BUDGET_MS =
@@ -297,33 +306,6 @@ const RESUME_TIME_BUDGET_MS =
 const HISTORY_CONTINUOUS =
   SCAN_WORKER_MODE === 'history';
 
-/*
- * History 只补到“中国时间昨天 00:00”。
- * 一旦整页已经越过该边界，就清除对应 Resume/cursor，
- * 下一次历史扫描重新从新的日内 Resume 开始，不继续背旧页码。
- */
-const HISTORY_OLD_PAGE_THRESHOLD =
-  Math.max(
-    1,
-    Number(
-      process.env.SUPERLIKE_HISTORY_OLD_PAGE_THRESHOLD
-    )
-    || 1
-  );
-
-
-/*
- * latest-posts History 防空扫：连续多页最终可处理 Post=0 时停止，
- * 避免日期解析异常/重复数据导致旧 Resume 无限往后翻页。
- */
-const HISTORY_ZERO_POST_THRESHOLD =
-  Math.max(
-    1,
-    Number(
-      process.env.SUPERLIKE_HISTORY_ZERO_POST_THRESHOLD
-    )
-    || 3
-  );
 
 function getChinaYesterdayStartMs() {
   const parts =
@@ -586,7 +568,8 @@ function getHistoryPageAgeState(
     posts.length === 0
   ) {
     return {
-      fullyOlder: true,
+      // 空页不是日期证据，绝不能拿来清 Resume。
+      fullyOlder: false,
       comparablePosts: 0
     };
   }
@@ -629,7 +612,7 @@ function getHistoryPageAgeState(
     fullyOlder:
       comparablePosts > 0
         ? fullyOlder
-        : true,
+        : false,
     comparablePosts
   };
 }
@@ -1704,7 +1687,7 @@ async function scanOneSuperLikeMonitor(
             + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
-        getChinaYesterdayStartMs();
+        getConfiguredHistoryCutoffMs();
 
       const queue =
         TAG_SECTION_SOURCES
@@ -1734,7 +1717,7 @@ async function scanOneSuperLikeMonitor(
 
       console.log(
         HISTORY_CONTINUOUS
-          ? `[SuperLike][分区历史Resume] 连续补扫，不限时；截止=${formatChinaCutoff(historyCutoffMs)} | 分区数=${queue.length}`
+          ? `[SuperLike][分区历史Resume] 连续补扫，不限时；截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)} | 分区数=${queue.length}`
           : `[SuperLike][分区历史Resume] fresh已入库；开始补历史，${queue.length}个分区共享${Math.round(RESUME_TIME_BUDGET_MS / 60000)}分钟预算。`
       );
 
@@ -1764,11 +1747,11 @@ async function scanOneSuperLikeMonitor(
             item.resume;
 
           console.log(
-            `[SuperLike][History开始] 分区=${source.name} | Resume page=${resume.next_page ?? '-'} | 截止=${formatChinaCutoff(historyCutoffMs)}`
+            `[SuperLike][History开始] 分区=${source.name} | Resume page=${resume.next_page ?? '-'} | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
           );
 
           let historyPage = 0;
-          let consecutiveOldPages = 0;
+          let consecutiveZeroPostPages = 0;
 
           while (
             resume
@@ -1918,15 +1901,33 @@ async function scanOneSuperLikeMonitor(
               ].join(' | ')
             );
 
-            if (ageState.fullyOlder) {
-              consecutiveOldPages++;
-            } else {
-              consecutiveOldPages = 0;
+            // 只要 Response 给了下一页 cursor，就先保存 Resume。
+            // 后面的“预算暂停”或其它判断都不能丢掉这个 cursor。
+            if (nextParams) {
+              saveScanSourceResume(
+                monitor.id,
+                source.key,
+                source.flowId,
+                nextParams
+              );
+            }
+
+            consecutiveZeroPostPages =
+              updateEmptyPageStreak(
+                consecutiveZeroPostPages,
+                historyPosts
+              );
+
+            if (historyPosts.length === 0) {
+              console.log(
+                `[SuperLike][分区History][空页] ${source.name} | page=${params.page ?? '-'} | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD} | Resume=${nextParams ? '已保存下一页' : '无下一页'}`
+              );
             }
 
             if (
-              consecutiveOldPages
-              >= HISTORY_OLD_PAGE_THRESHOLD
+              shouldFinishForEmptyPages(
+                consecutiveZeroPostPages
+              )
             ) {
               clearScanSourceResume(
                 monitor.id,
@@ -1934,9 +1935,26 @@ async function scanOneSuperLikeMonitor(
               );
 
               console.log(
-                `[SuperLike][分区历史日边界完成] ${source.name} 连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过昨天 00:00 边界，清除Resume；已清除Resume，历史页数重置。`
+                `[SuperLike][分区History][空页结束] ${source.name} 连续 ${HISTORY_ZERO_POST_THRESHOLD} 个真正空页，清除Resume。`
+              );
+              break;
+            }
+
+            if (
+              pageReachedConfiguredCutoff(
+                historyPosts,
+                historyCutoffMs,
+                parsePostCreatedAtMs
+              )
+            ) {
+              clearScanSourceResume(
+                monitor.id,
+                source.key
               );
 
+              console.log(
+                `[SuperLike][分区History][历史截止] ${source.name} 已达到指定历史截止日期 ${formatChinaCutoff(historyCutoffMs)}，清除Resume。`
+              );
               break;
             }
 
@@ -1947,21 +1965,9 @@ async function scanOneSuperLikeMonitor(
               );
 
               console.log(
-                `[SuperLike][分区历史Resume完成] ${source.name} 已无下一页，清除Resume。`
+                `[SuperLike][分区历史Resume完成] ${source.name} Response明确无下一页，清除Resume。`
               );
-
               break;
-            }
-
-            if (
-              source.key !== 'section-hot'
-            ) {
-              saveScanSourceResume(
-                monitor.id,
-                source.key,
-                source.flowId,
-                nextParams
-              );
             }
 
             resume =
@@ -2252,11 +2258,40 @@ async function scanOneSuperLikeMonitor(
 
 
     async function scanLatestHistoryBudget() {
-      if (!resume) {
-        console.log(
-          '[SuperLike][History][latest-posts] 当前没有 Resume。'
+      let latestResume =
+        getScanResume(
+          monitor.id
         );
-        return;
+
+      if (!latestResume) {
+        const rebuiltNextParams =
+          extractNextPageParams(
+            firstSortTimeResult?.json
+          );
+
+        if (rebuiltNextParams) {
+          saveScanResume(
+            monitor.id,
+            checkpoint,
+            sortTimeFlowId,
+            sortTimeRequestTemplateUrl,
+            rebuiltNextParams
+          );
+
+          latestResume =
+            getScanResume(
+              monitor.id
+            );
+
+          console.log(
+            `[SuperLike][History][重建入口] latest-posts Resume不存在；已从当前 sort_time 第一页重新建立历史入口 page=${latestResume?.next_page ?? '-'}。`
+          );
+        } else {
+          console.log(
+            '[SuperLike][History][重建入口失败] sort_time 第一页明确没有下一页；latest-posts 无可继续的历史入口。'
+          );
+          return;
+        }
       }
 
       const deadline =
@@ -2266,21 +2301,15 @@ async function scanOneSuperLikeMonitor(
             + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
-        getChinaYesterdayStartMs();
+        getConfiguredHistoryCutoffMs();
 
-      let consecutiveOldPages = 0;
       let consecutiveZeroPostPages = 0;
 
       console.log(
         HISTORY_CONTINUOUS
-          ? `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 不限时 | 截止=${formatChinaCutoff(historyCutoffMs)}`
-          : `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 截止=${formatChinaCutoff(historyCutoffMs)}`
+          ? `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 不限时 | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
+          : `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
       );
-
-      let latestResume =
-        getScanResume(
-          monitor.id
-        );
 
       let historyPage = 0;
 
@@ -2395,26 +2424,14 @@ async function scanOneSuperLikeMonitor(
           ].join(' | ')
         );
 
-        if (Number(pageStats.found || 0) === 0) {
-          consecutiveZeroPostPages++;
-
-          console.log(
-            `[SuperLike][History][空页] page=${params.page} | Post=0 | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD}`
+        const nextParams =
+          extractNextPageParams(
+            result.json
           );
-        } else {
-          if (consecutiveZeroPostPages > 0) {
-            console.log(
-              `[SuperLike][History][空页] page=${params.page} 恢复有效Post；连续空页 ${consecutiveZeroPostPages} -> 0`
-            );
-          }
 
-          consecutiveZeroPostPages = 0;
-        }
-
-        if (
-          consecutiveZeroPostPages
-          >= HISTORY_ZERO_POST_THRESHOLD
-        ) {
+        // cursor-first：只要 moreInfo.params / since_id 给了下一页，
+        // 就先保存 Resume，后面无论预算暂停还是本轮结束都不会丢。
+        if (nextParams) {
           saveScanResume(
             monitor.id,
             checkpoint,
@@ -2422,54 +2439,55 @@ async function scanOneSuperLikeMonitor(
             || sortTimeFlowId,
             latestResume.template_url
             || sortTimeRequestTemplateUrl,
-            {
-              page: 1,
-              since_id: null,
-              max_id: '0'
-            }
+            nextParams
           );
-
-          console.log(
-            `[SuperLike][History][空扫停止] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 页 Post=0，Resume 已重置到 page=1 并清空 cursor，本轮 History 结束。`
-          );
-
-          break;
         }
 
-        if (ageState.fullyOlder) {
-          consecutiveOldPages++;
-
-          console.log(
-            `[SuperLike][History][昨日00:00边界] page=${params.page} 整页早于昨日00:00之后/为空页，连续旧页=${consecutiveOldPages}/${HISTORY_OLD_PAGE_THRESHOLD}`
+        consecutiveZeroPostPages =
+          updateEmptyPageStreak(
+            consecutiveZeroPostPages,
+            historyPosts
           );
-        } else {
-          if (consecutiveOldPages > 0) {
-            console.log(
-              `[SuperLike][History][昨日00:00边界] page=${params.page} 仍有昨日00:00之后内帖子，连续旧页 ${consecutiveOldPages} -> 0`
-            );
-          }
 
-          consecutiveOldPages = 0;
+        if (historyPosts.length === 0) {
+          console.log(
+            `[SuperLike][History][空页] page=${params.page} | 连续空页=${consecutiveZeroPostPages}/${HISTORY_ZERO_POST_THRESHOLD} | Resume=${nextParams ? '已保存下一页' : '无下一页'}`
+          );
+        } else if (consecutiveZeroPostPages === 0) {
+          // 有真实 Post 时 streak 已由 policy 自动归零。
         }
 
         if (
-          consecutiveOldPages
-          >= HISTORY_OLD_PAGE_THRESHOLD
+          shouldFinishForEmptyPages(
+            consecutiveZeroPostPages
+          )
         ) {
           clearScanResume(
             monitor.id
           );
 
           console.log(
-            `[SuperLike][History][日边界完成] 已连续 ${HISTORY_OLD_PAGE_THRESHOLD} 页越过昨天 00:00 边界，清除 latest-posts Resume；已清除Resume，历史页数重置。`
+            `[SuperLike][History][空页结束] 连续 ${HISTORY_ZERO_POST_THRESHOLD} 个真正空页，清除 latest-posts Resume。`
           );
           break;
         }
 
-        const nextParams =
-          extractNextPageParams(
-            result.json
+        if (
+          pageReachedConfiguredCutoff(
+            historyPosts,
+            historyCutoffMs,
+            parsePostCreatedAtMs
+          )
+        ) {
+          clearScanResume(
+            monitor.id
           );
+
+          console.log(
+            `[SuperLike][History][历史截止] 已达到指定历史截止日期 ${formatChinaCutoff(historyCutoffMs)}，清除 latest-posts Resume。`
+          );
+          break;
+        }
 
         if (!nextParams) {
           clearScanResume(
@@ -2477,20 +2495,10 @@ async function scanOneSuperLikeMonitor(
           );
 
           console.log(
-            '[SuperLike][History][latest-posts] 已无下一页，清除Resume。'
+            '[SuperLike][History][latest-posts] Response明确无下一页，清除Resume。'
           );
           break;
         }
-
-        saveScanResume(
-          monitor.id,
-          checkpoint,
-          latestResume.sort_time_flow_id
-          || sortTimeFlowId,
-          latestResume.template_url
-          || sortTimeRequestTemplateUrl,
-          nextParams
-        );
 
         latestResume =
           getScanResume(
