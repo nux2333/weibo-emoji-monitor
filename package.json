@@ -26,7 +26,7 @@
     "normalize-superlike-post-time": "node -r ./src/skip-db-init-preload.js scripts/normalize-superlike-post-created-at.js",
     "comment-assistant": "node -r ./src/skip-db-init-preload.js ./scripts/comment-assistant/cli.js",
     "comment-assistant-ui": "node -r ./src/skip-db-init-preload.js ./scripts/comment-assistant/web.js",
-    "comment-assistant-api": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js ./scripts/comment-assistant/server-api.js",
+    "comment-assistant-api": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js -r ./scripts/comment-assistant/comment-copy-runtime.js ./scripts/comment-assistant/server-api.js",
     "comment-login-helper": "node ./scripts/comment-assistant/login-helper.js",
     "db:init": "node -r ./src/postgres-preload.js scripts/run-init-database.js",
     "db:pg:init": "node -r ./src/skip-db-init-preload.js -r ./src/postgres-preload.js scripts/init-postgres.js",
