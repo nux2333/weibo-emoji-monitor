@@ -1681,13 +1681,12 @@ async function scanOneSuperLikeMonitor(
       tagHistoryResumeDone = true;
 
       const deadline =
-        HISTORY_CONTINUOUS
-          ? Number.POSITIVE_INFINITY
-          : Date.now()
-            + RESUME_TIME_BUDGET_MS;
+        Date.now() + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
         getConfiguredHistoryCutoffMs();
+
+              const historyStartPages = pagesScanned;
 
       const queue =
         TAG_SECTION_SOURCES
@@ -1730,6 +1729,8 @@ async function scanOneSuperLikeMonitor(
         while (
           queue.length > 0
           &&
+          pagesScanned - historyStartPages < MAX_PAGES
+          &&
           Date.now() < deadline
         ) {
           const item =
@@ -1757,6 +1758,8 @@ async function scanOneSuperLikeMonitor(
             resume
             &&
             resume.next_since_id
+            &&
+            pagesScanned - historyStartPages < MAX_PAGES
             &&
             Date.now() < deadline
           ) {
@@ -2295,26 +2298,25 @@ async function scanOneSuperLikeMonitor(
       }
 
       const deadline =
-        HISTORY_CONTINUOUS
-          ? Number.POSITIVE_INFINITY
-          : Date.now()
-            + RESUME_TIME_BUDGET_MS;
+        Date.now() + RESUME_TIME_BUDGET_MS;
 
       const historyCutoffMs =
         getConfiguredHistoryCutoffMs();
 
+              const historyStartPages = pagesScanned;
+
       let consecutiveZeroPostPages = 0;
 
       console.log(
-        HISTORY_CONTINUOUS
-          ? `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 不限时 | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
-          : `[SuperLike][History开始] 分区=最新发帖 | Resume page=${resume.next_page} | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
+        `[SuperLike][History开始] 分区=最新发帖 | Resume page=${latestResume.next_page} | 本轮最多=${MAX_PAGES}页/${Math.ceil(RESUME_TIME_BUDGET_MS / 60000)}分钟 | 截止=${historyCutoffMs == null ? '未配置' : formatChinaCutoff(historyCutoffMs)}`
       );
 
       let historyPage = 0;
 
       while (
         latestResume
+        &&
+        pagesScanned - historyStartPages < MAX_PAGES
         &&
         Date.now() < deadline
       ) {
