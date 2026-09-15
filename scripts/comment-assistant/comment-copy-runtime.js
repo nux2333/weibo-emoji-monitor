@@ -58,20 +58,16 @@ function saveWorkerCopies(workerId, value) {
   const worker = normalizeWorkerId(workerId);
   const copies = normalizeCommentCopies(value);
   const db = getStoreDb();
-  const tx = db.transaction(() => {
-    db.prepare('DELETE FROM comment_assistant_worker_comment_copies WHERE worker_id = ?').run(worker);
-    const insert = db.prepare(`INSERT INTO comment_assistant_worker_comment_copies
-      (worker_id, sort_order, comment_text, updated_at)
-      VALUES (?, ?, ?, LOCALTIMESTAMP)`);
-    copies.forEach((text, index) => insert.run(worker, index, text));
-  });
-  tx();
+  // PostgreSQL compatibility bridge 没有 db.transaction()，这里保持同步顺序写入。
+  db.prepare('DELETE FROM comment_assistant_worker_comment_copies WHERE worker_id = ?').run(worker);
+  const insert = db.prepare(`INSERT INTO comment_assistant_worker_comment_copies
+    (worker_id, sort_order, comment_text, updated_at)
+    VALUES (?, ?, ?, LOCALTIMESTAMP)`);
+  copies.forEach((text, index) => insert.run(worker, index, text));
   console.log(`[评论文案] worker=${worker} 已保存 ${copies.length} 条文案`);
   return copies;
 }
 
-// server-api 进程：增加按 worker 保存/读取文案的 API。
-// 通过 application.use 注入在原有 API 路由之前，沿用 COMMENT_API_TOKEN 鉴权。
 try {
   const express = require('express');
   const originalUse = express.application.use;
@@ -92,9 +88,7 @@ try {
       }
 
       try {
-        const worker = normalizeWorkerId(
-          req.method === 'GET' ? req.query?.worker : req.body?.worker
-        );
+        const worker = normalizeWorkerId(req.method === 'GET' ? req.query?.worker : req.body?.worker);
         if (req.method === 'GET') {
           return res.json({ success: true, data: { worker, copies: loadWorkerCopies(worker) } });
         }
@@ -112,13 +106,11 @@ try {
   };
 } catch (_) {}
 
-// server-api 进程：启动某个 worker 的账号任务时，从数据库读取该 worker 自己的文案。
 const childProcess = require('child_process');
 const originalSpawn = childProcess.spawn;
 childProcess.spawn = function patchedSpawn(command, args, options) {
   const argv = Array.isArray(args) ? args : [];
   const isCommentWorker = argv.some(value => /comment-assistant[\\/]index-http\.js$/i.test(String(value)));
-
   if (!isCommentWorker) return originalSpawn.apply(this, arguments);
 
   const nextOptions = options || {};
@@ -137,7 +129,6 @@ childProcess.spawn = function patchedSpawn(command, args, options) {
   return originalSpawn.call(this, command, args, nextOptions);
 };
 
-// 兼容旧页面：领取请求如果仍携带 comment_copies，也按 worker 保存，而不是使用全局内存。
 try {
   const express = require('express');
   const originalPost = express.application.post;
@@ -159,7 +150,6 @@ try {
   };
 } catch (_) {}
 
-// index-http 子进程：每次真正发送前重新随机一条。
 if (/index-http\.js$/i.test(String(process.argv[1] || ''))) {
   try {
     const commentAutoModule = require('./comment-auto-service');
